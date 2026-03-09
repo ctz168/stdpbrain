@@ -12,6 +12,8 @@ pip install -r requirements.txt
 ### 步骤 2: 下载模型 (取决于网络速度)
 
 ```bash
+python -m huggingface_hub.cli download Qwen/Qwen3.5-0.8B-Base --local-dir ./models/Qwen3.5-0.8B-Base
+
 # 使用 ModelScope (国内推荐)
 pip install modelscope
 python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3.5-0.8B-Base', local_dir='./models/Qwen3.5-0.8B-Base')"
