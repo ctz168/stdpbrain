@@ -8,6 +8,7 @@
 """
 
 import torch
+import torch.nn as nn
 import time
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass

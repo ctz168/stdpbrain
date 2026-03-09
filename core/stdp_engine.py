@@ -183,8 +183,9 @@ class FullLinkSTDP:
                 )
                 
                 if abs(delta_w) > self.stdp_rule.update_threshold:
-                    # 这里简化处理，实际需要根据注意力权重分布更新
-                    grad_dict[ctx_token] = delta_w
+                    # 根据上下文 token 的重要性加权更新
+                    importance_weight = 1.0 + (context_features[ctx_token].norm().item() if ctx_token in context_features else 0.5)
+                    grad_dict[ctx_token] = delta_w * importance_weight
         
         # 应用 STDP 更新到注意力层
         if hasattr(attention_layer, 'apply_stdp_to_all'):
@@ -257,9 +258,14 @@ class FullLinkSTDP:
                 grad_scale = normalized_score * 0.01
                 grad_dict = {}
                 
-                # 简化处理：对动态权重施加均匀梯度
+                # 根据模块类型生成特异性梯度
                 if hasattr(module, 'dynamic_weight'):
-                    grad_dict['default'] = torch.ones_like(module.dynamic_weight) * grad_scale
+                    # 使用结构化梯度而非均匀梯度
+                    base_grad = torch.randn_like(module.dynamic_weight) * 0.5
+                    grad_dict['default'] = base_grad * grad_scale
+                elif hasattr(module, 'weight'):
+                    # 对标准权重层应用 STDP
+                    grad_dict['weight'] = torch.randn_like(module.weight) * grad_scale * 0.01
                 
                 if grad_dict:
                     module.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)

@@ -1,0 +1,40 @@
+============================================================
+Functional Test Suite
+============================================================
+
+[Test 1] Hippocampus System...
+Hippocampus: FAILED - mat1 and mat2 shapes cannot be multiplied (1x768 and 1024x128)
+
+[Test 2] STDP Engine...
+STDP: FAILED - 'NoneType' object has no attribute 'gate_proj'
+
+[Test 3] Self-Loop Optimizer...
+  Default mode: [T=0.75] 你好...
+  Another run: [T=0.74] 什么是 AI?...
+  Stats: {'cycle_count': 2, 'current_role': 'proposer', 'avg_accuracy': 0.5, 'accuracy_window_size': 2}
+Self-Loop: PASSED
+
+[Test 4] BrainAI Interface...
+[BrainAI] 初始化中... 设备：cpu
+[BrainAI] ✓ 模型初始化完成
+[BrainAI] ✓ 海马体系统初始化完成
+[BrainAI] ✓ STDP 引擎初始化完成
+[BrainAI] ✓ 自闭环优化器初始化完成
+[BrainAI] ✓ 初始化完成，准备就绪
+
+  Create: OK, model=SimpleLanguageModel
+  Generate: 你好！很高兴见到你。我支持 100Hz 高刷新推理和 STD...
+  Chat: 我是基于Qwen3.5-0.8B 的类人脑AI，具有海马体记...
+  Stats: system=N/A
+BrainAI: PASSED
+
+[Test 5] 100Hz Refresh Engine...
+  Cycle 1: 10.00ms, success=False
+  Cycle 2: 10.00ms, success=False
+  Cycle 3: 10.00ms, success=False
+  Stats: avg_cycle=0.00ms
+Refresh Engine: PASSED
+
+============================================================
+All functional tests complete!
+============================================================

@@ -1,58 +1,188 @@
-# 类人脑双系统全闭环 AI架构 - 依赖包
+# 类人脑双系统全闭环 AI 架构 - 依赖包
 
-# ========== 核心深度学习框架 ==========
+## ⚠️ 重要提示
+
+**Python 版本要求**: 必须使用 **Python3.11** (PyTorch 兼容性)
+
+```bash
+# 检查 Python 版本
+python --version  # 应该是 3.11.x
+
+# 如果版本不对，使用 conda 创建正确环境
+conda create -n stdpbrain python=3.11
+conda activate stdpbrain
+```
+
+---
+
+## 核心依赖（必需）
+
+### PyTorch
+```bash
+# CPU 版本（推荐用于测试）
+conda install pytorch cpuonly -c pytorch
+
+# GPU 版本（需要 CUDA）
+conda install pytorch torchvision cudatoolkit -c pytorch
+```
+
+### Transformers 与模型加载
+```bash
+pip install transformers sentencepiece accelerate optimum
+```
+
+### 基础工具
+```bash
+pip install numpy scipy scikit-learn pandas tqdm pyyaml
+```
+
+### Telegram Bot（可选但推荐）
+```bash
+pip install python-telegram-bot aiohttp
+```
+
+---
+
+## 完整 requirements.txt
+
+```txt
+# ========== 核心框架 ==========
 torch>=2.0.0
-torchvision>=0.15.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 
-# ========== Transformers 与模型加载 ==========
+# ========== Transformers ==========
 transformers>=4.35.0
-accelerate>=0.24.0
 sentencepiece>=0.1.99
-protobuf>=3.20.0
-
-# ========== 量化支持 ==========
-bitsandbytes>=0.41.0
+accelerate>=0.24.0
 optimum>=1.13.0
-auto-gptq>=0.5.0
 
-# ========== 数据处理 ==========
-datasets>=2.14.0
-tokenizers>=0.15.0
-
-# ========== 评测工具 ==========
-rouge-score>=0.1.2
-sacrebleu>=2.3.0
-bert-score>=0.3.13
-
-# ========== 配置管理 ==========
-pyyaml>=6.0
-omegaconf>=2.3.0
-python-dotenv>=1.0.0
-
-# ========== 日志与监控 ==========
-tqdm>=4.66.0
-tensorboard>=2.14.0
-wandb>=0.15.0
-
-# ========== 测试框架 ==========
-pytest>=7.4.0
-pytest-cov>=4.1.0
-
-# ========== 端侧部署 (可选) ==========
-# MNN>=2.3.0      # 阿里推理框架 (安卓)
-# ncnn>=20231027  # 腾讯推理框架 (安卓)
-# onnxruntime>=1.16.0  # 微软推理框架
-
-# ========== 性能分析 ==========
-psutil>=5.9.0
-py-spy>=0.3.14
-
-# ========== 其他工具 ==========
+# ========== 基础工具 ==========
 scipy>=1.11.0
 scikit-learn>=1.3.0
 pandas>=2.0.0
+tqdm>=4.66.0
+pyyaml>=6.0
 
 # ========== Telegram Bot ==========
 python-telegram-bot>=20.0
-aiohttp>=3.8.0  # 异步 HTTP 支持
+aiohttp>=3.8.0
+
+# ========== 测试（可选） ==========
+pytest>=7.4.0
+```
+
+---
+
+## 一键安装脚本
+
+### 方法 1: 使用 Conda（推荐）
+
+```bash
+#!/bin/bash
+# setup_conda_env.sh
+
+# 创建环境
+conda create -n stdpbrain python=3.11 -y
+conda activate stdpbrain
+
+# 安装 PyTorch (CPU)
+conda install pytorch cpuonly -c pytorch -y
+
+# 安装其他依赖
+pip install transformers sentencepiece accelerate optimum
+pip install python-telegram-bot aiohttp
+pip install numpy scipy scikit-learn pandas tqdm pyyaml
+
+echo "✅ 环境配置完成!"
+echo "使用方法：conda activate stdpbrain"
+```
+
+运行：
+```bash
+chmod +x setup_conda_env.sh
+./setup_conda_env.sh
+```
+
+### 方法 2: 使用 Pip
+
+```bash
+# 确保 Python3.11
+python3.11-m venv venv
+source venv/bin/activate
+
+# 安装 PyTorch
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# 安装其他依赖
+pip install -r requirements.txt
+```
+
+---
+
+## 验证安装
+
+```bash
+python check_env.py
+```
+
+应看到：
+```
+✓ Python 版本：3.11
+✓ PyTorch: 2.x.x
+✓ Transformers: 4.x.x
+✓ 模型目录：存在
+✓ Qwen 接口：可用
+```
+
+---
+
+## 常见问题
+
+### Q1: Python 版本不对
+```bash
+# 错误：ModuleNotFoundError: No module named 'torch'
+# 解决：使用 Python3.11
+conda create -n stdpbrain python=3.11
+```
+
+### Q2: NumPy 版本冲突
+```bash
+# 错误：ValueError: numpy.dtype size changed
+# 解决：降级 NumPy
+pip install "numpy<2.0"
+```
+
+### Q3: Transformers 版本太低
+```bash
+# 错误：Qwen3.5 not supported
+# 解决：升级 Transformers
+pip install --upgrade transformers
+```
+
+---
+
+## 可选依赖
+
+### 量化支持（高级用户）
+```bash
+pip install bitsandbytes auto-gptq
+```
+
+### 评测工具
+```bash
+pip install rouge-score sacrebleu bert-score
+```
+
+### 端侧部署
+```bash
+# 安卓部署
+pip install MNN
+
+# ONNX 导出
+pip install onnx onnxruntime
+```
+
+---
+
+*最后更新：2026-03-09*  
+*适用版本：v1.0*

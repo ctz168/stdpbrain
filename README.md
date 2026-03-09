@@ -49,48 +49,61 @@ stdpbrian/
 
 ## 🚀 快速开始
 
-### 1. 安装依赖
+### 1. 环境准备
+
+**重要**: 本项目需要 Python3.11+ 和 PyTorch 2.4+
 
 ```bash
-pip install -r requirements.txt
+# 使用 conda 创建环境（推荐）
+conda create -n stdpbrain python=3.11
+conda activate stdpbrain
+
+# 或使用自动脚本
+./setup_conda_env.sh
 ```
 
-### 2. 下载模型
+### 2. 安装依赖
 
 ```bash
+# 安装 PyTorch (CPU 版本)
+conda install pytorch cpuonly -c pytorch
+
+# 安装其他依赖
+pip install transformers sentencepiece accelerate optimum
+pip install python-telegram-bot aiohttp
+pip install numpy scipy scikit-learn pandas tqdm
+```
+
+### 3. 下载模型
+
+```bash
+# 从 HuggingFace 下载
 huggingface-cli download Qwen/Qwen3.5-0.8B-Base --local-dir ./models/Qwen3.5-0.8B-Base
+
+# 或从 ModelScope 下载
+modelscope download Qwen/Qwen3.5-0.8B-Base --local_dir ./models/Qwen3.5-0.8B-Base
 ```
 
-### 3. 运行示例
+### 4. 测试运行
 
-**对话模式:**
 ```bash
+# 简单测试（推荐首次运行）
+python simple_test.py
+
+# 完整功能测试
+python final_test.py
+
+# 对话模式
 python main.py --mode chat
-```
 
-**生成模式:**
-```bash
+# 生成模式
 python main.py --mode generate --input "请解释量子力学"
+
+# Telegram Bot 模式
+python main.py --mode telegram --telegram-token YOUR_BOT_TOKEN
 ```
 
-**综合评测:**
-```bash
-python main.py --mode eval
-```
-
-**查看统计:**
-```bash
-python main.py --mode stats
-```
-
-**Telegram Bot 模式:**
-```bash
-python main.py --mode telegram
-# 或
-python telegram_bot/run.py --token YOUR_BOT_TOKEN
-```
-
-详细说明请参考 [telegram_bot/README.md](telegram_bot/README.md)
+详细说明请参考 [RUN_GUIDE.md](RUN_GUIDE.md) 和 [TEST_REPORT.md](TEST_REPORT.md)
 
 ## 📊 核心指标
 

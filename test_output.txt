@@ -1,0 +1,21 @@
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+======================================================================
+类人脑双系统全闭环 AI 架构 - 完整测试
+======================================================================
+
+[测试 1] 导入模块...
+✓ 模块导入成功
+
+[测试 2] 创建 AI 实例...
+============================================================
+类人脑AI - Qwen 真实模型版本
+============================================================
+
+[初始化] 设备：cpu
+
+[初始化] 加载 Tokenizer...
+✓ Tokenizer 加载成功，词表大小：248077
+
+[初始化] 加载 Qwen 模型...
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:  92%|█████████▏| 294/320 [00:00<00:00, 2937.94it/s]Loading weights: 100%|██████████| 320/320 [00:00<00:00, 3090.45it/s]
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.

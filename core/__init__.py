@@ -5,7 +5,8 @@
 from .dual_weight_layers import DualWeightLinear, DualWeightAttention
 from .stdp_engine import STDPEngine, FullLinkSTDP
 from .refresh_engine import RefreshCycleEngine
-from .self_loop import SelfLoopOptimizer
+# SelfLoopOptimizer is in self_loop package, commented out to avoid import error
+# from .self_loop import SelfLoopOptimizer
 from .interfaces import BrainAIInterface
 
 __all__ = [
@@ -14,6 +15,6 @@ __all__ = [
     'STDPEngine',
     'FullLinkSTDP',
     'RefreshCycleEngine',
-    'SelfLoopOptimizer',
+    # 'SelfLoopOptimizer',
     'BrainAIInterface'
 ]
