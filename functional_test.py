@@ -33,13 +33,38 @@ except Exception as e:
 print('\n[Test 2] STDP Engine...')
 try:
   from core.stdp_engine import STDPEngine
+  import torch.nn as nn
+  
+  # 创建 Mock 模块类，模拟真实的注意力层和 FFN 层
+  class MockModule(nn.Module):
+      """Mock 模块，模拟真实模型组件"""
+      def __init__(self, feature_dim=768):
+          super().__init__()
+          self.feature_dim = feature_dim
+          # 创建动态权重参数
+          self.dynamic_weight = nn.Parameter(torch.ones(1))
+          self.gate_proj = self
+          self.up_proj = self
+          self.down_proj = self
+          
+      def apply_stdp_to_all(self, grad_dict, lr=0.01):
+          """模拟 STDP 权重更新"""
+          for key, grad in grad_dict.items():
+              if hasattr(self, 'dynamic_weight'):
+                  with torch.no_grad():
+                      self.dynamic_weight += lr * grad.mean()
   
   config = default_config
   stdp = STDPEngine(config, device='cpu')
   
+  # 创建 mock 组件
+  mock_attention = MockModule(768)
+  mock_ffn = MockModule(768)
+  mock_components = {'attention': mock_attention, 'ffn': mock_ffn}
+  
   mock_inputs = {'context_tokens': [1, 2], 'current_token': 3, 'features': torch.randn(1, 768)}
   mock_outputs = {'attention_output': torch.randn(1, 768), 'ffn_output': torch.randn(1, 768)}
-  stdp.step({'attention': None, 'ffn': None}, mock_inputs, mock_outputs, timestamp=time.time()*1000)
+  stdp.step(mock_components, mock_inputs, mock_outputs, timestamp=time.time()*1000)
   stats = stdp.get_stats()
   
   print(f'  Step: OK')

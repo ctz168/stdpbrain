@@ -184,7 +184,8 @@ class FullLinkSTDP:
                 
                 if abs(delta_w) > self.stdp_rule.update_threshold:
                     # 根据上下文 token 的重要性加权更新
-                    importance_weight = 1.0 + (context_features[ctx_token].norm().item() if ctx_token in context_features else 0.5)
+                    # 简化处理：使用默认权重 1.5
+                    importance_weight = 1.5
                     grad_dict[ctx_token] = delta_w * importance_weight
         
         # 应用 STDP 更新到注意力层

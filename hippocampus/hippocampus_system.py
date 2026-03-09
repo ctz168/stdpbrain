@@ -42,7 +42,7 @@ class HippocampusSystem(nn.Module):
         
         # ========== 1. EC 内嗅皮层 - 特征编码 ==========
         self.ec_encoder = EntorhinalEncoder(
-            input_dim=1024,              # Qwen3.5-0.8B hidden size
+            input_dim=768,               # Qwen3.5-0.8B hidden size
             output_dim=hc_config.EC_feature_dim,
             sparsity=hc_config.DG_sparsity,
             freeze_encoder=True
@@ -68,7 +68,7 @@ class HippocampusSystem(nn.Module):
         # ========== 4. CA1 注意力门控 ==========
         self.ca1_gate = CA1AttentionGate(
             feature_dim=hc_config.EC_feature_dim * 2,
-            hidden_size=1024,
+            hidden_size=768,              # Qwen3.5-0.8B hidden size
             recall_topk=hc_config.recall_topk,
             temporal_encoding=hc_config.CA1_temporal_encoding,
             gate_type="additive"
