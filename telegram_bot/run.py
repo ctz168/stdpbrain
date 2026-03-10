@@ -105,7 +105,7 @@ def main():
     if not bot_token:
         # 使用硬编码的 token (仅用于测试)
         print("[警告] 未提供 Bot Token，使用默认 Token")
-        bot_token = "8533918353:AAG6Pxr0A4C4kJpCVjYzbtwtFzN4KZCcRag"
+        bot_token = "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
     
     print(f"\n[Bot] Token: {bot_token[:20]}...")
     

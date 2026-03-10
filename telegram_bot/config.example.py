@@ -7,7 +7,7 @@ Telegram Bot 配置示例
 # ========== Telegram Bot 配置 ==========
 
 # Bot Token (从 @BotFather 获取)
-TELEGRAM_BOT_TOKEN = "8533918353:AAG6Pxr0A4C4kJpCVjYzbtwtFzN4KZCcRag"
+TELEGRAM_BOT_TOKEN = "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
 
 # ========== 流式输出配置 ==========
 

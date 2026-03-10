@@ -63,7 +63,7 @@ python main.py --mode telegram
 python telegram_bot/run.py
 
 # 方式 3: 指定 Token
-python telegram_bot/run.py --token 8533918353:AAG6Pxr0A4C4kJpCVjYzbtwtFzN4KZCcRag
+python telegram_bot/run.py --token 7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc
 ```
 
 ---

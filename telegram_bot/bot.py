@@ -6,6 +6,7 @@ Telegram Bot 主程序
 
 import asyncio
 import logging
+import time
 from typing import Optional, Dict, List
 from telegram import Update, Message
 from telegram.ext import (
@@ -73,6 +74,9 @@ class BrainAIBot:
         
         # 打字模拟器
         self.typing_simulators: Dict[int, TypingSimulator] = {}
+        
+        # 初始化流式处理器
+        self._init_stream_handler()
     
     def set_ai_interface(self, ai_interface):
         """设置 AI 接口"""
@@ -177,20 +181,18 @@ class BrainAIBot:
         await typing.start_typing()
         
         try:
-            # 获取对话历史
+            # 获取对话历史并构建提示词 (针对 Base 模型优化)
+            system_prompt = "You are a helpful AI assistant. Answer the user accurately and concisely."
             history = self.user_history.get(user_id, [])
             
-            # 构建完整输入 (带上下文)
-            if history:
-                context_text = "\n".join([
-                    f"{h['role']}: {h['content']}" 
-                    for h in history[-self.max_context_length:]
-                ])
-                full_input = f"{context_text}\nUser: {user_message}\nAssistant:"
-            else:
-                full_input = user_message
+            # 格式化多轮对话
+            formatted_history = ""
+            for h in history[-self.max_context_length:]:
+                role = "User" if h['role'] == 'user' else "Assistant"
+                formatted_history += f"{role}: {h['content']}\n"
             
-            # 如果没有 AI 接口，返回测试响应
+            full_input = f"{system_prompt}\n\n{formatted_history}User: {user_message}\nAssistant:"
+         # 如果没有 AI 接口，返回测试响应
             if not self.ai:
                 response = self._get_test_response(user_message)
                 await typing.stop_typing()
@@ -199,6 +201,18 @@ class BrainAIBot:
                 return
             
             # 使用流式处理器生成响应
+            if self.stream_handler is None and self.ai is not None:
+                logger.info("StreamHandler 为空，正在重新初始化...")
+                self._init_stream_handler()
+                
+            if self.stream_handler is None:
+                logger.error("无法创建 StreamHandler，回退到普通回应")
+                response = self.ai.chat(user_message) if self.ai else self._get_test_response(user_message)
+                await typing.stop_typing()
+                await update.message.reply_text(response)
+                self._update_history(user_id, user_message, response)
+                return
+
             await self._handle_stream_generation(
                 update=update,
                 input_text=full_input,
@@ -226,30 +240,60 @@ class BrainAIBot:
             initial_message = await update.message.reply_text("🤔 思考中...")
             
             full_response = ""
+            last_update_time = time.time()
             
-            # 流式生成
-            async for chunk in self.stream_handler.generate_stream(input_text):
+            # 流式生成 (带采样参数以防止循环重复)
+            stream_gen = self.stream_handler.generate_stream(
+                input_text,
+                temperature=0.7,
+                top_k=50,
+                repetition_penalty=1.1
+            )
+            
+            async for chunk in stream_gen:
                 full_response += chunk
                 
-                # 编辑消息
-                try:
-                    await initial_message.edit_text(
-                        full_response + "▌",  # 添加光标效果
-                        parse_mode='Markdown'
-                    )
-                except Exception as e:
-                    # 如果编辑失败，发送新消息
-                    logger.warning(f"编辑消息失败：{e}")
-                    await initial_message.reply_text(chunk)
+                # 每 500ms 或达到 4000 字符限制时更新一次
+                current_time = time.time()
+                if current_time - last_update_time > 0.5 or len(full_response) > 4000:
+                    last_update_time = current_time
+                    
+                    # 检查长度限制 (Telegram 限制为 4096)
+                    content_to_send = full_response
+                    if len(content_to_send) > 4000:
+                        content_to_send = content_to_send[:3900] + "\n\n(内容过长，已截断...)"
+                    
+                    # 编辑消息
+                    try:
+                        # 尝试使用 Markdown，失败则回退到纯文本
+                        await initial_message.edit_text(
+                            content_to_send + "▌",
+                            parse_mode=None # 暂时关闭 Markdown 以避免格式问题
+                        )
+                    except Exception as e:
+                        logger.warning(f"编辑消息失败：{e}")
+                        # 回退：尝试不带光标和 Markdown
+                        try:
+                            await initial_message.edit_text(content_to_send[:4000])
+                        except:
+                            pass
+                
+                # 如果超过限制，主动停止
+                if len(full_response) > 4000:
+                    logger.warning(f"用户 {user_id} 的响应过长，正在停止生成")
+                    break
             
             # 完成
             await typing.stop_typing()
             
             # 最终编辑 (移除光标)
             try:
-                await initial_message.edit_text(full_response)
-            except:
-                pass
+                final_text = full_response
+                if len(final_text) > 4090:
+                    final_text = final_text[:4000] + "..."
+                await initial_message.edit_text(final_text)
+            except Exception as e:
+                logger.error(f"最终编辑失败：{e}")
             
             # 更新历史
             self._update_history(user_id, user_message, full_response)
@@ -259,7 +303,13 @@ class BrainAIBot:
         except Exception as e:
             logger.error(f"流式生成失败：{e}", exc_info=True)
             await typing.stop_typing()
-            await update.message.reply_text(f"❌ 生成失败：{str(e)}")
+            
+            # 详细错误日志
+            error_msg = str(e)
+            if "Message is too long" in error_msg:
+                error_msg = "响应内容超过 Telegram 长度限制 (4096 字符)。模型可能陷入了重复生成或输出了过多调试信息。"
+                
+            await update.message.reply_text(f"❌ 生成失败：{error_msg}")
     
     def _update_history(self, user_id: int, user_message: str, assistant_response: str):
         """更新对话历史"""

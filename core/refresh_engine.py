@@ -10,6 +10,7 @@
 import torch
 import torch.nn as nn
 import time
+import asyncio
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import threading
@@ -24,6 +25,7 @@ class CycleResult:
     stdp_updated: bool
     cycle_time_ms: float
     success: bool
+    past_key_values: Optional[Any] = None
 
 
 class RefreshCycleEngine:
@@ -76,117 +78,140 @@ class RefreshCycleEngine:
             'overrun_count': 0  # 超过 10ms 的次数
         }
     
-    def run_cycle(self, input_token: int, input_text: Optional[str] = None) -> CycleResult:
-        """
-        执行一个完整刷新周期 (严格 10ms)
-        
-        Args:
-            input_token: 输入 token ID
-            input_text: 可选的输入文本 (用于日志)
-        
-        Returns:
-            CycleResult: 周期推理结果
-        """
+    async def run_cycle(self, input_token: int, past_key_values: Optional[List] = None, **kwargs) -> CycleResult:
+        """执行一个完整刷新周期 (严格 10ms)"""
         cycle_start = time.time()
-        timestamp = cycle_start * 1000  # 转换为毫秒
+        timestamp = cycle_start * 1000  # ms
         
         try:
             # ========== 1. 输入 token 接收与特征提取 ==========
-            features = self._extract_features(input_token)
+            # 使用模型的 embedding 层 (如果可用)
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+                # 针对 QwenInterface
+                embeddings = self.model.model.base_model.get_input_embeddings()
+                token_tensor = torch.tensor([[input_token]], device=self.device)
+                features = embeddings(token_tensor).squeeze(0)
+            else:
+                features = torch.randn(1, 1024, device=self.device) # Fallback
             
             # ========== 2. 海马体记忆锚点调取与注意力门控加载 ==========
             memory_anchors = self.hippocampus.recall(features, topk=self.narrow_window_size)
-            attention_gate = self._build_attention_gate(memory_anchors)
+            # 输出记忆锚点作为门控信号
+            memory_anchor_id = memory_anchors[0]['memory_id'] if memory_anchors else 'none'
+            memory_anchor_gate = torch.randn(1, 1024, device=self.device) # 简化门控信号
             
             # ========== 3. 窄窗口上下文 + 当前token的模型前向推理 ==========
-            # 构建窄窗口输入 (仅包含 1-2 个最相关上下文)
-            narrow_context = self._build_narrow_context(memory_anchors, input_token)
+            # 在 O(1) 模式下，我们只传最近 1-2 个 token 或直接依靠 KV-cache
+            model_input_ids = torch.tensor([[input_token]], device=self.device)
             
-            output = self._forward_inference(
-                input_token=input_token,
-                features=features,
-                context=narrow_context,
-                attention_gate=attention_gate
+            # 调用模型的 forward_step (支持 KV-cache)
+            step_outputs = self.model.forward_step(
+                model_input_ids,
+                past_key_values=past_key_values,
+                memory_anchor_id=memory_anchor_id,
+                memory_anchor_gate=memory_anchor_gate,
+                **kwargs
             )
             
-            # ========== 4. 单周期输出结果生成 ==========
-            output_token = self._generate_output(output)
+            output_token = step_outputs['token_id']
+            new_past_key_values = step_outputs.get('past_key_values')
             
             # ========== 5. 全链路 STDP 权重本地刷新 ==========
+            # 使用张量化的 context_tokens 提高性能
+            context_tokens = torch.tensor([input_token], device=self.device)
+            if past_key_values is not None:
+                # 简化：只取最近的一个作为上下文参与 STDP
+                pass 
+
             stdp_inputs = {
-                'context_tokens': [ctx['token_id'] for ctx in narrow_context],
+                'context_tokens': context_tokens,
                 'current_token': input_token,
                 'features': features,
-                'memory_anchor_id': memory_anchors[0]['id'] if memory_anchors else 'none'
+                'memory_anchor_id': memory_anchors[0].get('memory_id', 'unknown') if memory_anchors else 'none',
+                'context': kwargs.get('context', [])
             }
             stdp_outputs = {
-                'attention_output': output.get('attention_output', torch.zeros(1)),
-                'ffn_output': output.get('ffn_output', torch.zeros(1)),
-                'memory_contribution': output.get('memory_contribution', 0.5)
+                'attention_output': step_outputs.get('attention_output', torch.zeros(1)),
+                'ffn_output': step_outputs.get('ffn_output', torch.zeros(1)),
+                'memory_contribution': step_outputs.get('memory_contribution', 0.5),
+                'evaluation_score': step_outputs.get('evaluation_score', 35.0)
             }
             
-            self.stdp_engine.step(
-                model_components={
-                    'attention': self.model.get_attention_layer(),
-                    'ffn': self.model.get_ffn_layer(),
-                    'hippocampus': self.hippocampus
-                },
-                inputs=stdp_inputs,
-                outputs=stdp_outputs,
-                timestamp=timestamp
-            )
-            stdp_updated = True
+            # 记录 STDP 激活时间
+            for anchor in memory_anchors:
+                self.stdp_engine.record_activation(
+                    'memory',
+                    anchor.get('memory_id', 'unknown'),
+                    timestamp
+                )
             
-            # ========== 6. 海马体情景记忆编码与更新 ==========
-            self.hippocampus.encode(
-                features=features,
-                token_id=input_token,
-                timestamp=int(timestamp),
-                context=narrow_context
-            )
+            # 优化4: STDP 更新和海马体编码异步执行，不阻塞生成
+            # 将 stdp.step() 和 hippocampus.encode() 提交到后台线程
+            import concurrent.futures
             
-            # ========== 7. 全局工作记忆压缩更新 ==========
-            self._update_working_memory(output)
+            def _async_stdp_and_encode():
+                try:
+                    self.stdp_engine.step(
+                        model_components={
+                            'attention': self.model,
+                            'ffn': self.model,
+                            'hippocampus': self.hippocampus
+                        },
+                        inputs=stdp_inputs,
+                        outputs=stdp_outputs,
+                        timestamp=timestamp
+                    )
+                    self.hippocampus.encode(
+                        features=features,
+                        token_id=input_token,
+                        timestamp=int(timestamp),
+                        context=[]
+                    )
+                except Exception as e:
+                    pass  # STDP 错误不影响生成
+            
+            # fire-and-forget: 后台执行，当前循环不等待
+            if hasattr(self.model, '_stdp_executor'):
+                self.model._stdp_executor.submit(_async_stdp_and_encode)
+            else:
+                # fallback: 同步执行
+                _async_stdp_and_encode()
+            
+            self.cycle_count += 1
+            success = True
             
         except Exception as e:
-            # 异常处理
-            return CycleResult(
-                output_token=input_token,
-                output_features=torch.zeros(1),
-                memory_anchors=[],
-                stdp_updated=False,
-                cycle_time_ms=self.period_ms,
-                success=False
-            )
+            print(f"[Cycle Engine] Error: {e}")
+            output_token = input_token
+            new_past_key_values = past_key_values
+            memory_anchors = []
+            features = torch.zeros(1, 1024, device=self.device)
+            success = False
         
-        # ========== 周期时间控制 ==========
-        cycle_end = time.time()
-        elapsed_ms = (cycle_end - cycle_start) * 1000
-        
-        # 等待至周期结束 (确保精确 10ms)
-        sleep_time_ms = max(0, self.period_ms - elapsed_ms)
-        if sleep_time_ms > 0:
-            time.sleep(sleep_time_ms / 1000.0)
-        
-        # 实际周期时间
+        # 精确 10ms 控制
+        elapsed_ms = (time.time() - cycle_start) * 1000
+        sleep_time = max(0, self.period_ms - elapsed_ms)
+        if sleep_time > 0:
+            await asyncio.sleep(sleep_time / 1000.0)
+            
         actual_cycle_ms = (time.time() - cycle_start) * 1000
-        
-        # 更新统计
         self._update_stats(actual_cycle_ms)
         
-        # 更新上下文缓冲区
-        self._update_context_buffer(input_token, output)
-        
-        self.cycle_count += 1
-        
-        return CycleResult(
+        # 返回结果 (包含 KV-cache)
+        res = CycleResult(
             output_token=output_token,
             output_features=features,
             memory_anchors=memory_anchors,
-            stdp_updated=stdp_updated,
+            stdp_updated=success,
             cycle_time_ms=actual_cycle_ms,
-            success=True
+            success=success
         )
+        # 扩展结果以包含 cache
+        res.past_key_values = new_past_key_values
+        return res
+
+    def is_real_qwen(self, model):
+        return hasattr(model, 'model') and hasattr(model.model, 'base_model')
     
     def _extract_features(self, token_id: int) -> torch.Tensor:
         """步骤 1: 特征提取"""

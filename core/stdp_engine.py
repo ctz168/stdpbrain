@@ -10,7 +10,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import time
 
@@ -27,26 +27,22 @@ class STDPTrace:
 
 class STDPRule:
     """
-    STDP 时序可塑性核心规则
-    
-    遵循生物神经科学中的脉冲时序依赖可塑性机制:
-    - LTP (Long-Term Potentiation): 前激活早于后激活 → 权重增强
-    - LTD (Long-Term Depression): 前激活晚于后激活 → 权重减弱
+    STDP 时序可塑性核心规则 (已向量化)
     """
     def __init__(
         self,
-        alpha_LTP: float = 0.01,      # 权重增强学习率
-        beta_LTD: float = 0.008,       # 权重减弱学习率
-        time_window_ms: int = 20,      # STDP 时间窗口 (毫秒)
-        update_threshold: float = 0.001,  # 最小更新阈值
-        weight_min: float = -1.0,      # 权重下界
-        weight_max: float = 1.0,       # 权重上界
-        decay_rate: float = 0.99,      # 权重衰减率
+        alpha_LTP: float = 0.01,
+        beta_LTD: float = 0.008,
+        time_window_ms: int = 20,
+        update_threshold: float = 0.001,
+        weight_min: float = -1.0,
+        weight_max: float = 1.0,
+        decay_rate: float = 0.99,
     ):
         self.alpha_LTP = alpha_LTP
         self.beta_LTD = beta_LTD
         self.time_window_ms = time_window_ms
-        self.time_constant = time_window_ms / 3.0  # τ 时间常数
+        self.time_constant = time_window_ms / 3.0
         self.update_threshold = update_threshold
         self.weight_min = weight_min
         self.weight_max = weight_max
@@ -54,72 +50,50 @@ class STDPRule:
     
     def compute_update(
         self, 
-        pre_time: float, 
-        post_time: float, 
-        contribution: float
-    ) -> float:
-        """
-        计算单个连接的 STDP 权重更新量
+        pre_times: torch.Tensor, 
+        post_times: torch.Tensor, 
+        contributions: torch.Tensor
+    ) -> torch.Tensor:
+        """向量化计算 STDP 权重更新量"""
+        delta_t = post_times - pre_times
         
-        Δw = α * exp(-Δt/τ)  if Δt > 0 (前激活早于后激活，增强)
-        Δw = -β * exp(Δt/τ)  if Δt < 0 (前激活晚于后激活，减弱)
+        # 掩码：仅在时间窗口内更新
+        mask = torch.abs(delta_t) <= self.time_window_ms
         
-        Args:
-            pre_time: 前序神经元/token 激活时间
-            post_time: 后序神经元/token 激活时间
-            contribution: 贡献度评分 (-1.0 ~ 1.0)
+        # LTP (Δt > 0): alpha * exp(-dt/tau)
+        ltp_mask = delta_t > 0
+        ltp_update = self.alpha_LTP * torch.exp(-delta_t / self.time_constant)
         
-        Returns:
-            delta_w: 权重更新量
-        """
-        delta_t = post_time - pre_time  # 时序差
+        # LTD (Δt < 0): -beta * exp(dt/tau)
+        ltd_mask = delta_t < 0
+        ltd_update = -self.beta_LTD * torch.exp(delta_t / self.time_constant)
         
-        # 超出时间窗口，不更新
-        if abs(delta_t) > self.time_window_ms:
-            return 0.0
+        # 同时激活 (Δt == 0)
+        zero_mask = delta_t == 0
+        zero_update = torch.ones_like(delta_t) * (self.alpha_LTP * 0.5)
         
-        # 计算基础更新量
-        if delta_t > 0:
-            # LTP: 前激活早于后激活
-            base_update = self.alpha_LTP * np.exp(-delta_t / self.time_constant)
-        elif delta_t < 0:
-            # LTD: 前激活晚于后激活
-            base_update = -self.beta_LTD * np.exp(delta_t / self.time_constant)
-        else:
-            # 同时激活，轻微增强
-            base_update = self.alpha_LTP * 0.5
+        delta_w = torch.zeros_like(delta_t)
+        delta_w[ltp_mask] = ltp_update[ltp_mask]
+        delta_w[ltd_mask] = ltd_update[ltd_mask]
+        delta_w[zero_mask] = zero_update[zero_mask]
         
-        # 根据贡献度调整
-        if contribution > 0:
-            # 正向贡献：增强
-            delta_w = base_update * contribution
-        else:
-            # 负向贡献或错误：减弱
-            delta_w = base_update * abs(contribution) * (-1)
+        # 根据贡献度调整 (向量化运算)
+        pos_contrib_mask = contributions > 0
+        neg_contrib_mask = contributions <= 0
         
-        # 应用衰减
+        delta_w[pos_contrib_mask] *= contributions[pos_contrib_mask]
+        delta_w[neg_contrib_mask] *= (torch.abs(contributions[neg_contrib_mask]) * -1)
+        
         delta_w *= self.decay_rate
         
-        # 低于阈值，不更新
-        if abs(delta_w) < self.update_threshold:
-            return 0.0
+        # 低于阈值清零
+        delta_w[torch.abs(delta_w) < self.update_threshold] = 0
         
-        return delta_w
-    
-    def clamp_weight(self, weight: float) -> float:
-        """权重裁剪，防止爆炸或消失"""
-        return max(self.weight_min, min(self.weight_max, weight))
-
+        return delta_w * mask
 
 class FullLinkSTDP:
     """
-    全链路 STDP 更新器
-    
-    在四个关键节点实现 STDP 实时更新:
-    1. 注意力层 STDP 更新
-    2. FFN 层 STDP 更新
-    3. 自评判 STDP 更新
-    4. 海马体门控 STDP 更新
+    全链路 STDP 更新器 (已优化性能)
     """
     def __init__(self, config, device: Optional[str] = None):
         self.config = config
@@ -134,63 +108,69 @@ class FullLinkSTDP:
             decay_rate=config.stdp.decay_rate
         )
         
-        # 激活时间追踪
-        self.activation_times: Dict[str, Dict[int, float]] = {}
-        
-        # 贡献度缓存
+        # 使用张量存储激活时间 (优化查找速度)
+        vocab_size = getattr(config, 'vocab_size', 250000)
+        self.activation_times_tensor = torch.full((vocab_size,), -1e9, device=self.device)
+        self.activation_times: Dict[str, Dict[Any, float]] = {} # 杂项记录 (非 token)
         self.contribution_cache: Dict[str, float] = {}
     
-    def record_activation(self, layer_name: str, neuron_id: int, timestamp: float):
-        """记录神经元/token 激活时间"""
-        if layer_name not in self.activation_times:
-            self.activation_times[layer_name] = {}
-        self.activation_times[layer_name][neuron_id] = timestamp
+    def record_activation(self, layer_name: str, id: Any, timestamp: float):
+        """记录激活时间"""
+        if isinstance(id, (torch.Tensor, list)):
+            # 批量记录 (Tokens 为主)
+            self.activation_times_tensor[id] = timestamp
+        else:
+            # 单点记录 (杂项)
+            if layer_name not in self.activation_times:
+                self.activation_times[layer_name] = {}
+            self.activation_times[layer_name][id] = timestamp
     
     def set_contribution(self, layer_name: str, score: float):
-        """设置某层的贡献度评分"""
         self.contribution_cache[layer_name] = score
     
-    # ========== 1. 注意力层 STDP 更新 ==========
     def update_attention_layer(
         self,
         attention_layer: nn.Module,
-        context_tokens: List[int],
+        context_tokens: torch.Tensor,
         current_token: int,
         output: torch.Tensor,
         timestamp: float
     ):
-        """
-        注意力层 STDP 更新
-        
-        根据上下文与当前token 的时序关联、语义贡献度，
-        实时刷新动态注意力权重
-        """
+        """注意力层 STDP 更新 (向量化实现)"""
         if not self.config.stdp.update_attention:
             return
+            
+        current_token_tensor = torch.tensor([current_token], device=self.device)
+        self.record_activation('attention', current_token_tensor, timestamp)
         
-        # 记录当前token 激活时间
-        self.record_activation('attention', current_token, timestamp)
+        # 向量化计算所有上下文 token 的更新
+        pre_times = self.activation_times_tensor[context_tokens]
+        post_times = torch.full_like(pre_times, timestamp)
+        contributions = torch.full_like(pre_times, self.contribution_cache.get('attention', 0.5))
         
-        # 计算上下文 token 的贡献度
-        grad_dict = {}
-        for ctx_token in context_tokens:
-            if ctx_token in self.activation_times.get('attention', {}):
-                pre_time = self.activation_times['attention'][ctx_token]
-                delta_w = self.stdp_rule.compute_update(
-                    pre_time, 
-                    timestamp,
-                    self.contribution_cache.get('attention', 0.5)
-                )
+        delta_ws = self.stdp_rule.compute_update(pre_times, post_times, contributions)
+        
+        # 如果有显著更新
+        if torch.any(torch.abs(delta_ws) > 0):
+            # 将 token 更新映射到权重层
+            # 简化逻辑：我们将平均 delta_w 应用于动态权重分支
+            mean_delta = delta_ws[delta_ws != 0].mean()
+            
+            if hasattr(attention_layer, 'apply_stdp_to_all') and not hasattr(attention_layer, 'q_proj'):
+                # 广播模式：传递标量贡献，由接收者自行生成梯度
+                attention_layer.apply_stdp_to_all({'mean_delta': mean_delta}, lr=self.config.stdp.alpha_LTP)
+                return
                 
-                if abs(delta_w) > self.stdp_rule.update_threshold:
-                    # 根据上下文 token 的重要性加权更新
-                    # 简化处理：使用默认权重 1.5
-                    importance_weight = 1.5
-                    grad_dict[ctx_token] = delta_w * importance_weight
-        
-        # 应用 STDP 更新到注意力层
-        if hasattr(attention_layer, 'apply_stdp_to_all'):
-            attention_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
+            # 为 DualWeightLinear 的 q, k, v, o 生成梯度字典
+            grad_dict = {
+                'q': torch.ones_like(attention_layer.q_proj.dynamic_weight) * mean_delta * 0.1,
+                'k': torch.ones_like(attention_layer.k_proj.dynamic_weight) * mean_delta * 0.1,
+                'v': torch.ones_like(attention_layer.v_proj.dynamic_weight) * mean_delta * 0.1,
+                'o': torch.ones_like(attention_layer.o_proj.dynamic_weight) * mean_delta * 0.1
+            }
+            
+            if hasattr(attention_layer, 'apply_stdp_to_all'):
+                attention_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
     
     # ========== 2. FFN 层 STDP 更新 ==========
     def update_ffn_layer(
@@ -217,6 +197,12 @@ class FullLinkSTDP:
         contribution = min(1.0, max(-1.0, contribution))
         self.set_contribution('ffn', contribution)
         
+        # 应用 STDP 更新
+        if hasattr(ffn_layer, 'apply_stdp_to_all') and not hasattr(ffn_layer, 'gate_proj'):
+            # 广播模式
+            ffn_layer.apply_stdp_to_all({'contribution': contribution}, lr=self.config.stdp.alpha_LTP)
+            return
+
         # 生成梯度字典
         grad_dict = {
             'gate': torch.randn_like(ffn_layer.gate_proj.dynamic_weight) * contribution * 0.01,
@@ -323,6 +309,16 @@ class STDPEngine:
         self.cycle_count = 0
         self.eval_period = config.self_loop.mode3_eval_period  # 每 10 周期一次自评判
     
+    def record_activation(self, type: str, id: Any, timestamp: float):
+        self.full_link_stdp.record_activation(type, id, timestamp)
+        
+    def set_contribution(self, type: str, contribution: float):
+        self.full_link_stdp.set_contribution(type, contribution)
+        
+    def reset(self):
+        self.full_link_stdp.reset()
+        self.cycle_count = 0
+    
     def step(
         self,
         model_components: Dict[str, nn.Module],
@@ -340,7 +336,11 @@ class STDPEngine:
             timestamp: 时间戳 (ms)，默认使用当前时间
         """
         if timestamp is None:
-            timestamp = time.time() * 1000  # 转换为毫秒
+            timestamp = time.time() * 1000
+        
+        # 记录默认激活
+        self.record_activation('attention', 0, timestamp)
+        self.record_activation('ffn', 0, timestamp)
         
         self.cycle_count += 1
         
@@ -384,13 +384,14 @@ class STDPEngine:
     def reset(self):
         """重置 STDP 引擎状态"""
         self.cycle_count = 0
-        self.full_link_stdp.activation_times.clear()
+        self.full_link_stdp.activation_times_tensor.fill_(-1e9)
         self.full_link_stdp.contribution_cache.clear()
     
     def get_stats(self) -> dict:
         """获取 STDP 更新统计信息"""
+        num_active = (self.full_link_stdp.activation_times_tensor > -1e8).sum().item()
         return {
             'cycle_count': self.cycle_count,
-            'num_tracked_activations': len(self.full_link_stdp.activation_times),
+            'num_tracked_activations': num_active,
             'device': self.device
         }

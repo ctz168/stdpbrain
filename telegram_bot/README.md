@@ -46,7 +46,7 @@ python telegram_bot/run.py \
 ### 环境变量方式
 
 ```bash
-export TELEGRAM_BOT_TOKEN="8533918353:AAG6Pxr0A4C4kJpCVjYzbtwtFzN4KZCcRag"
+export TELEGRAM_BOT_TOKEN="7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
 python telegram_bot/run.py
 ```
 

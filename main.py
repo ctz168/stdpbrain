@@ -214,7 +214,7 @@ def run_telegram_bot(ai, token: str = None, async_mode: bool = False):
     from telegram_bot.bot import BrainAIBot
     
     # 获取 Token
-    bot_token = token or "8533918353:AAG6Pxr0A4C4kJpCVjYzbtwtFzN4KZCcRag"
+    bot_token = token or "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
     
     # 创建 Bot
     bot = BrainAIBot(

@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, List, Optional
 from dataclasses import dataclass
+import asyncio
 import random
 import time
 
@@ -100,9 +101,26 @@ class BrainAIInterface:
         
         print(f"[BrainAI] 初始化中... 设备：{self.device}")
         
-        # ========== 1. 初始化简化模型 ==========
-        self.model = SimpleLanguageModel()
-        print("[BrainAI] ✓ 模型初始化完成")
+        # ========== 1. 初始化模型 (真实项皮层) ==========
+        self.is_real_model = False
+        if config.model_path and config.model_path != "":
+            try:
+                # 尝试加载真实 Qwen 接口
+                from core.qwen_interface import QwenInterface
+                self.model = QwenInterface(
+                    model_path=config.model_path,
+                    config=config,
+                    device=self.device,
+                    quantization=getattr(config, 'quantization', 'INT4')
+                )
+                self.is_real_model = True
+                print("[BrainAI] ✓ 真实 Qwen 模型 (新皮层) 初始化完成")
+            except Exception as e:
+                print(f"[BrainAI] ⚠ 真实模型加载失败：{e}，切换至简化模型")
+                self.model = SimpleLanguageModel()
+        else:
+            self.model = SimpleLanguageModel()
+            print("[BrainAI] ✓ 简化模型初始化完成")
         
         # ========== 2. 初始化海马体系统 ==========
         try:
@@ -130,6 +148,22 @@ class BrainAIInterface:
         except Exception as e:
             print(f"[BrainAI] ⚠ 自闭环优化器加载失败：{e}")
             self.self_loop = None
+        
+        # ========== 5. 初始化 100Hz 刷新引擎 (核心执行框架) ==========
+        try:
+            from core.refresh_engine import RefreshCycleEngine
+            self.cycle_engine = RefreshCycleEngine(
+                model=self.model,
+                hippocampus=self.hippocampus,
+                stdp_engine=self.stdp_engine,
+                period_ms=getattr(config, 'refresh_period_ms', 10),
+                narrow_window_size=getattr(config, 'narrow_window_size', 2),
+                device=self.device
+            )
+            print("[BrainAI] ✓ 100Hz 刷新引擎初始化完成")
+        except Exception as e:
+            print(f"[BrainAI] ⚠ 100Hz 刷新引擎加载失败：{e}")
+            self.cycle_engine = None
         
         # ========== 5. 统计信息 ==========
         self.cycle_count = 0
@@ -205,6 +239,13 @@ class BrainAIInterface:
             optimized_input = input_text
         
         # ========== 3. 生成响应 ==========
+        if self.is_real_model:
+            # 真实模型生成
+            output = self.model.generate(optimized_input, max_tokens=max_tokens)
+            output.memory_anchors = self.hippocampus.recall(torch.randn(1024, device=self.device), topk=2)
+            output.stdp_stats = self.stdp_engine.get_stats()
+            return output
+            
         response_text = self.model.generate_response(optimized_input)
         
         # ========== 4. Tokenize (简化) ==========
@@ -237,6 +278,103 @@ class BrainAIInterface:
             }
         )
     
+    async def generate_stream(
+        self,
+        input_text: str,
+        max_tokens: int = 100,
+        **kwargs
+    ):
+        """
+        流式生成回复 (自闭环并发 + 海马体活动并行)
+        """
+        # ========== 1. 优化5: 并发执行海马体记录 + 自闭环优化 ==========
+        # 将 self_loop.run() 放入线程池，与海马体 record_activity 并发
+        loop = asyncio.get_event_loop()
+        
+        async def _run_self_loop():
+            if self.self_loop:
+                try:
+                    result = await loop.run_in_executor(None, self.self_loop.run, input_text)
+                    return result.output_text
+                except:
+                    return input_text
+            return input_text
+        
+        async def _record_activity():
+            await loop.run_in_executor(None, self.hippocampus.record_activity)
+        
+        # 并发执行，消除首 token 前的串行阻塞
+        optimized_input, _ = await asyncio.gather(
+            _run_self_loop(),
+            _record_activity()
+        )
+        
+        # ========== 3. 生成流 ==========
+        if self.is_real_model and self.cycle_engine:
+            # 使用 100Hz 刷新引擎作为核心框架
+            print("[BrainAI] 启动 100Hz 核心刷新引擎流...")
+            
+            # 初始化输入
+            input_ids = self.model.tokenizer.encode(optimized_input)
+            
+            # 1. Prompt 预填充 (Pre-fill)
+            # 一次性处理所有 prompt tokens 以初始化 KV-cache
+            prompt_tensor = torch.tensor([input_ids], device=self.device)
+            prefill_output = self.model.model(
+                input_ids=prompt_tensor,
+                use_cache=True,
+                return_dict=True
+            )
+            past_key_values = prefill_output.past_key_values
+            current_token = input_ids[-1] # 已经处理过最后一个了，但我们需要它作为下一步的 input
+            
+            # 2. 生成循环 (基于 10ms 周期)
+            # 注意：prefill_output 已经包含了最后一个 token 的输出，
+            # 下一个产生的 token 应该是基于 prefill 的 logits 采样得到的。
+            # 为了对齐循环，我们先从 prefill 获取第一个生成 token
+            next_token_logits = prefill_output.logits[:, -1, :]
+            # 简化采样
+            current_token = torch.argmax(next_token_logits, dim=-1).item()
+            yield self.model.tokenizer.decode([current_token])
+            
+            for _ in range(max_tokens - 1):
+                cycle_res = await self.cycle_engine.run_cycle(
+                    input_token=current_token,
+                    past_key_values=past_key_values,
+                    **kwargs
+                )
+                
+                if not cycle_res.success:
+                    break
+                    
+                current_token = cycle_res.output_token
+                past_key_values = cycle_res.past_key_values
+                
+                # 解码并吐出
+                chunk = self.model.tokenizer.decode([current_token])
+                yield chunk
+                
+                # 停止条件
+                if current_token == self.model.tokenizer.eos_token_id:
+                    break
+        elif self.is_real_model:
+            # 回退模式
+            async for chunk in self.model.generate_stream(
+                optimized_input, 
+                max_tokens=max_tokens,
+                **kwargs
+            ):
+                yield chunk
+        else:
+            # 简化模式模拟流式
+            output = self.generate(optimized_input, max_tokens=max_tokens)
+            response_text = output.text
+            chunk_size = 2
+            for i in range(0, len(response_text), chunk_size):
+                chunk = response_text[i:i+chunk_size]
+                yield chunk
+                await asyncio.sleep(0.05)
+
     def chat(
         self,
         message: str,

@@ -86,7 +86,7 @@ def test_bot_initialization():
     
     from telegram_bot.bot import BrainAIBot
     
-    token = "8533918353:AAG6Pxr0A4C4kJpCVjYzbtwtFzN4KZCcRag"
+    token = "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc
     
     print(f"\n使用 Token: {token[:20]}...")
     

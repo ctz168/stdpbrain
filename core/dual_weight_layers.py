@@ -27,30 +27,30 @@ class DualWeightLinear(nn.Module):
         out_features: int, 
         bias: bool = True,
         static_weight: Optional[torch.Tensor] = None,
-        dynamic_init_std: float = 0.01,
-        static_ratio: float = 0.9
+        dynamic_init_std: float = 0.0,
+        static_ratio: float = 1.0
     ):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.static_ratio = static_ratio
         
-        # ========== 90% 静态基础分支 (冻结) ==========
+        # ========== 静态基础分支 (冻结) ==========
         self.static_weight = nn.Parameter(
             torch.zeros(out_features, in_features), 
             requires_grad=False  # 永久冻结
         )
         
         if static_weight is not None:
-            # 继承官方预训练权重的 90%
-            self.static_weight.data = static_weight.clone() * static_ratio
+            # 继承官方预训练权重 (100% 保持能力)
+            self.static_weight.data = static_weight.clone()
         else:
             # 随机初始化 (仅用于测试)
-            self.static_weight.data = torch.randn(out_features, in_features) * static_ratio
+            self.static_weight.data = torch.randn(out_features, in_features)
         
-        # ========== 10% STDP动态增量分支 (可更新) ==========
+        # ========== STDP动态增量分支 (初始为0) ==========
         self.dynamic_weight = nn.Parameter(
-            torch.randn(out_features, in_features) * dynamic_init_std,
+            torch.zeros(out_features, in_features),
             requires_grad=True  # 可学习
         )
         
@@ -59,11 +59,22 @@ class DualWeightLinear(nn.Module):
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
             self.register_parameter('bias', None)
+        
+        # ========== 融合权重缓存 ==========
+        # 仅在 STDP 更新时使缓存失效，消除每次 forward 的加法开销
+        self._fused_weight: Optional[torch.Tensor] = None
+        self._cache_valid = False
+    
+    def _get_fused_weight(self) -> torch.Tensor:
+        """获取融合权重（带缓存，STDP更新前复用）"""
+        if not self._cache_valid or self._fused_weight is None:
+            self._fused_weight = self.static_weight.data + self.dynamic_weight.data
+            self._cache_valid = True
+        return self._fused_weight
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """前向传播：总权重 = 静态 + 动态"""
-        total_weight = self.static_weight + self.dynamic_weight
-        return F.linear(x, total_weight, self.bias)
+        """前向传播：使用缓存的融合权重（O(1) lookup vs O(n) recompute）"""
+        return F.linear(x, self._get_fused_weight(), self.bias)
     
     def get_static_weight(self) -> torch.Tensor:
         """获取静态权重 (用于保存/验证)"""
@@ -73,23 +84,26 @@ class DualWeightLinear(nn.Module):
         """获取动态权重 (用于 STDP 更新)"""
         return self.dynamic_weight.clone()
     
-    def apply_stdp_update(self, delta_w: torch.Tensor, lr: float = 0.01):
+    def apply_stdp_update(self, delta_w: torch.Tensor, lr: float = 0.01, min_val: float = -1.0, max_val: float = 1.0):
         """
         应用 STDP 权重更新
         
         Args:
             delta_w: 权重更新量 (与 dynamic_weight 同形状)
             lr: 学习率
+            min_val: 权重下界
+            max_val: 权重上界
         """
         with torch.no_grad():
             self.dynamic_weight.add_(delta_w * lr)
-            
-            # 权重裁剪，防止爆炸
-            self.dynamic_weight.clamp_(-1.0, 1.0)
+            self.dynamic_weight.clamp_(min_val, max_val)
+            # STDP 更新后使融合缓存失效
+            self._cache_valid = False
     
     def reset_dynamic_weight(self):
         """重置动态权重 (用于初始化或清除学习)"""
         nn.init.normal_(self.dynamic_weight, mean=0, std=0.01)
+        self._cache_valid = False
 
 
 class DualWeightAttention(nn.Module):
@@ -158,21 +172,11 @@ class DualWeightAttention(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         memory_anchor: Optional[torch.Tensor] = None,
+        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
         output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        前向传播
-        
-        Args:
-            hidden_states: [batch_size, seq_len, hidden_size]
-            attention_mask: 注意力掩码
-            memory_anchor: 海马体记忆锚点 [batch_size, num_anchors, hidden_size]
-            output_attentions: 是否输出注意力权重
-        
-        Returns:
-            output: [batch_size, seq_len, hidden_size]
-            attn_weights: (optional) [batch_size, num_heads, seq_len, seq_len]
-        """
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        """前向传播 (支持 KV-cache)"""
         batch_size, seq_len, _ = hidden_states.size()
         
         # ========== 1. QKV 投影 ==========
@@ -185,38 +189,44 @@ class DualWeightAttention(nn.Module):
         key = self._reshape_heads(key, batch_size)
         value = self._reshape_heads(value, batch_size)
         
-        # ========== 3. 窄窗口注意力 (O(1) 复杂度) ==========
-        # 如果提供了海马体记忆锚点，仅关注锚点对应的位置
+        # ========== 3. KV-Cache 处理 ==========
+        if layer_past is not None:
+            past_key, past_value = layer_past
+            key = torch.cat((past_key, key), dim=-2)
+            value = torch.cat((past_value, value), dim=-2)
+        
+        present = (key, value) if use_cache else None
+        
+        # ========== 4. 窄窗口注意力 (O(1) 复杂度) ==========
         if memory_anchor is not None and self.hippocampus_gate is not None:
-            # 使用海马体门控聚焦到 1-2 个关键位置
             gate_mask = self.hippocampus_gate(query, key, memory_anchor)
             if attention_mask is not None:
                 attention_mask = attention_mask + gate_mask
             else:
                 attention_mask = gate_mask
         
-        # ========== 4. 注意力计算 ==========
+        # ========== 5. 注意力计算 ==========
         attn_weights = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.head_dim)
         
         if attention_mask is not None:
+            # 处理 KV-cache 时的注意力掩码
+            if attention_mask.shape[-1] != attn_weights.shape[-1]:
+                 attention_mask = attention_mask[:, :, -attn_weights.shape[-2]:, :]
             attn_weights = attn_weights + attention_mask
         
         attn_weights = F.softmax(attn_weights, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)
         
-        # ========== 5. 加权求和 ==========
+        # ========== 6. 加权求和 ==========
         attn_output = torch.matmul(attn_weights, value)
         
-        # ========== 6. 多头合并 ==========
+        # ========== 7. 多头合并 ==========
         attn_output = self._merge_heads(attn_output, batch_size, seq_len)
         
-        # ========== 7. 输出投影 ==========
+        # ========== 8. 输出投影 ==========
         output = self.o_proj(attn_output)
         
-        if output_attentions:
-            return output, attn_weights
-        else:
-            return output, None
+        return output, (attn_weights if output_attentions else None), present
     
     def _reshape_heads(self, x: torch.Tensor, batch_size: int) -> torch.Tensor:
         """将 [batch, seq, hidden] 拆分为 [batch, heads, seq, head_dim]"""
@@ -260,7 +270,16 @@ class DualWeightAttention(nn.Module):
         }
     
     def apply_stdp_to_all(self, grad_dict: dict, lr: float = 0.01):
-        """对所有 QKV/O 层应用 STDP 更新"""
+        """对所有层应用 STDP 更新"""
+        # 支持广播模式 (输入为标量字典)
+        if 'mean_delta' in grad_dict:
+            mean_delta = grad_dict['mean_delta']
+            # 为每个子层生成随机扰动 (符合 STDP 探索特性)
+            for proj in [self.q_proj, self.k_proj, self.v_proj, self.o_proj]:
+                noise = torch.randn_like(proj.dynamic_weight) * 0.1 * mean_delta
+                proj.apply_stdp_update(noise, lr)
+            return
+
         if 'q' in grad_dict:
             self.q_proj.apply_stdp_update(grad_dict['q'], lr)
         if 'k' in grad_dict:
@@ -343,6 +362,14 @@ class DualWeightFFN(nn.Module):
     
     def apply_stdp_to_all(self, grad_dict: dict, lr: float = 0.01):
         """对所有层应用 STDP 更新"""
+        # 支持广播模式
+        if 'contribution' in grad_dict:
+            contribution = grad_dict['contribution']
+            for proj in [self.gate_proj, self.up_proj, self.down_proj]:
+                noise = torch.randn_like(proj.dynamic_weight) * 0.01 * contribution
+                proj.apply_stdp_update(noise, lr)
+            return
+
         if 'gate' in grad_dict:
             self.gate_proj.apply_stdp_update(grad_dict['gate'], lr)
         if 'up' in grad_dict:
