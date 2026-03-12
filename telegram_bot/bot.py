@@ -414,7 +414,7 @@ class BrainAIBot:
         logger.info("正在启动 Telegram Bot...")
         
         if self.proxy_url:
-            request = HTTPXRequest(proxy_url=self.proxy_url)
+            request = HTTPXRequest(proxy=self.proxy_url)
             self.application = Application.builder().token(self.token).request(request).build()
         else:
             self.application = Application.builder().token(self.token).build()
