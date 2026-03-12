@@ -111,20 +111,43 @@ class BrainAIInterface:
         """
         类人模式对话：
         1. 消化 (Digest)：将输入转化为思维状态
-        2. 思考 (Think)：基于输入生成一段潜意识独白
-        3. 回复 (Respond)：基于独白和输入生成正式回答
+        2. 召回 (Recall)：从海马体召回相关记忆
+        3. 思考 (Think)：基于输入生成一段潜意识独白
+        4. 回复 (Respond)：基于记忆、独白和输入生成正式回答
+        5. 学习 (Learn)：STDP更新和记忆存储
         """
         self.hippocampus.record_activity()
         
         # 1. 消化输入：强制更新思维种子
         self.thought_seed = f"用户说：{user_input[:20]}"
         
-        # 2. 思考：生成潜意识独白 (受刺激的思考)
-        # 这种独白是面向内部的，短而碎
+        # 2. 召回海马体记忆（新增）
+        memory_context = ""
+        try:
+            # 使用输入文本的embedding作为查询
+            input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+            query_features = embeddings.mean(dim=1).squeeze(0)
+            
+            # 适配维度
+            if query_features.shape[0] != 1024:
+                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            
+            # 召回记忆
+            recalled_memories = self.hippocampus.recall(query_features, topk=2)
+            if recalled_memories:
+                memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
+                if memory_pointers:
+                    memory_context = "相关记忆: " + " | ".join(memory_pointers[:2])
+        except Exception as e:
+            logger.debug(f"记忆召回失败: {e}")
+        
+        # 3. 思考：生成潜意识独白 (受刺激的思考)
         monologue = self._generate_spontaneous_monologue(max_tokens=30, temperature=0.9)
         
-        # 3. 回复：基于思维流生成
-        prompt = self._format_chat_prompt(user_input, history, monologue)
+        # 4. 回复：基于记忆和思维流生成
+        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         
         output = self.model.generate(
             prompt, 
@@ -133,9 +156,31 @@ class BrainAIInterface:
             use_self_loop=True
         )
         
-        # 存储并应用 STDP
-        self._store_with_real_features(output.text, self.current_thought_state)
+        # 5. 存储用户输入和模型回复到海马体（保存完整上下文）
+        # 提取关键信息作为语义指针
+        semantic_pointer = f"用户: {user_input[:50]} | 回复: {output.text[:50]}"
+        self._store_with_real_features(
+            f"{user_input} -> {output.text}", 
+            self.current_thought_state,
+            semantic_pointer=semantic_pointer
+        )
         self._apply_real_stdp_update()
+        
+        # 6. 调用STDP引擎的step方法（新增）
+        try:
+            self.stdp_engine.step(
+                model_components={'hippocampus': self.hippocampus},
+                inputs={
+                    'context_tokens': torch.tensor([1, 2, 3]),
+                    'current_token': hash(user_input) % 10000,
+                    'memory_anchor_id': f'mem_{hash(output.text) % 10000}'
+                },
+                outputs={
+                    'evaluation_score': 30 + len(output.text) % 20
+                }
+            )
+        except Exception as e:
+            logger.debug(f"STDP step失败: {e}")
         
         return output.text
 
@@ -324,7 +369,7 @@ class BrainAIInterface:
             logger.error(f"生成失败: {e}")
             return "...", None
 
-    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False):
+    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None):
         """使用真实特征存储到海马体"""
         try:
             # 使用隐藏状态作为特征
@@ -349,8 +394,9 @@ class BrainAIInterface:
                 with torch.no_grad():
                     features = self.feature_adapter(features.unsqueeze(0)).squeeze(0)
             
-            # 语义指针
-            semantic_pointer = monologue[:30] if len(monologue) > 30 else monologue
+            # 语义指针（优先使用传入的，否则自动提取）
+            if semantic_pointer is None:
+                semantic_pointer = monologue[:30] if len(monologue) > 30 else monologue
             
             # 存储到海马体
             current_time = int(time.time() * 1000)
@@ -525,12 +571,29 @@ class BrainAIInterface:
         # 1. 消化
         self.thought_seed = f"用户说：{user_input[:20]}"
         
-        # 2. 产生潜意识独白
+        # 2. 召回海马体记忆
+        memory_context = ""
+        try:
+            input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+            query_features = embeddings.mean(dim=1).squeeze(0)
+            if query_features.shape[0] != 1024:
+                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            recalled_memories = self.hippocampus.recall(query_features, topk=2)
+            if recalled_memories:
+                memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
+                if memory_pointers:
+                    memory_context = "相关记忆: " + " | ".join(memory_pointers[:2])
+        except:
+            pass
+        
+        # 3. 产生潜意识独白
         monologue = await asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.9)
         yield {"type": "monologue", "content": monologue}
         
-        # 3. 生成正式回复流
-        prompt = self._format_chat_prompt(user_input, history, monologue)
+        # 4. 生成正式回复流
+        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         
         full_response = ""
         async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.7):
@@ -594,15 +657,19 @@ class BrainAIInterface:
             self._apply_real_stdp_update()
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "") -> str:
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
         """
         构建对话 Prompt (类人模式)
         
         将独白作为 AI 的“思维背景”
         """
-        system_msg = "You are a helpful, concise AI assistant. Answer the user accurately."
+        system_msg = "You are a helpful, concise AI assistant. Answer the user accurately based on the context and memory."
         
         prompt = f"<system>\n{system_msg}\n</system>\n\n"
+        
+        # 注入海马体召回的记忆（新增）
+        if memory_context:
+            prompt += f"<memory>\n{memory_context}\n</memory>\n\n"
         
         # 注入最近的潜意识（独白）
         if monologue:

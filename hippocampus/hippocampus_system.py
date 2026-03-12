@@ -133,7 +133,14 @@ class HippocampusSystem(nn.Module):
             causal_links.append(f"preceded_by_{prev_tokens[-1]}" if prev_tokens else "start")
         
         # ========== 5. CA3 存储 ==========
+        # 优先使用context中的semantic_pointer，否则使用token_id
         semantic_pointer = f"token_{token_id}"
+        if context and len(context) > 0:
+            # 从context中提取semantic_pointer
+            for ctx in context:
+                if 'semantic_pointer' in ctx and ctx['semantic_pointer']:
+                    semantic_pointer = ctx['semantic_pointer']
+                    break
         
         self.ca3_memory.store(
             memory_id=memory_id,
