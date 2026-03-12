@@ -200,6 +200,10 @@ class HippocampusSystem(nn.Module):
             topk=topk
         )
         
+        # ========== 6. 添加 DG 特征到返回结果 ==========
+        for mem in sorted_memories:
+            mem['dg_features'] = dg_features.cpu()
+        
         return sorted_memories
 
     def get_state(self) -> dict:

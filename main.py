@@ -45,7 +45,7 @@ def parse_args():
         "--mode", 
         type=str, 
         default="chat",
-        choices=["chat", "generate", "eval", "stats", "telegram"],
+        choices=["chat", "generate", "eval", "stats", "telegram", "evaluate"],
         help="运行模式"
     )
     
@@ -292,6 +292,9 @@ def main():
         
         elif args.mode == "telegram":
             run_telegram_bot(ai, args.telegram_token, args.async_mode)
+        
+        elif args.mode == "evaluate":
+            run_automated_evaluation(ai)
     
     finally:
         # ========== 4. 清理 (睡眠固化) ==========
@@ -302,6 +305,77 @@ def main():
             print(f"[警告] 状态保存失败: {e}")
     
     print("\n再见！")
+
+
+def run_automated_evaluation(ai):
+    """自动化评估模式"""
+    print("=" * 60)
+    print("类人脑AI - 自动化能力评估")
+    print("=" * 60)
+
+    report = {}
+    history = []
+
+    def chat_and_record(user_input, step_name):
+        print(f"\n--- {step_name} ---")
+        print(f"你：{user_input}")
+        response = ai.chat(user_input, history)
+        history.append({"role": "user", "content": user_input})
+        history.append({"role": "assistant", "content": response})
+        print(f"AI: {response}")
+        return response
+
+    # 1. 身份认知
+    report['identity_check'] = chat_and_record("你好，介绍一下你自己。", "Step 1: 身份认知测试")
+
+    # 2. 获取初始状态
+    stats_before = ai.get_stats()
+    report['stats_before'] = stats_before
+    print("\n--- Step 2: 记录初始状态 ---")
+    print(f"海马体记忆数: {stats_before['hippocampus']['num_memories']}")
+    print(f"STDP 动态权重范数: {stats_before['stdp']['dynamic_weight_norm']:.6f}")
+
+    # 3. 注入新记忆
+    chat_and_record("我叫张三，我来自北京。", "Step 3: 注入新记忆")
+
+    # 4. 无关对话
+    chat_and_record("今天天气怎么样？", "Step 4: 无关对话")
+
+    # 5. 记忆调用测试
+    report['memory_recall'] = chat_and_record("你还记得我叫什么名字吗？", "Step 5: 记忆调用测试")
+
+    # 6. 获取最终状态
+    stats_after = ai.get_stats()
+    report['stats_after'] = stats_after
+    print("\n--- Step 6: 记录最终状态 ---")
+    print(f"海马体记忆数: {stats_after['hippocampus']['num_memories']}")
+    print(f"STDP 动态权重范数: {stats_after['stdp']['dynamic_weight_norm']:.6f}")
+
+    # 7. 生成评估报告
+    print("\n" + "=" * 60)
+    print("自动化评估报告")
+    print("=" * 60)
+    
+    # 回复质量
+    print("\n[1. 回复质量]")
+    print(f"  - 身份认知回复: {report['identity_check']}")
+    print(f"  - 记忆调用回复: {report['memory_recall']}")
+
+    # 学习能力
+    mem_diff = stats_after['hippocampus']['num_memories'] - stats_before['hippocampus']['num_memories']
+    stdp_diff = stats_after['stdp']['dynamic_weight_norm'] - stats_before['stdp']['dynamic_weight_norm']
+    print("\n[2. 学习能力]")
+    print(f"  - 海马体记忆增长: {mem_diff} (期望 > 0)")
+    print(f"  - STDP 权重变化: {stdp_diff:.6f} (期望 != 0)")
+
+    # 智力与自我意识
+    print("\n[3. 智力与自我意识]")
+    identity_ok = "AI" in report['identity_check'] or "模型" in report['identity_check']
+    recall_ok = "张三" in report['memory_recall']
+    print(f"  - 自我意识一致性: {'通过' if identity_ok else '失败'}")
+    print(f"  - 短期记忆准确性: {'通过' if recall_ok else '失败'}")
+
+    print("\n" + "=" * 60)
 
 
 if __name__ == "__main__":
