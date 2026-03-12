@@ -19,38 +19,7 @@
 - ✅ **自闭环优化**: 自生成组合、自博弈竞争、自评判选优三模式
 - ✅ **Telegram Bot 支持**: 流式输出、实时交互、多用户并发
 
-## 📁 项目结构
 
-```
-stdpbrian/
-├── configs/              # 配置文件
-│   └── arch_config.py    # 全局架构配置
-├── core/                 # 核心模块
-│   ├── dual_weight_layers.py  # 双权重层 (模块 1)
-│   ├── stdp_engine.py         # STDP 引擎 (模块 3)
-│   ├── refresh_engine.py      # 100Hz 推理引擎 (模块 2)
-│   └── interfaces.py          # 统一接口
-├── hippocampus/          # 海马体记忆系统 (模块 5)
-│   ├── ec_encoder.py     # 内嗅皮层特征编码
-│   ├── dg_separator.py   # 齿状回模式分离
-│   ├── ca3_memory.py     # CA3 情景记忆库
-│   ├── ca1_gate.py       # CA1 注意力门控
-│   ├── swr_consolidation.py  # SWR 离线回放
-│   └── hippocampus_system.py # 完整系统集成
-├── self_loop/            # 自闭环优化系统 (模块 4)
-│   └── self_loop_optimizer.py
-├── training/             # 专项训练模块 (模块 6)
-├── deployment/           # 端侧部署脚本
-├── telegram_bot/         # Telegram Bot (新增)
-│   ├── bot.py           # Bot 主程序
-│   ├── stream_handler.py # 流式输出处理器
-│   ├── run.py           # 启动脚本
-│   └── README.md        # Bot 使用指南
-├── tests/                # 单元测试
-├── main.py               # 主入口
-├── requirements.txt      # 依赖包
-└── ARCHITECTURE.md       # 详细架构文档
-```
 
 ## 🚀 快速开始
 
@@ -204,9 +173,7 @@ ai.save_checkpoint("./checkpoints/latest.pt")
 - [ARCHITECTURE.md](ARCHITECTURE.md) - 完整架构设计文档
 - [configs/arch_config.py](configs/arch_config.py) - 配置详解
 - [core/interfaces.py](core/interfaces.py) - API 接口文档
-- **[TELEGRAM_BOT_SUMMARY.md](TELEGRAM_BOT_SUMMARY.md)** - Telegram Bot 功能总结 ⭐ **新增**
-- **[INSTALL_TELEGRAM.md](INSTALL_TELEGRAM.md)** - Bot 安装说明 ⭐ **新增**
-- **[telegram_bot/README.md](telegram_bot/README.md)** - Bot 详细使用指南 ⭐ **新增**
+- **[TELEGRAM_BOT_SUMMARY.md](TELEGRAM_BOT_SUMMARY.md)** - Telegram 
 
 ## 🔧 配置说明
 
