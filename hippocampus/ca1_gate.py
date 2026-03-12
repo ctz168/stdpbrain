@@ -104,7 +104,8 @@ class CA1AttentionGate(nn.Module):
         for anchor in memory_anchors[:self.recall_topk]:
             gate_signal = self._generate_gate_signal(
                 query=query,
-                memory_data=anchor
+                memory_data=anchor,
+                key=key
             )
             gate_signals.append(gate_signal)
         
@@ -123,9 +124,13 @@ class CA1AttentionGate(nn.Module):
     def _generate_gate_signal(
         self,
         query: torch.Tensor,
-        memory_data: dict
+        memory_data: dict,
+        key: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """为单个记忆锚点生成门控信号"""
+        if key is None:
+            key = query  # 如果没有提供key，使用query作为fallback
+        
         batch_size, seq_len, hidden_size = query.shape
         
         # ========== 提取记忆特征 ==========

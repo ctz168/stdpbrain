@@ -10,6 +10,7 @@ DG (Dentate Gyrus) 齿状回 - 模式分离单元
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from typing import Optional
 import hashlib
@@ -174,7 +175,3 @@ class DentateGyrusSeparator(nn.Module):
             'min_similarity': np.min(similarities),
             'num_samples': num_samples
         }
-
-
-# 导入 F
-import torch.nn.functional as F
