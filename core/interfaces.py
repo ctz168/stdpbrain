@@ -94,22 +94,36 @@ class BrainAIInterface:
         self,
         user_input: str,
         history: List[Dict[str, str]] = None,
-        max_tokens: int = 512,
+        max_tokens: int = 256,
         thinking: bool = True
     ) -> str:
-        """真实对话接口：集成海马体记录、自闭环优化和 STDP 更新"""
+        """
+        类人模式对话：
+        1. 消化 (Digest)：将输入转化为思维状态
+        2. 思考 (Think)：基于输入生成一段潜意识独白
+        3. 回复 (Respond)：基于独白和输入生成正式回答
+        """
         self.hippocampus.record_activity()
         
-        prompt = self._format_chat_prompt(user_input, history)
+        # 1. 消化输入：强制更新思维种子
+        self.thought_seed = f"用户说：{user_input[:20]}"
         
-        # 使用带隐藏状态提取的生成
+        # 2. 思考：生成潜意识独白 (受刺激的思考)
+        # 这种独白是面向内部的，短而碎
+        monologue = self._generate_spontaneous_monologue(max_tokens=30, temperature=0.9)
+        
+        # 3. 回复：基于思维流生成
+        prompt = self._format_chat_prompt(user_input, history, monologue)
+        
         output = self.model.generate(
             prompt, 
             max_tokens=max_tokens, 
+            temperature=0.7,  # 回复更稳重
             use_self_loop=True
         )
         
-        # 执行真实的 STDP 更新（使用提取的隐藏状态）
+        # 存储并应用 STDP
+        self._store_with_real_features(output.text, self.current_thought_state)
         self._apply_real_stdp_update()
         
         return output.text
@@ -127,35 +141,39 @@ class BrainAIInterface:
         stats['monologue'] = monologue
         return stats
 
-    def _generate_spontaneous_monologue(self) -> str:
+    def _generate_spontaneous_monologue(self, max_tokens: int = 60, temperature: float = 0.9) -> str:
         """
-        生成自发的内心独白
+        生成自发的内心独白 (潜意识流)
         
-        核心改进：
-        1. 不使用元信息（STDP周期、海马体记忆数）
-        2. 基于当前思维状态（隐藏状态）自发推进
-        3. 海马体记忆作为思维线索，而非 prompt 内容
+        优化：
+        1. 加入乱码检查
+        2. 引入海马体锚定 (Grounding)
+        3. 状态化生成
         """
-        # 1. 获取当前思维状态或初始化
-        if self.current_thought_state is None:
-            # 初始化一个随机思维种子
-            self._initialize_thought_state()
+        # 1. 获取海马体线索 (作为思维锚点)
+        memory_anchors = self._recall_recent_memories(topk=1)
+        anchor_text = memory_anchors[0]['semantic_pointer'] if memory_anchors else ""
         
-        # 2. 从海马体召回记忆（作为思维线索，不直接放入 prompt）
-        memory_anchors = self._recall_memory_anchors()
-        
-        # 3. 构建简洁的续写 prompt（不包含元信息）
+        # 2. 构建 Prompt
+        # 如果当前独白历史中有太多乱码符号，强制使用锚点重置
         prompt = self._build_spontaneous_prompt()
+        if self._is_gibberish(prompt) and anchor_text:
+            prompt = f"回忆起：{anchor_text}... 现在我在想"
         
-        # 4. 生成独白，同时提取隐藏状态
+        # 3. 生成，提取隐藏状态
         try:
             output, hidden_state = self._generate_with_hidden_state(
                 prompt, 
-                max_tokens=100,
-                temperature=0.9,
-                repetition_penalty=1.5
+                max_tokens=max_tokens,
+                temperature=temperature,
+                repetition_penalty=1.3
             )
-            monologue = output.strip()
+            
+            # 4. 乱码过滤：如果生成的独白依然是乱码，丢弃并回退
+            if self._is_gibberish(output):
+                monologue = "思维有些模糊..."
+            else:
+                monologue = output.strip()
             
             # 5. 更新思维状态
             if hidden_state is not None:
@@ -165,17 +183,30 @@ class BrainAIInterface:
             logger.error(f"独白生成失败: {e}")
             monologue = "..."
         
-        # 6. 存储到海马体（使用真实特征）
+        # 6. 存储到海马体
         if monologue and len(monologue) > 3:
             self._store_with_real_features(monologue, hidden_state)
             self.monologue_history.append(monologue)
             if len(self.monologue_history) > self.max_monologue_history:
                 self.monologue_history.pop(0)
         
-        # 7. 应用 STDP 更新
+        # 7. 应用 STDP
         self._apply_real_stdp_update()
         
         return monologue
+
+    def _is_gibberish(self, text: str) -> bool:
+        """简单的乱码/特殊符号检查 (针对 0.8B 的常见错误)"""
+        if not text: return True
+        # 检查特殊符号比例 (如大量的 $ \ sum _ 等)
+        special_chars = set("$%^&*()_+={}|[]\\:;\"'<>,/?#")
+        special_count = sum(1 for char in text if char in special_chars)
+        if len(text) > 0 and special_count / len(text) > 0.3:
+            return True
+        # 检查是否包含过多重复字符
+        if len(text) > 10 and len(set(text)) < 5:
+            return True
+        return False
 
     def _initialize_thought_state(self):
         """初始化思维状态"""
@@ -218,24 +249,26 @@ class BrainAIInterface:
 
     def _build_spontaneous_prompt(self) -> str:
         """
-        构建自发的续写 prompt
-        
-        关键：不包含元信息，让模型自然续写
+        构建潜意识续写 Prompt
         """
-        # 使用最近的独白历史作为上下文
+        # 如果没有思维状态，初始化
+        if self.current_thought_state is None:
+            self._initialize_thought_state()
+            
+        # 优先使用思维种子（由用户消息或后台触发更新）
+        if self.thought_seed:
+            seed = self.thought_seed
+            self.thought_seed = "" # 使用后清空
+            return f"{seed}..."
+            
+        # 否则使用最近的一条独白历史作为联想起点
         if self.monologue_history:
-            # 取最近2条，简洁拼接
-            recent = self.monologue_history[-2:]
-            context = " ".join(recent[-2:]) if len(recent) > 1 else recent[0]
-            # 截断过长的上下文
-            if len(context) > 100:
-                context = context[-100:]
-            prompt = f"{context}..."
-        else:
-            # 初始种子
-            prompt = self.thought_seed if self.thought_seed else "我在想"
+            context = self.monologue_history[-1]
+            if len(context) > 60:
+                context = context[-60:]
+            return f"{context}..."
         
-        return prompt
+        return "我在想..."
 
     def _generate_with_hidden_state(
         self, 
@@ -431,10 +464,37 @@ class BrainAIInterface:
         """执行 STDP 更新步"""
         self._apply_real_stdp_update()
 
-    async def generate_stream(self, input_text: str, max_tokens: int = 100, **kwargs):
-        """流式生成接口"""
-        async for chunk in self.model.generate_stream(input_text, max_tokens=max_tokens, **kwargs):
-            yield chunk
+    async def chat_stream(
+        self,
+        user_input: str,
+        history: List[Dict[str, str]] = None,
+        max_tokens: int = 256
+    ) -> AsyncGenerator[Dict[str, str], None]:
+        """
+        流式类人对话接口：
+        1. 消化 & 产生潜意识 (yield monologue)
+        2. 生成正式回复 (yield response chunks)
+        """
+        self.hippocampus.record_activity()
+        
+        # 1. 消化
+        self.thought_seed = f"用户说：{user_input[:20]}"
+        
+        # 2. 产生潜意识独白
+        monologue = await asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.9)
+        yield {"type": "monologue", "content": monologue}
+        
+        # 3. 生成正式回复流
+        prompt = self._format_chat_prompt(user_input, history, monologue)
+        
+        full_response = ""
+        async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.7):
+            full_response += chunk
+            yield {"type": "chunk", "content": chunk}
+            
+        # 存储并应用 STDP
+        self._store_with_real_features(full_response, self.current_thought_state)
+        self._apply_real_stdp_update()
 
     async def generate_monologue_stream(self, max_tokens: int = 100) -> AsyncGenerator[str, None]:
         """
@@ -489,14 +549,27 @@ class BrainAIInterface:
             self._apply_real_stdp_update()
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None) -> str:
-        """构建对话 prompt"""
-        prompt = "The following is a conversation with a thoughtful AI assistant.\n\n"
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "") -> str:
+        """
+        构建对话 Prompt (类人模式)
+        
+        将独白作为 AI 的“思维背景”
+        """
+        system_msg = "You are a helpful, concise AI assistant. Answer the user accurately."
+        
+        prompt = f"<system>\n{system_msg}\n</system>\n\n"
+        
+        # 注入最近的潜意识（独白）
+        if monologue:
+            prompt += f"<thought>\n{monologue}\n</thought>\n\n"
+            
+        # 历史记录 (只取最近 2 轮以减轻 0.8B 负担)
         if history:
-            for msg in history[-3:]:
-                role = "Human" if msg['role'] == 'user' else "AI"
+            for msg in history[-2:]:
+                role = "User" if msg['role'] == 'user' else "Assistant"
                 prompt += f"{role}: {msg['content']}\n"
-        prompt += f"Human: {user_input}\nAI:"
+                
+        prompt += f"User: {user_input}\nAssistant:"
         return prompt
 
     def get_stats(self) -> dict:
