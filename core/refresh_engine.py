@@ -96,8 +96,8 @@ class RefreshCycleEngine:
             
             # ========== 2. 海马体记忆锚点调取与注意力门控加载 ==========
             memory_anchors = self.hippocampus.recall(features, topk=self.narrow_window_size)
-            # 输出记忆锚点作为门控信号
-            memory_anchor_id = memory_anchors[0]['memory_id'] if memory_anchors else 'none'
+            # 提取海马体提示用于这步前向推理
+            memory_anchor_id = memory_anchors[0].get('memory_id', 'unknown') if memory_anchors else 'none'
             memory_anchor_gate = torch.randn(1, 1024, device=self.device) # 简化门控信号
             
             # ========== 3. 窄窗口上下文 + 当前token的模型前向推理 ==========

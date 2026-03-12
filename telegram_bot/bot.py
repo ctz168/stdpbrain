@@ -7,6 +7,7 @@ Telegram Bot 主程序
 import asyncio
 import logging
 import time
+import random
 from typing import Optional, Dict, List
 from telegram import Update, Message
 from telegram.ext import (
@@ -16,6 +17,8 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
+
+from telegram.request import HTTPXRequest
 
 from .stream_handler import StreamHandler, TypingSimulator
 
@@ -45,7 +48,8 @@ class BrainAIBot:
         ai_interface=None,
         stream_chunk_size: int = 1,
         stream_delay_ms: int = 50,
-        max_context_length: int = 10
+        max_context_length: int = 10,
+        proxy_url: Optional[str] = None # 新增代理参数
     ):
         """
         初始化 Bot
@@ -56,12 +60,14 @@ class BrainAIBot:
             stream_chunk_size: 流式输出块大小
             stream_delay_ms: 流式延迟 (毫秒)
             max_context_length: 最大上下文长度
+            proxy_url: HTTP 代理 URL (可选)
         """
         self.token = token
         self.ai = ai_interface
         self.stream_chunk_size = stream_chunk_size
         self.stream_delay_ms = stream_delay_ms
         self.max_context_length = max_context_length
+        self.proxy_url = proxy_url
         
         # 用户对话历史
         self.user_history: Dict[int, List[Dict[str, str]]] = {}
@@ -75,9 +81,65 @@ class BrainAIBot:
         # 打字模拟器
         self.typing_simulators: Dict[int, TypingSimulator] = {}
         
+        # 记录最近活跃的聊天 ID
+        self.last_active_chat_id: Optional[int] = None
+        
+        # 后台思考任务
+        self.thinking_task: Optional[asyncio.Task] = None
+        self.is_thinking_enabled = True
+        
+        # 全局独白缓冲区 (存储最近的内心独白)
+        self.monologue_buffer: List[str] = []
+        self.max_monologue_buffer = 5
+        
         # 初始化流式处理器
         self._init_stream_handler()
     
+    async def _background_thinking_loop(self):
+        """后台持续自思考流 (内心独白生成 + 主动推送)"""
+        logger.info("[Thinking] 后台自思考流已启动")
+        
+        while self.is_thinking_enabled:
+            try:
+                if self.ai:
+                    # 每 20-40 秒生成一段真实的内心独白
+                    delay = random.randint(20, 40)
+                    await asyncio.sleep(delay)
+                    
+                    # 获取最近活跃的用户会话
+                    chat_id = self.last_active_chat_id
+                    
+                    # 如果有活跃会话，则生成并发送独白
+                    if chat_id:
+                        logger.info(f"[Thinking] 正在生成真实的内心独白...")
+                        stats = self.ai.think()
+                        monologue = stats.get('monologue', '')
+                        
+                        if monologue:
+                            # 1. 写入缓冲区 (用于被用户输入打断时展示)
+                            self.monologue_buffer.append(monologue)
+                            if len(self.monologue_buffer) > self.max_monologue_buffer:
+                                self.monologue_buffer.pop(0)
+                            
+                            # 2. 主动推送独白到最近活跃的聊天窗口
+                            try:
+                                # 以“思考”的格式发送
+                                await self.application.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"💭 *[内心独白]*\n_{monologue}_",
+                                    parse_mode='Markdown'
+                                )
+                                logger.info(f"[Monologue Push] Sent to {chat_id}: {monologue[:50]}...")
+                            except Exception as e:
+                                logger.warning(f"主动推送独白失败: {e}")
+                                
+                            logger.info(f"[Monologue Internal] {monologue}")
+                else:
+                    await asyncio.sleep(10)
+            except Exception as e:
+                logger.error(f"[Thinking] 后台思考异常: {e}")
+                await asyncio.sleep(30)
+
     def set_ai_interface(self, ai_interface):
         """设置 AI 接口"""
         self.ai = ai_interface
@@ -166,6 +228,9 @@ class BrainAIBot:
         chat_id = update.effective_chat.id
         user_message = update.message.text
         
+        # 更新最近活跃的聊天 ID
+        self.last_active_chat_id = chat_id
+        
         if not user_message:
             return
         
@@ -234,82 +299,97 @@ class BrainAIBot:
         user_id: int,
         user_message: str
     ):
-        """处理流式生成"""
+        """处理流式生成 (包含被用户打断的内心独白链)"""
         try:
-            # 发送初始消息 (用于后续编辑)
-            initial_message = await update.message.reply_text("🤔 思考中...")
+            # 1. 构建思维链展示 (包含历史独白和即时打断思考)
+            thought_text = "💭 **内心独白流**\n"
+            
+            # 展示缓冲区中的历史独白
+            if self.monologue_buffer:
+                for m in self.monologue_buffer:
+                    thought_text += f"> ... {m}\n"
+            
+            # 获取即时的打断思维
+            interruption_thought = ""
+            if self.ai and hasattr(self.ai, '_generate_thought_process'):
+                interruption_thought = self.ai._generate_thought_process(user_message)
+                # 过滤掉可能重复的部分，只保留打断逻辑
+                formatted_interruption = interruption_thought.replace('\n', '\n> ')
+                thought_text += f"> {formatted_interruption}\n"
+            
+            thought_text += "\n"
+            
+            # 清空独白缓冲区 (因为已经被用户打断并展示了)
+            self.monologue_buffer = []
+            
+            # 发送初始思考消息
+            initial_message = await update.message.reply_text(
+                thought_text,
+                parse_mode='Markdown'
+            )
             
             full_response = ""
             last_update_time = time.time()
+            max_chars = 3800 # Telegram 限制为 4096，预留一些空间
             
-            # 流式生成 (带采样参数以防止循环重复)
+            # 2. 流式生成
             stream_gen = self.stream_handler.generate_stream(
                 input_text,
-                temperature=0.7,
+                temperature=0.8,
                 top_k=50,
-                repetition_penalty=1.1
+                repetition_penalty=1.5 # 增加重复惩罚，针对 Base 模型优化
             )
             
             async for chunk in stream_gen:
                 full_response += chunk
                 
-                # 每 500ms 或达到 4000 字符限制时更新一次
+                # 检查长度限制
+                if len(full_response) > max_chars:
+                    full_response = full_response[:max_chars] + "\n\n⚠️ (内容过长，已自动截断以符合 Telegram 限制)"
+                    break
+                
+                # 定时更新
                 current_time = time.time()
-                if current_time - last_update_time > 0.5 or len(full_response) > 4000:
+                if current_time - last_update_time > 0.8:
                     last_update_time = current_time
                     
-                    # 检查长度限制 (Telegram 限制为 4096)
-                    content_to_send = full_response
-                    if len(content_to_send) > 4000:
-                        content_to_send = content_to_send[:3900] + "\n\n(内容过长，已截断...)"
-                    
-                    # 编辑消息
                     try:
-                        # 尝试使用 Markdown，失败则回退到纯文本
-                        await initial_message.edit_text(
-                            content_to_send + "▌",
-                            parse_mode=None # 暂时关闭 Markdown 以避免格式问题
-                        )
+                        # 合并思考过程和生成内容
+                        display_text = f"{thought_text}✨ **回复:**\n{full_response}▌"
+                        await initial_message.edit_text(display_text, parse_mode='Markdown')
                     except Exception as e:
-                        logger.warning(f"编辑消息失败：{e}")
-                        # 回退：尝试不带光标和 Markdown
+                        # 如果 Markdown 报错，回退到纯文本
                         try:
-                            await initial_message.edit_text(content_to_send[:4000])
+                            await initial_message.edit_text(f"{thought_text}✨ 回复:\n{full_response}▌", parse_mode=None)
                         except:
-                            pass
-                
-                # 如果超过限制，主动停止
-                if len(full_response) > 4000:
-                    logger.warning(f"用户 {user_id} 的响应过长，正在停止生成")
-                    break
+                            logger.warning(f"流式编辑完全失败: {e}")
             
-            # 完成
+            # 3. 完成生成
             await typing.stop_typing()
             
-            # 最终编辑 (移除光标)
+            # 最终编辑
+            final_display = f"{thought_text}✨ **回复:**\n{full_response}"
             try:
-                final_text = full_response
-                if len(final_text) > 4090:
-                    final_text = final_text[:4000] + "..."
-                await initial_message.edit_text(final_text)
+                await initial_message.edit_text(final_display, parse_mode='Markdown')
             except Exception as e:
-                logger.error(f"最终编辑失败：{e}")
+                try:
+                    await initial_message.edit_text(f"{thought_text}✨ 回复:\n{full_response}", parse_mode=None)
+                except:
+                    logger.error(f"最终编辑完全失败: {e}")
             
-            # 更新历史
+            # 4. 更新历史
             self._update_history(user_id, user_message, full_response)
             
-            logger.info(f"回复用户 {user_id}: {full_response[:50]}...")
+            # 注释掉这里的调用，让 AI 接口内部处理 STDP，避免参数缺失错误
+            # if self.ai and hasattr(self.ai.stdp_engine, 'step'):
+            #     self.ai.stdp_engine.step()
+                
+            logger.info(f"回复用户 {user_id} 完成 (长度: {len(full_response)})")
             
         except Exception as e:
-            logger.error(f"流式生成失败：{e}", exc_info=True)
+            logger.error(f"流式生成失败: {e}", exc_info=True)
             await typing.stop_typing()
-            
-            # 详细错误日志
-            error_msg = str(e)
-            if "Message is too long" in error_msg:
-                error_msg = "响应内容超过 Telegram 长度限制 (4096 字符)。模型可能陷入了重复生成或输出了过多调试信息。"
-                
-            await update.message.reply_text(f"❌ 生成失败：{error_msg}")
+            await update.message.reply_text(f"❌ 生成失败: {str(e)}")
     
     def _update_history(self, user_id: int, user_message: str, assistant_response: str):
         """更新对话历史"""
@@ -348,7 +428,12 @@ class BrainAIBot:
         logger.info("正在启动 Telegram Bot...")
         
         # 创建应用
-        self.application = Application.builder().token(self.token).build()
+        if self.proxy_url:
+            request = HTTPXRequest(proxy_url=self.proxy_url)
+            self.application = Application.builder().token(self.token).request(request).build()
+            logger.info(f"Bot 正在使用代理: {self.proxy_url}")
+        else:
+            self.application = Application.builder().token(self.token).build()
         
         # 添加处理器
         self.application.add_handler(CommandHandler("start", self.start_command))
@@ -357,15 +442,33 @@ class BrainAIBot:
         self.application.add_handler(CommandHandler("stats", self.stats_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
-        # 启动 Bot
+        # 启动后台思考 (需要手动管理循环)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         logger.info("Bot 已启动，正在监听消息...")
+        
+        # 在 run_polling 之前启动后台任务
+        self.is_thinking_enabled = True
+        self.application.post_init = self._post_init_hook
+        
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
     
+    async def _post_init_hook(self, application: Application):
+        """初始化后的钩子，用于启动后台任务"""
+        self.thinking_task = asyncio.create_task(self._background_thinking_loop())
+        logger.info("后台思考任务已通过 post_init 启动")
+
     async def start_async(self):
         """异步启动 Bot"""
         logger.info("正在启动 Telegram Bot (异步模式)...")
         
-        self.application = Application.builder().token(self.token).build()
+        if self.proxy_url:
+            request = HTTPXRequest(proxy_url=self.proxy_url)
+            self.application = Application.builder().token(self.token).request(request).build()
+            logger.info(f"Bot 正在使用代理: {self.proxy_url}")
+        else:
+            self.application = Application.builder().token(self.token).build()
         
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
@@ -376,12 +479,17 @@ class BrainAIBot:
         logger.info("Bot 已启动 (异步)")
         await self.application.initialize()
         await self.application.start()
+        
+        # 启动后台任务
+        self.thinking_task = asyncio.create_task(self._background_thinking_loop())
+        
         await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def create_bot(
     token: str,
     ai_interface=None,
+    proxy_url: Optional[str] = None, # 新增代理参数
     **kwargs
 ) -> BrainAIBot:
     """
@@ -390,9 +498,10 @@ def create_bot(
     Args:
         token: Telegram Bot Token
         ai_interface: BrainAIInterface 实例
+        proxy_url: HTTP 代理 URL (可选)
         **kwargs: 其他参数
     
     Returns:
         BrainAIBot 实例
     """
-    return BrainAIBot(token=token, ai_interface=ai_interface, **kwargs)
+    return BrainAIBot(token=token, ai_interface=ai_interface, proxy_url=proxy_url, **kwargs)

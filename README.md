@@ -32,8 +32,6 @@ stdpbrian/
 │   └── hippocampus_system.py # 完整系统集成
 ├── self_loop/            # 自闭环优化系统 (模块 4)
 │   └── self_loop_optimizer.py
-├── evaluation/           # 多维度测评体系 (模块 7)
-│   └── evaluator.py
 ├── training/             # 专项训练模块 (模块 6)
 ├── deployment/           # 端侧部署脚本
 ├── telegram_bot/         # Telegram Bot (新增)
@@ -191,52 +189,8 @@ stats = ai.get_stats()
 ai.save_checkpoint("./checkpoints/latest.pt")
 ```
 
-## 🧪 运行测试
 
-```bash
-# 单元测试
-pytest tests/
 
-# 海马体专项测试
-python tests/test_hippocampus.py
-
-# STDP 更新测试
-python tests/test_stdp.py
-
-# 端侧性能测试
-python tests/test_edge_performance.py
-
-# Telegram Bot 测试 (新增)
-python telegram_bot/test_bot.py
-```
-
-## 📦 端侧部署
-
-### 安卓手机 (MNN)
-
-```bash
-cd deployment/android
-./build.sh
-adb install BrainAI.apk
-```
-
-### 树莓派
-
-```bash
-cd deployment/raspberry
-./setup.sh
-python infer.py --model ../models/brain_ai_qwen_0.8b
-```
-
-## 📋 验收标准
-
-- [x] 所有刚性红线 100% 遵守
-- [x] 7 大模块完整实现且深度耦合
-- [x] 海马体记忆指标达标 (召回≥95%, 混淆≤3%)
-- [x] 基础能力≥原生 Qwen3.5-0.8B 的 95%
-- [x] 推理能力提升≥60%
-- [x] 端侧显存≤420MB, 延迟≤10ms
-- [x] 树莓派 4B/安卓手机流畅运行
 
 ## 📚 文档
 

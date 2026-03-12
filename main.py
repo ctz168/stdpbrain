@@ -273,28 +273,30 @@ def main():
         sys.exit(1)
     
     # ========== 3. 执行对应模式 ==========
-    if args.mode == "chat":
-        run_chat(ai)
-    
-    elif args.mode == "generate":
-        run_generate(ai, args.input)
-    
-    elif args.mode == "eval":
-        run_evaluation(ai)
-    
-    elif args.mode == "stats":
-        run_stats(ai)
-    
-    elif args.mode == "telegram":
-        run_telegram_bot(ai, args.telegram_token, args.async_mode)
-    
-    # ========== 4. 清理 ==========
-    print("\n[退出] 保存状态...")
     try:
-        ai.save_checkpoint("./checkpoints/latest.pt")
-        print("[退出] 检查点已保存")
-    except Exception as e:
-        print(f"[警告] 保存失败：{e}")
+        if args.mode == "chat":
+            run_chat(ai)
+        
+        elif args.mode == "generate":
+            run_generate(ai, args.input)
+        
+        elif args.mode == "eval":
+            run_evaluation(ai)
+        
+        elif args.mode == "stats":
+            run_stats(ai)
+        
+        elif args.mode == "telegram":
+            run_telegram_bot(ai, args.telegram_token, args.async_mode)
+    
+    finally:
+        # ========== 4. 清理 ==========
+        print("\n[退出] 保存状态...")
+        try:
+            ai.save_checkpoint("brain_ai_checkpoint.pt")
+            print("[退出] 状态已保存。")
+        except Exception as e:
+            print(f"[警告] 保存失败: {e}")
     
     print("\n再见！")
 

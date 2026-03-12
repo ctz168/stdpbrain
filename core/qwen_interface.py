@@ -62,63 +62,83 @@ class QwenModelWrapper(nn.Module):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        # ========== 5. 优化7: torch.compile JIT 编译 ==========
-        # aot_eager 后端对 CPU 友好，可带来 20-40% 加速
-        try:
-            import torch._dynamo
-            torch._dynamo.config.suppress_errors = True
-            self.base_model = torch.compile(
-                self.base_model,
-                backend="aot_eager",
-                fullgraph=False  # 允许图中断，兼容自定义层
-            )
-            print("  ✓ torch.compile(aot_eager) JIT 编译成功")
-        except Exception as e:
-            print(f"  ⚠️ torch.compile 不可用，跳过: {e}")
-        
         param_count = sum(p.numel() for p in self.parameters())
         print(f"✓ Qwen 模型加载完成")
         print(f"  - 参数量：{param_count:,} ({param_count/1e6:.2f}M)")
         print(f"  - 设备：{device}")
     
     def _load_model_with_quantization(self):
-        """根据量化类型加载模型"""
+        """根据量化类型加载模型 (针对 macOS/CPU 优化)"""
         try:
+            # 自动检测 Apple Silicon (M1/M2/M3)
+            is_mac = torch.backends.mps.is_available()
+            
             if self.quantization == "INT4":
-                # INT4 量化加载
-                from transformers import BitsAndBytesConfig
-                
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float32,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True
-                )
-                
-                model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    quantization_config=quantization_config,
-                    device_map={"": self.device},
-                    trust_remote_code=True
-                )
-                print("  ✓ INT4 量化加载成功")
+                if self.device == "cuda":
+                    # CUDA 环境下的 INT4 量化
+                    from transformers import BitsAndBytesConfig
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_compute_dtype=torch.float32,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True
+                    )
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        quantization_config=quantization_config,
+                        device_map={"": self.device},
+                        trust_remote_code=True
+                    )
+                    print("  ✓ [CUDA] INT4 量化加载成功")
+                elif is_mac:
+                    # macOS 环境下的优化加载 (使用 FP16/BF16 在 MPS 上运行)
+                    dtype = torch.float16 if torch.backends.mps.is_built() else torch.float32
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        torch_dtype=dtype,
+                        device_map={"": "mps"},
+                        trust_remote_code=True
+                    )
+                    print(f"  ✓ [macOS/MPS] 使用 {dtype} 加载成功 (CPU 不支持 bitsandbytes INT4)")
+                else:
+                    # 纯 CPU 环境，bitsandbytes 不可用，回退到 FP32 或尝试动态量化
+                    print("  ⚠️ [CPU] 不支持 bitsandbytes INT4 量化，尝试使用 FP32 加载")
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        torch_dtype=torch.float32,
+                        device_map={"": "cpu"},
+                        trust_remote_code=True
+                    )
                 
             elif self.quantization == "INT8":
-                # INT8 量化加载
-               model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    load_in_8bit=True,
-                    device_map={"": self.device},
-                    trust_remote_code=True
-                )
-               print("  ✓ INT8 量化加载成功")
+                if self.device == "cuda":
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        load_in_8bit=True,
+                        device_map={"": self.device},
+                        trust_remote_code=True
+                    )
+                    print("  ✓ [CUDA] INT8 量化加载成功")
+                else:
+                    # CPU 下尝试动态量化
+                    print("  ⚠️ [CPU] 尝试对模型进行动态量化以节省内存")
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        torch_dtype=torch.float32,
+                        trust_remote_code=True
+                    )
+                    model = torch.quantization.quantize_dynamic(
+                        model, {torch.nn.Linear}, dtype=torch.qint8
+                    )
+                    print("  ✓ [CPU] 动态量化完成")
                 
-            else:  # FP16 或 CPU
-                dtype= torch.float16 if self.device == "cuda" else torch.float32
+            else:  # FP16 或 FP32
+                dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
+                target_device = "mps" if (is_mac and self.device != "cuda") else self.device
                 model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
                     torch_dtype=dtype,
-                    device_map={"": self.device},
+                    device_map={"": target_device} if target_device != "cpu" else None,
                     trust_remote_code=True
                 )
                 print(f"  ✓ {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
@@ -126,15 +146,14 @@ class QwenModelWrapper(nn.Module):
             return model
             
         except Exception as e:
-           print(f"⚠️ 量化加载失败，降级到 FP32: {e}")
-            # 降级到 FP32
-           model = AutoModelForCausalLM.from_pretrained(
+            print(f"⚠️ 模型加载异常：{e}，回退到标准 FP32 加载")
+            # 最终回退
+            model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
                 torch_dtype=torch.float32,
-                device_map={"": self.device},
                 trust_remote_code=True
             )
-        return model
+            return model
     
     def _integrate_dual_weights(self):
         """
@@ -309,6 +328,19 @@ class QwenModelWrapper(nn.Module):
                 dynamic_weights[name] = module.get_all_dynamic_weights()
         
         return dynamic_weights
+
+    def save_checkpoint(self, path: str):
+        """保存模型检查点 (仅保存双权重层的动态部分)"""
+        dynamic_weights = self.get_all_dynamic_weights()
+        torch.save(dynamic_weights, path)
+        print(f"[QwenWrapper] 动态权重已保存到: {path}")
+
+    def load_checkpoint(self, path: str):
+        """加载模型检查点 (仅加载双权重层的动态部分)"""
+        dynamic_weights = torch.load(path, map_location=self.device)
+        for layer_name, weights in dynamic_weights.items():
+            self.apply_stdp_to_layer(layer_name, weights, lr=1.0) # 使用 lr=1.0 直接设置权重
+        print(f"[QwenWrapper] 动态权重已从 {path} 加载")
     
     def apply_stdp_to_layer(
         self,
