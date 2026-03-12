@@ -207,9 +207,20 @@ class HippocampusSystem(nn.Module):
             topk=topk
         )
         
-        # ========== 6. 添加 DG 特征到返回结果 ==========
-        for mem in sorted_memories:
-            mem['dg_features'] = dg_features.cpu()
+        # ========== 6. 添加记忆本身的 DG 特征到返回结果 ==========
+        # 创建memory_id到dg_features的映射
+        memory_features = {}
+        for mem in memories:
+            if hasattr(mem, 'dg_features') and mem.dg_features is not None:
+                memory_features[mem.memory_id] = mem.dg_features
+        
+        for mem_dict in sorted_memories:
+            mem_id = mem_dict.get('memory_id', '')
+            if mem_id in memory_features:
+                mem_dict['dg_features'] = memory_features[mem_id].cpu()
+            else:
+                # 如果没有找到，使用查询的dg_features作为回退
+                mem_dict['dg_features'] = dg_features.cpu()
         
         return sorted_memories
 
