@@ -241,7 +241,8 @@ class BrainAIInterface:
         self, 
         prompt: str, 
         max_tokens: int = 100,
-        **kwargs
+        temperature: float = 0.9,
+        repetition_penalty: float = 1.5
     ) -> tuple:
         """生成文本并提取隐藏状态"""
         try:
@@ -254,8 +255,8 @@ class BrainAIInterface:
                     input_ids,
                     max_new_tokens=max_tokens,
                     do_sample=True,
-                    temperature=kwargs.get('temperature', 0.9),
-                    repetition_penalty=kwargs.get('repetition_penalty', 1.5),
+                    temperature=temperature,
+                    repetition_penalty=repetition_penalty,
                     output_hidden_states=True,
                     return_dict_in_generate=True,
                     pad_token_id=self.model.tokenizer.eos_token_id
@@ -452,18 +453,21 @@ class BrainAIInterface:
         hidden_state = None
         
         try:
-            # 使用同步生成（因为需要提取隐藏状态）
-            full_monologue, hidden_state = self._generate_with_hidden_state(
+            # 使用 asyncio.to_thread 在后台线程中运行同步生成
+            full_monologue, hidden_state = await asyncio.to_thread(
+                self._generate_with_hidden_state,
                 prompt,
-                max_tokens=max_tokens,
-                temperature=0.9,
-                repetition_penalty=1.5
+                max_tokens,
+                0.9,  # temperature
+                1.5   # repetition_penalty
             )
             
             # 模拟流式输出
             for char in full_monologue:
                 yield char
                 await asyncio.sleep(0.02)
+                # 让出控制权，允许处理其他事件
+                await asyncio.sleep(0)
                 
         except Exception as e:
             logger.error(f"流式独白生成失败: {e}")
