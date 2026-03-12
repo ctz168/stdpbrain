@@ -13,7 +13,7 @@ TELEGRAM_BOT_TOKEN = "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
 # 你的网络代理 URL (如果需要)
 # 例如: "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"
 # 如果你不需要代理，请将其设置为 None
-PROXY_URL = "http://127.0.0.1:7890"
+PROXY_URL = None
 
 
 # ==================== 模型与架构配置 ====================
