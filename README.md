@@ -1,8 +1,16 @@
 # 类人脑双系统全闭环 AI架构
 
 基于 **Qwen3.5-0.8B-Base** 底座模型，实现与人脑同源的"刷新即推理、推理即学习、学习即优化、记忆即锚点"全闭环智能架构。
+<div align="center">
 
-## 🎯 核心特性
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ctz168/stdpbrain/blob/main/deploy_colab.ipynb)
+
+</div>
+
+## 🚀 快速开始 (Google Colab)
+
+点击上方 **Open In Colab** 按钮，即可在云端一键部署。
+---## 🎯 核心特性
 
 - ✅ **100% 遵守刚性红线**: 仅使用 Qwen3.5-0.8B单模型，90% 静态权重永久冻结
 - ✅ **10ms/100Hz 高刷新推理**: 窄窗口 O(1) 复杂度注意力机制
