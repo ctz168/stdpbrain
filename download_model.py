@@ -1,8 +1,7 @@
 from huggingface_hub import snapshot_download
 import os
-
-model_id = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
-local_dir = "weights/DeepSeek-R1-Distill-Qwen-1.5B"
+model_id = "Qwen/Qwen3.5-0.8B"
+local_dir = "weights/Qwen3.5-0.8B"
 
 print(f"Downloading {model_id} to {local_dir}...")
 os.makedirs(local_dir, exist_ok=True)
