@@ -357,11 +357,21 @@ class BrainAIInterface:
 
     def _apply_real_stdp_update(self):
         """
-        应用真实的 STDP 更新
+        强化版 STDP 更新：关联学习 (Hebbian-like)
         
-        核心改进：直接操作动态权重，确保更新发生
+        核心改进：
+        1. 基于当前思维状态 (Hidden State) 的关联更新
+        2. 引入 5% 范数限制 (Norm Limit)，保护静态权重
+        3. 极微量的权重固化 (Weight Consolidation)
         """
         try:
+            if self.current_thought_state is None:
+                return
+            
+            # 获取当前思维状态的归一化特征 [hidden_size]
+            thought_vec = self.current_thought_state.view(-1)
+            thought_norm = thought_vec.norm()
+            
             # 获取模型中的双权重层
             dynamic_layers = []
             for name, module in self.model.model.base_model.named_modules():
@@ -369,27 +379,53 @@ class BrainAIInterface:
                     dynamic_layers.append((name, module))
             
             if not dynamic_layers:
-                logger.warning("未找到双权重层")
                 return
             
-            # 对每个双权重层应用 STDP 更新
+            # 学习率与固化率
+            lr = 0.005  # 学习率
+            consolidation_rate = 0.0001  # 固化率 (0.01% 的动态权重转入静态)
+            max_dynamic_ratio = 0.05  # 5% 的范数限制
+            
             total_update = 0.0
             for name, layer in dynamic_layers:
-                # 生成基于当前状态的更新量
-                if self.current_thought_state is not None:
-                    # 使用当前思维状态生成有意义的更新
-                    state_norm = self.current_thought_state.norm().item()
-                    update_scale = min(0.01, state_norm * 0.001)
-                else:
-                    update_scale = 0.001
+                # 1. 模拟赫布学习：基于思维向量的投影产生关联更新
+                # 这里我们假设权重矩阵 W 与 thought_vec 的外积能代表当前的“思维关联”
+                # 由于我们没有每层的输入输出，我们使用 thought_vec 的自关联来模拟这种趋势
+                # [out_f, in_f] 的形状，我们采样部分 thought_vec
+                out_f, in_f = layer.dynamic_weight.shape
                 
-                # 生成更新
-                delta_w = torch.randn_like(layer.dynamic_weight) * update_scale
+                # 创建一个简化的关联增量 (Association Delta)
+                # 使用 thought_vec 的一部分作为输出端，一部分作为输入端进行外积
+                v_out = thought_vec[:out_f] if thought_vec.shape[0] >= out_f else F.pad(thought_vec, (0, out_f - thought_vec.shape[0]))
+                v_in = thought_vec[:in_f] if thought_vec.shape[0] >= in_f else F.pad(thought_vec, (0, in_f - thought_vec.shape[0]))
                 
-                # 应用更新
+                delta_w = torch.outer(v_out, v_in) * (lr / (thought_norm + 1e-6))
+                
+                # 2. 加入随机性探索 (Noise Exploration)
+                delta_w += torch.randn_like(delta_w) * (lr * 0.1)
+                
+                # 3. 应用更新并实施范数限制
                 with torch.no_grad():
+                    # 更新动态权重
                     layer.dynamic_weight.add_(delta_w)
-                    layer.dynamic_weight.clamp_(-1.0, 1.0)
+                    
+                    # 计算范数比例并限制
+                    static_norm = layer.static_weight.norm()
+                    dynamic_norm = layer.dynamic_weight.norm()
+                    
+                    if dynamic_norm > static_norm * max_dynamic_ratio:
+                        # 如果超过 5%，按比例缩放回限制内
+                        scale = (static_norm * max_dynamic_ratio) / (dynamic_norm + 1e-9)
+                        layer.dynamic_weight.mul_(scale)
+                    
+                    # 4. 模拟长期记忆固化 (Weight Consolidation)
+                    # 将极微量的动态变化固化进静态权重 (介入原始模型)
+                    if consolidation_rate > 0:
+                        consolidation_delta = layer.dynamic_weight.data * consolidation_rate
+                        layer.static_weight.data.add_(consolidation_delta)
+                        # 从动态中减去固化的部分，保持平衡
+                        layer.dynamic_weight.data.sub_(consolidation_delta)
+                    
                     layer._cache_valid = False  # 使缓存失效
                 
                 total_update += delta_w.abs().mean().item()
@@ -397,10 +433,8 @@ class BrainAIInterface:
             self.total_stdp_updates += 1
             self.last_dynamic_weight_norm = total_update / len(dynamic_layers)
             
-            logger.debug(f"STDP 更新完成，平均变化: {self.last_dynamic_weight_norm:.6f}")
-            
         except Exception as e:
-            logger.error(f"STDP 更新失败: {e}")
+            logger.error(f"STDP 关联学习失败: {e}")
 
     def _generate_real_monologue(self) -> str:
         """同步版本的独白生成（兼容旧接口）"""
