@@ -267,7 +267,7 @@ if __name__ == "__main__":
   print("=" * 60)
     
   # 加载模型
-  model_path = "./models/Qwen3.5-0.8B-Base"
+  model_path = "./models/Qwen3.5-0.8B"
   print(f"\n加载模型：{model_path}")
   model = load_model(model_path)
     

@@ -21,7 +21,7 @@ def main():
     
     # 初始化配置
     config = BrainAIConfig()
-    config.model_path = "./models/Qwen3.5-0.8B-Base"
+    config.model_path = "./models/Qwen3.5-0.8B"
     
     print("\n[初始化] 加载模型和模块...")
     

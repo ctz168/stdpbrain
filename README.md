@@ -1,6 +1,6 @@
 # 类人脑双系统全闭环 AI架构
 
-基于 **Qwen3.5-0.8B-Base** 底座模型，实现与人脑同源的"刷新即推理、推理即学习、学习即优化、记忆即锚点"全闭环智能架构。
+基于 **Qwen3.5-0.8B** 底座模型，实现与人脑同源的"刷新即推理、推理即学习、学习即优化、记忆即锚点"全闭环智能架构。
 <div align="center">
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ctz168/stdpbrain/blob/main/colab_stdpbrain_bot.ipynb)
@@ -84,10 +84,10 @@ pip install numpy scipy scikit-learn pandas tqdm
 
 ```bash
 # 从 HuggingFace 下载
-huggingface-cli download Qwen/Qwen3.5-0.8B-Base --local-dir ./models/Qwen3.5-0.8B-Base
+huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir ./models/Qwen3.5-0.8B
 
 # 或从 ModelScope 下载
-modelscope download Qwen/Qwen3.5-0.8B-Base --local_dir ./models/Qwen3.5-0.8B-Base
+modelscope download Qwen/Qwen3.5-0.8B --local_dir ./models/Qwen3.5-0.8B
 ```
 
 ### 4. 测试运行
@@ -182,7 +182,7 @@ python main.py --mode telegram --telegram-token YOUR_BOT_TOKEN
 from core.interfaces import create_brain_ai
 
 # 创建 AI 实例
-ai = create_brain_ai(model_path="./models/Qwen3.5-0.8B-Base")
+ai = create_brain_ai(model_path="./models/Qwen3.5-0.8B")
 
 # 对话
 response = ai.chat("你好，请介绍一下自己")
@@ -232,7 +232,7 @@ config.hippocampus.CA3_max_capacity = 10000 # 记忆容量
 
 ## ⚠️ 注意事项
 
-1. **模型权重**: 需自行下载 Qwen3.5-0.8B-Base 官方权重
+1. **模型权重**: 需自行下载 Qwen3.5-0.8B 官方权重
 2. **显存要求**: INT4 量化后约 400MB，建议设备至少 512MB 可用内存
 3. **Python 版本**: 需要 Python 3.8+
 4. **PyTorch 版本**: 需要 PyTorch 2.0+

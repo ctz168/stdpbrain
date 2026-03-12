@@ -214,8 +214,8 @@ class DeploymentConfig:
 @dataclass
 class BrainAIConfig:
     """类人脑双系统全闭环 AI架构全局配置"""
-    model_name: str = "Qwen3.5-0.8B-Base"
-    model_path: str = "./models/Qwen3.5-0.8B-Base"
+    model_name: str = "Qwen3.5-0.8B"
+    model_path: str = "./models/Qwen3.5-0.8B"
     
     hard_constraints: HardConstraints = field(default_factory=HardConstraints)
     stdp: STDPConfig = field(default_factory=STDPConfig)

@@ -163,7 +163,7 @@ ls -la ./models/
 应该看到类似:
 ```
 models/
-└── Qwen3.5-0.8B-Base/
+└── Qwen3.5-0.8B/
     ├── config.json
     ├── tokenizer.json
     ├── tokenizer_config.json

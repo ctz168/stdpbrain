@@ -31,7 +31,7 @@ SESSION_TIMEOUT = 3600
 # ========== AI 模型配置 ==========
 
 # 模型路径
-MODEL_PATH = "./models/Qwen3.5-0.8B-Base"
+MODEL_PATH = "./models/Qwen3.5-0.8B"
 
 # 运行设备 ("cuda" | "cpu")
 DEVICE = None  # None 表示自动选择

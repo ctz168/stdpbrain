@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--model-path",
         type=str,
-        default="./models/Qwen3.5-0.8B-Base",
+        default="./models/Qwen3.5-0.8B",
         help="Qwen3.5-0.8B 模型路径"
     )
     
@@ -247,7 +247,7 @@ def main():
     
     print("=" * 60)
     print("类人脑双系统全闭环 AI架构")
-    print("底座模型：Qwen3.5-0.8B-Base")
+    print("底座模型：Qwen3.5-0.8B")
     print("=" * 60)
     
     # ========== 1. 初始化配置 ==========
@@ -269,7 +269,7 @@ def main():
         print(f"[错误] 初始化失败：{e}")
         print("\n提示：请确保已下载 Qwen3.5-0.8B 模型到指定路径")
         print("可使用以下命令下载:")
-        print("  huggingface-cli download Qwen/Qwen3.5-0.8B-Base --local-dir ./models/Qwen3.5-0.8B-Base")
+        print("  huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir ./models/Qwen3.5-0.8B")
         sys.exit(1)
     
     # ========== 3. 执行对应模式 ==========
