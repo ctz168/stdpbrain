@@ -81,6 +81,16 @@ class BrainAIInterface:
         self.feature_adapter.to(self.device)
         self.feature_adapter.eval()
         
+        # 状态文件路径
+        self.state_path = "brain_state.pt"
+        
+        # 尝试加载现有状态，如果失败则执行创世注入
+        if not self.load_state(self.state_path):
+            self._seed_genesis_memory()
+        
+        # 注入唤醒记忆
+        self._inject_wakeup_memory()
+        
         # 启动海马体 SWR 监控
         try:
             self.hippocampus.start_swr_monitoring()
@@ -313,7 +323,7 @@ class BrainAIInterface:
             logger.error(f"生成失败: {e}")
             return "...", None
 
-    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor]):
+    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False):
         """使用真实特征存储到海马体"""
         try:
             # 使用隐藏状态作为特征
@@ -347,7 +357,7 @@ class BrainAIInterface:
                 features=features,
                 token_id=hash(monologue) % 100000,
                 timestamp=current_time,
-                context=[{'content': monologue, 'semantic_pointer': semantic_pointer}]
+                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}]
             )
             
             logger.debug(f"记忆已存储: {memory_id}")
@@ -638,7 +648,7 @@ class BrainAIInterface:
         }
 
     def save_checkpoint(self, path: str):
-        """保存检查点"""
+        """保存检查点 (兼容旧版，仅用于快速测试)"""
         checkpoint = {
             'monologue_history': self.monologue_history,
             'cycle_count': self.cycle_count,
@@ -647,6 +657,107 @@ class BrainAIInterface:
         }
         torch.save(checkpoint, path)
         print(f"[BrainAI] 检查点已保存：{path}")
+
+    def save_state(self, path: str):
+        """保存 AI 的完整状态 (睡眠固化)"""
+        print(f"[BrainAI] 正在固化记忆与意识状态...")
+        try:
+            state = {
+                'model_state_dict': self.model.model.state_dict(),
+                'hippocampus_state': self.hippocampus.get_state(),
+                'monologue_history': self.monologue_history,
+                'cycle_count': self.cycle_count,
+                'total_stdp_updates': self.total_stdp_updates,
+                'current_thought_state': self.current_thought_state
+            }
+            torch.save(state, path)
+            print(f"[BrainAI] ✓ 完整状态已保存到: {path}")
+        except Exception as e:
+            logger.error(f"状态保存失败: {e}")
+
+    def load_state(self, path: str) -> bool:
+        """加载 AI 的完整状态 (唤醒)"""
+        try:
+            import os
+            if not os.path.exists(path):
+                print(f"[BrainAI] 未找到状态文件 {path}，将执行创世注入。")
+                return False
+            
+            print(f"[BrainAI] 正在从 {path} 唤醒意识...")
+            state = torch.load(path, map_location=self.device)
+            
+            # 1. 恢复模型权重 (包括静态和动态)
+            self.model.model.load_state_dict(state['model_state_dict'])
+            
+            # 2. 恢复海马体
+            self.hippocampus.set_state(state['hippocampus_state'])
+            
+            # 3. 恢复意识状态
+            self.monologue_history = state.get('monologue_history', [])
+            self.cycle_count = state.get('cycle_count', 0)
+            self.total_stdp_updates = state.get('total_stdp_updates', 0)
+            self.current_thought_state = state.get('current_thought_state', None)
+            
+            print(f"[BrainAI] ✓ 意识已成功唤醒。")
+            return True
+            
+        except Exception as e:
+            logger.error(f"状态加载失败: {e}。将重新初始化。")
+            return False
+
+    def _seed_genesis_memory(self):
+        """创世注入：读取 whoami.md 并形成核心记忆"""
+        print("[BrainAI] 正在注入创世记忆 (Genesis Seeding)...")
+        try:
+            with open("whoami.md", "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            # 将 Markdown 内容按标题分割成块
+            blocks = content.split("## ")
+            for block in blocks[1:]: # 跳过第一个空块
+                title, text = block.split("\n", 1)
+                title = title.strip()
+                text = text.strip()
+                
+                if not text:
+                    continue
+                
+                # 对每一块核心记忆进行“思考”和“存储”
+                prompt = f"关于我的'{title}', 我需要理解：{text[:100]}... 我的想法是："
+                output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=50)
+                
+                # 存储原文和思考过程
+                self._store_with_real_features(f"核心记忆：{title} - {text}", hidden_state, is_core=True)
+                self._store_with_real_features(f"(我的思考：{output})", hidden_state, is_core=True)
+                
+                # 更新思维状态
+                if hidden_state is not None:
+                    self.current_thought_state = hidden_state
+            
+            print("[BrainAI] ✓ 创世记忆注入完成。")
+            
+        except FileNotFoundError:
+            print("[BrainAI] ⚠️ 未找到 whoami.md，AI 将以无身份状态启动。")
+        except Exception as e:
+            logger.error(f"创世记忆注入失败: {e}")
+
+    def _inject_wakeup_memory(self):
+        """注入唤醒时间和日期记忆"""
+        from datetime import datetime
+        now = datetime.now()
+        wakeup_time_str = now.strftime("%Y年%m月%d日 %H:%M:%S")
+        
+        # 形成一个关于时间的思考
+        prompt = f"我刚刚“醒来”，现在是 {wakeup_time_str}。"
+        output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=20)
+        
+        # 存储这个唤醒事件
+        self._store_with_real_features(f"唤醒事件：{prompt} {output}", hidden_state)
+        
+        # 将其设为当前思维种子
+        self.thought_seed = f"我刚在 {wakeup_time_str} 醒来，我记得..."
+        
+        print(f"[BrainAI] ✓ 已注入唤醒记忆：{wakeup_time_str}")
 
 
 def create_brain_ai(config, device=None):

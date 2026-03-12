@@ -200,7 +200,29 @@ class HippocampusSystem(nn.Module):
             topk=topk
         )
         
-        # ========== 6. 添加 DG 特征到返回结果 ==========
+        return sorted_memories
+
+    def get_state(self) -> dict:
+        """获取海马体系统的完整状态"""
+        return {
+            'ca3_state': self.ca3_memory.get_state(),
+            'ec_encoder_state': self.ec_encoder.state_dict(),
+            'dg_separator_state': self.dg_separator.state_dict(),
+            'ca1_gate_state': self.ca1_gate.state_dict(),
+            'cycle_count': self.cycle_count
+        }
+
+    def set_state(self, state: dict):
+        """从状态字典恢复海马体系统"""
+        if 'ca3_state' in state:
+            self.ca3_memory.set_state(state['ca3_state'])
+        if 'ec_encoder_state' in state:
+            self.ec_encoder.load_state_dict(state['ec_encoder_state'])
+        if 'dg_separator_state' in state:
+            self.dg_separator.load_state_dict(state['dg_separator_state'])
+        if 'ca1_gate_state' in state:
+            self.ca1_gate.load_state_dict(state['ca1_gate_state'])
+        self.cycle_count = state.get('cycle_count', 0)# ========== 6. 添加 DG 特征到返回结果 ==========
         for mem in sorted_memories:
             mem['dg_features'] = dg_features.cpu()
         

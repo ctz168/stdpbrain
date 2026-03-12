@@ -450,17 +450,23 @@ class QwenInterface:
             
             next_token_logits = output_tensors.logits[:, -1, :].clone()
             
-            # 向量化重复惩罚
+            # 向量化重复惩罚 (scatter-based)
             repetition_penalty = kwargs.get('repetition_penalty', 1.1)
             if repetition_penalty != 1.0 and input_ids is not None:
-                for i in range(input_ids.shape[0]):
-                    unique_tokens = input_ids[i].unique()
-                    seen_logits = next_token_logits[i, unique_tokens]
-                    next_token_logits[i, unique_tokens] = torch.where(
-                        seen_logits > 0,
-                        seen_logits / repetition_penalty,
-                        seen_logits * repetition_penalty
-                    )
+                # 获取每个 batch item 的不重复 token
+                # 注意：在当前 batch_size=1 的情况下，这等同于 unique()
+                unique_tokens = torch.unique(input_ids)
+                
+                # 创建惩罚值
+                seen_logits = next_token_logits[:, unique_tokens]
+                penalized_logits = torch.where(
+                    seen_logits > 0,
+                    seen_logits / repetition_penalty,
+                    seen_logits * repetition_penalty
+                )
+                
+                # 使用 scatter 将惩罚应用回原位置
+                next_token_logits.scatter_(1, unique_tokens.unsqueeze(0), penalized_logits)
 
             # 温度缩放
             temp = kwargs.get('temperature', 0.7)

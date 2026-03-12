@@ -294,13 +294,12 @@ def main():
             run_telegram_bot(ai, args.telegram_token, args.async_mode)
     
     finally:
-        # ========== 4. 清理 ==========
-        print("\n[退出] 保存状态...")
+        # ========== 4. 清理 (睡眠固化) ==========
+        print("\n[退出] 正在固化记忆与意识状态...")
         try:
-            ai.save_checkpoint("brain_ai_checkpoint.pt")
-            print("[退出] 状态已保存。")
+            ai.save_state("brain_state.pt")
         except Exception as e:
-            print(f"[警告] 保存失败: {e}")
+            print(f"[警告] 状态保存失败: {e}")
     
     print("\n再见！")
 
