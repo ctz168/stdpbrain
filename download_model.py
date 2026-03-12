@@ -1,7 +1,7 @@
 from huggingface_hub import snapshot_download
 import os
 model_id = "Qwen/Qwen3.5-0.8B"
-local_dir = "weights/Qwen3.5-0.8B"
+local_dir = "models/Qwen3.5-0.8B"
 
 print(f"Downloading {model_id} to {local_dir}...")
 os.makedirs(local_dir, exist_ok=True)
