@@ -16,6 +16,9 @@ import sys
 import time
 from typing import Optional
 
+# 导入配置
+import config as secret_config
+
 
 def parse_args():
     """解析命令行参数"""
@@ -56,22 +59,22 @@ def parse_args():
     parser.add_argument(
         "--model-path",
         type=str,
-        default="./models/Qwen3.5-0.8B",
+        default=secret_config.MODEL_PATH,
         help="Qwen3.5-0.8B 模型路径"
     )
     
     parser.add_argument(
         "--device",
         type=str,
-        default=None,
-        choices=["cuda", "cpu"],
+        default=secret_config.DEVICE or None,
+        choices=["cuda", "cpu", "mps", None],
         help="运行设备"
     )
     
     parser.add_argument(
         "--quantization",
         type=str,
-        default="INT4",
+        default=secret_config.QUANTIZATION,
         choices=["FP16", "INT8", "INT4"],
         help="量化类型"
     )
@@ -79,7 +82,7 @@ def parse_args():
     parser.add_argument(
         "--telegram-token",
         type=str,
-        default=None,
+        default=secret_config.TELEGRAM_BOT_TOKEN,
         help="Telegram Bot Token (telegram 模式)"
     )
     
@@ -214,14 +217,15 @@ def run_telegram_bot(ai, token: str = None, async_mode: bool = False):
     from telegram_bot.bot import BrainAIBot
     
     # 获取 Token
-    bot_token = token or "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
+    bot_token = token or secret_config.TELEGRAM_BOT_TOKEN
     
     # 创建 Bot
     bot = BrainAIBot(
         token=bot_token,
         ai_interface=ai,
         stream_chunk_size=1,
-        stream_delay_ms=50
+        stream_delay_ms=50,
+        proxy_url=secret_config.PROXY_URL
     )
     
     print(f"\n[Bot] Token: {bot_token[:20]}...")
