@@ -3,7 +3,7 @@
 基于 **Qwen3.5-0.8B-Base** 底座模型，实现与人脑同源的"刷新即推理、推理即学习、学习即优化、记忆即锚点"全闭环智能架构。
 <div align="center">
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ctz168/stdpbrain/blob/main/deploy_colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ctz168/stdpbrain/blob/main/colab_stdpbrain_bot.ipynb)
 
 </div>
 
