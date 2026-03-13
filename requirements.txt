@@ -6,7 +6,7 @@
 # ===========================================
 
 # PyTorch - 深度学习框架
-torch>=2.8.0
+torch>=2.5.1
 
 # Transformers - Hugging Face模型库
 transformers>=5.3.0
