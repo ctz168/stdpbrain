@@ -244,12 +244,8 @@ class HippocampusSystem(nn.Module):
             self.dg_separator.load_state_dict(state['dg_separator_state'])
         if 'ca1_gate_state' in state:
             self.ca1_gate.load_state_dict(state['ca1_gate_state'])
-        self.cycle_count = state.get('cycle_count', 0)# ========== 6. 添加 DG 特征到返回结果 ==========
-        for mem in sorted_memories:
-            mem['dg_features'] = dg_features.cpu()
-        
-        return sorted_memories
-    
+        self.cycle_count = state.get('cycle_count', 0)
+
     def generate_attention_gate(
         self,
         query: torch.Tensor,
