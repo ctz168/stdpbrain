@@ -268,7 +268,9 @@ class BrainAIInterface:
         except Exception as e:
             logger.debug(f"STDP step失败: {e}")
         
-        return output.text
+        # 清理输出中的标签泄露
+        cleaned_text = self._clean_output(output.text)
+        return cleaned_text
 
     def think(self) -> dict:
         """真实自思考接口：基于隐藏状态自发生成独白"""
@@ -780,31 +782,92 @@ class BrainAIInterface:
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
         """
-        构建对话 Prompt (类人模式)
+        构建对话 Prompt (类人模式) - 优化版本
         
-        将独白作为 AI 的“思维背景”
+        优化：
+        1. 使用 ChatML 格式，避免标签泄露到输出
+        2. 简化 prompt 结构，提高 0.8B 模型理解
+        3. 记忆和思维以自然语言方式注入
         """
-        system_msg = "You are a helpful, concise AI assistant. Answer the user accurately based on the context and memory."
+        # 构建系统消息
+        system_parts = ["你是一个有帮助的AI助手。请根据上下文和记忆准确回答用户问题。"]
         
-        prompt = f"<system>\n{system_msg}\n</system>\n\n"
-        
-        # 注入海马体召回的记忆（新增）
+        # 注入海马体召回的记忆（自然语言方式）
         if memory_context:
-            prompt += f"<memory>\n{memory_context}\n</memory>\n\n"
+            system_parts.append(f"【相关记忆】{memory_context}")
         
         # 注入最近的潜意识（独白）
-        if monologue:
-            prompt += f"<thought>\n{monologue}\n</thought>\n\n"
-            
+        if monologue and len(monologue) > 3:
+            system_parts.append(f"【当前思考】{monologue}")
+        
+        system_msg = "\n".join(system_parts)
+        
+        # 使用 ChatML 格式
+        messages = [
+            {"role": "system", "content": system_msg}
+        ]
+        
         # 历史记录 (只取最近 2 轮以减轻 0.8B 负担)
         if history:
             for msg in history[-2:]:
-                role = "User" if msg['role'] == 'user' else "Assistant"
-                prompt += f"{role}: {msg['content']}\n"
-                
-        prompt += f"User: {user_input}\nAssistant:"
+                role = "user" if msg['role'] == 'user' else "assistant"
+                messages.append({"role": role, "content": msg['content']})
+        
+        # 添加当前用户输入
+        messages.append({"role": "user", "content": user_input})
+        
+        # 使用 tokenizer 的 chat template
+        try:
+            prompt = self.model.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        except Exception:
+            # 回退到简单格式
+            prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n"
+            if history:
+                for msg in history[-2:]:
+                    role = "user" if msg['role'] == 'user' else "assistant"
+                    prompt += f"<|im_start|>{role}\n{msg['content']}<|im_end|>\n"
+            prompt += f"<|im_start|>user\n{user_input}<|im_end|>\n<|im_start|>assistant\n"
+        
         return prompt
 
+
+
+    def _clean_output(self, text: str) -> str:
+        """
+        清理输出文本，移除可能的标签泄露
+        
+        优化：
+        1. 移除 ChatML 标签
+        2. 移除自定义标签
+        3. 移除多余的空白行
+        """
+        # 移除 ChatML 标签
+        tags_to_remove = [
+            '<|im_start|>', '<|im_end|>',
+            '<system>', '</system>',
+            '<memory>', '</memory>',
+            '<thought>', '</thought>',
+            '<user>', '</user>',
+            '<assistant>', '</assistant>'
+        ]
+        
+        for tag in tags_to_remove:
+            text = text.replace(tag, '')
+        
+        # 移除角色标记
+        text = re.sub(r'^(system|user|assistant):\s*', '', text, flags=re.MULTILINE)
+        
+        # 移除多余的空白行
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        # 移除开头和结尾的空白
+        text = text.strip()
+        
+        return text
     def get_stats(self) -> dict:
         """获取统计信息"""
         # 计算动态权重的实际变化

@@ -54,7 +54,7 @@ class CA3EpisodicMemory(nn.Module):
         max_capacity: int = 10000,     # 最大记忆容量
         feature_dim: int = 128,        # DG 特征维度
         timestamp_precision_ms: int = 10,  # 时间戳精度 10ms
-        recall_threshold: float = 0.7, # 召回阈值
+        recall_threshold: float = 0.5, # 召回阈值 (降低以提高召回率)
         decay_rate: float = 0.999      # 记忆衰减率
     ):
         super().__init__()
@@ -154,11 +154,23 @@ class CA3EpisodicMemory(nn.Module):
         """
         candidates = []
         
-        # ========== 1. 语义线索检索 ==========
-        if query_semantic and query_semantic in self.semantic_index:
-            memory_id = self.semantic_index[query_semantic]
-            if memory_id in self.memories:
-                candidates.append(self.memories[memory_id])
+        # ========== 1. 语义线索检索 (优化：添加模糊匹配) ==========
+        if query_semantic:
+            # 精确匹配
+            if query_semantic in self.semantic_index:
+                memory_id = self.semantic_index[query_semantic]
+                if memory_id in self.memories:
+                    candidates.append(self.memories[memory_id])
+            
+            # 模糊匹配：查找包含查询关键词的记忆
+            query_keywords = set(query_semantic.split())
+            for semantic_ptr, mem_id in self.semantic_index.items():
+                if mem_id in self.memories and mem_id not in [c.memory_id for c in candidates]:
+                    # 检查关键词重叠
+                    ptr_keywords = set(semantic_ptr.split())
+                    overlap = query_keywords & ptr_keywords
+                    if len(overlap) >= min(2, len(query_keywords)):  # 至少2个关键词重叠
+                        candidates.append(self.memories[mem_id])
         
         # ========== 2. 时间线索检索 ==========
         if query_timestamp is not None:

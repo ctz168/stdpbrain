@@ -36,8 +36,8 @@ class HardConstraints:
 class STDPConfig:
     """STDP 时序可塑性权重更新配置"""
     # 学习率
-    alpha_LTP: float = 0.01  # 权重增强学习率 (Long-Term Potentiation)
-    beta_LTD: float = 0.008  # 权重减弱学习率 (Long-Term Depression)
+    alpha_LTP: float = 0.02  # 权重增强学习率 (优化：提高学习效率) (Long-Term Potentiation)
+    beta_LTD: float = 0.015  # 权重减弱学习率 (优化：平衡增强/减弱) (Long-Term Depression)
     
     # 阈值
     update_threshold: float = 0.001  # 最小更新阈值
