@@ -208,7 +208,8 @@ class BrainAIInterface:
                 if memory_pointers:
                     memory_context = "相关记忆: " + " | ".join(memory_pointers[:2])
         except Exception as e:
-            logger.debug(f"记忆召回失败: {e}")
+            # 记忆召回失败是非致命错误，记录警告后继续
+            logger.warning(f"记忆召回失败（非致命）: {e}")
         
         # 3. 思考：生成潜意识独白 (受刺激的思考)
         # 设置思维种子，让独白响应用户输入
@@ -230,7 +231,8 @@ class BrainAIInterface:
                 if mem_features:
                     memory_anchor = torch.stack(mem_features).mean(dim=0).unsqueeze(0).to(self.device)
             except Exception as e:
-                logger.debug(f"准备记忆锚点失败: {e}")
+                # 记忆锚点准备失败是非致命错误
+                logger.warning(f"准备记忆锚点失败（非致命）: {e}")
         
         output = self.model.generate(
             prompt, 
@@ -267,7 +269,8 @@ class BrainAIInterface:
                 }
             )
         except Exception as e:
-            logger.warning(f"STDP step失败: {e}")
+            # STDP 更新失败是非致命错误，但应该记录
+            logger.warning(f"STDP step失败（非致命）: {e}")
         
         return output.text
 
