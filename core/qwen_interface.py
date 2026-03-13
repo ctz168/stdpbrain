@@ -147,12 +147,14 @@ class QwenModelWrapper(nn.Module):
             
         except Exception as e:
             print(f"⚠️ 模型加载异常：{e}，回退到标准 FP32 加载")
-            # 最终回退
+            # 最终回退 - 更新设备为 CPU
+            self.device = "cpu"
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
                 torch_dtype=torch.float32,
                 trust_remote_code=True
             )
+            print(f"  ⚠️ 设备已更新为: {self.device}")
             return model
     
     def _integrate_dual_weights(self):
@@ -403,6 +405,8 @@ class QwenInterface:
             device=device,
             quantization=quantization
         )
+        # 同步设备（模型可能回退到 CPU）
+        self.device = self.model.device
         # 优化2: 模型加载后只调用一次 eval()，不在每次 forward_step 重复调用
         self.model.eval()
         
