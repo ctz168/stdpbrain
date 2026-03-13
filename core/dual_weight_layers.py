@@ -36,27 +36,33 @@ class DualWeightLinear(nn.Module):
         self.static_ratio = static_ratio
         
         # ========== 静态基础分支 (冻结) ==========
-        self.static_weight = nn.Parameter(
-            torch.zeros(out_features, in_features), 
-            requires_grad=False  # 永久冻结
-        )
-        
         if static_weight is not None:
-            # 继承官方预训练权重 (100% 保持能力)
-            self.static_weight.data = static_weight.clone()
+            # 使用传入的权重形状（支持量化后的权重）
+            self.static_weight = nn.Parameter(
+                static_weight.clone(), 
+                requires_grad=False  # 永久冻结
+            )
+            # 更新实际的输入输出特征数
+            self.out_features = static_weight.shape[0]
+            self.in_features = static_weight.shape[1]
         else:
             # 随机初始化 (仅用于测试)
-            self.static_weight.data = torch.randn(out_features, in_features)
+            self.static_weight = nn.Parameter(
+                torch.randn(out_features, in_features),
+                requires_grad=False
+            )
         
         # ========== STDP动态增量分支 (初始为0) ==========
+        # 动态权重形状与静态权重完全匹配，确保在同一设备上
         self.dynamic_weight = nn.Parameter(
-            torch.zeros(out_features, in_features),
+            torch.zeros(self.static_weight.shape[0], self.static_weight.shape[1], 
+                       device=self.static_weight.device, dtype=self.static_weight.dtype),
             requires_grad=True  # 可学习
         )
         
         # ========== 偏置 ==========
         if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
+            self.bias = nn.Parameter(torch.zeros(out_features, device=self.static_weight.device, dtype=self.static_weight.dtype))
         else:
             self.register_parameter('bias', None)
         
