@@ -44,13 +44,11 @@ class DualWeightLinear(nn.Module):
         if static_weight is not None:
             # 继承官方预训练权重 (100% 保持能力)
             self.static_weight.data = static_weight.clone()
-        else:
-            # 随机初始化 (仅用于测试)
-            self.static_weight.data = torch.randn(out_features, in_features)
         
         # ========== STDP动态增量分支 (初始为0) ==========
+        # 动态权重形状与静态权重匹配
         self.dynamic_weight = nn.Parameter(
-            torch.zeros(out_features, in_features),
+            torch.zeros_like(self.static_weight),
             requires_grad=True  # 可学习
         )
         
