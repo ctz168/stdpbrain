@@ -54,19 +54,15 @@ class DualWeightLinear(nn.Module):
         
         # ========== STDP动态增量分支 (初始为0) ==========
         # 动态权重形状与静态权重完全匹配，确保在同一设备上
-        # 注意：必须显式调用 .to() 确保设备一致
-        self.dynamic_weight = nn.Parameter(
-            torch.zeros(self.static_weight.shape[0], self.static_weight.shape[1]),
-            requires_grad=True  # 可学习
-        )
-        # 显式移动到与静态权重相同的设备和数据类型
-        self.dynamic_weight = self.dynamic_weight.to(self.static_weight.device).to(self.static_weight.dtype)
+        # 注意：必须显式调用 .to() 并重新包装为 nn.Parameter
+        dynamic_tensor = torch.zeros(self.static_weight.shape[0], self.static_weight.shape[1],
+                                    device=self.static_weight.device, dtype=self.static_weight.dtype)
+        self.dynamic_weight = nn.Parameter(dynamic_tensor, requires_grad=True)
         
         # ========== 偏置 ==========
         if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
-            # 显式移动到与静态权重相同的设备和数据类型
-            self.bias = self.bias.to(self.static_weight.device).to(self.static_weight.dtype)
+            bias_tensor = torch.zeros(out_features, device=self.static_weight.device, dtype=self.static_weight.dtype)
+            self.bias = nn.Parameter(bias_tensor)
         else:
             self.register_parameter('bias', None)
         
