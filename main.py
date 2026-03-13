@@ -146,7 +146,7 @@ def run_generate(ai, input_text: str):
     print("\n生成中...")
     
     start_time = time.time()
-    output = ai.generate(input_text, max_tokens=200)
+    output = ai.generate(input_text, max_tokens=10)
     elapsed = time.time() - start_time
     
     print(f"\n输出:\n{output.text}")
