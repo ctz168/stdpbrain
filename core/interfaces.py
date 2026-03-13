@@ -175,7 +175,7 @@ class BrainAIInterface:
         self,
         user_input: str,
         history: List[Dict[str, str]] = None,
-        max_tokens: int = 256,
+        max_tokens: int = 150,
         thinking: bool = True
     ) -> str:
         """
@@ -782,29 +782,43 @@ class BrainAIInterface:
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
         """
-        构建对话 Prompt (类人模式)
+        构建对话 Prompt (使用标准 ChatML 格式)
         
-        将独白作为 AI 的“思维背景”
+        将独白作为 AI 的“思维背景”，记忆作为“知识背景”
         """
-        system_msg = "You are a helpful, concise AI assistant. Answer the user accurately based on the context and memory."
+        system_content = "你是一个基于“类人脑双系统全闭环架构”的 AI 助手。你的行为由海马体记忆系统和 STDP 机制驱动。"
         
-        prompt = f"<system>\n{system_msg}\n</system>\n\n"
-        
-        # 注入海马体召回的记忆（新增）
+        # 整合记忆和独白到系统消息中，或者作为独立的消息
         if memory_context:
-            prompt += f"<memory>\n{memory_context}\n</memory>\n\n"
+            system_content += f"\n[相关记忆召回]: {memory_context}"
         
-        # 注入最近的潜意识（独白）
         if monologue:
-            prompt += f"<thought>\n{monologue}\n</thought>\n\n"
+            system_content += f"\n[当前内心独白]: {monologue}"
             
+        messages = [
+            {"role": "system", "content": system_content}
+        ]
+        
         # 历史记录 (只取最近 2 轮以减轻 0.8B 负担)
         if history:
             for msg in history[-2:]:
-                role = "User" if msg['role'] == 'user' else "Assistant"
-                prompt += f"{role}: {msg['content']}\n"
+                messages.append(msg)
                 
-        prompt += f"User: {user_input}\nAssistant:"
+        messages.append({"role": "user", "content": user_input})
+        
+        try:
+            prompt = self.model.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        except:
+            # 手动构建 ChatML
+            prompt = ""
+            for msg in messages:
+                prompt += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+            prompt += "<|im_start|>assistant\n"
+            
         return prompt
 
     def get_stats(self) -> dict:
