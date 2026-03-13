@@ -218,6 +218,18 @@ class QwenModelWrapper(nn.Module):
         
         print(f"✓ 已替换 {replaced_count} 个层为双权重版本")
     
+    def set_hippocampus_gate(self, gate_fn):
+        """
+        设置海马体注意力门控函数
+        
+        Args:
+            gate_fn: function(query, key, memory_anchor) -> gate_mask
+        """
+        for name, module in self.base_model.named_modules():
+            if hasattr(module, 'attn') and hasattr(module.attn, 'set_hippocampus_gate'):
+                module.attn.set_hippocampus_gate(gate_fn)
+        print(f"✓ 已设置海马体门控函数")
+    
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -230,14 +242,21 @@ class QwenModelWrapper(nn.Module):
         return_dict: Optional[bool] = None,
         **kwargs
     ):
-        """前向传播 (支持 KV-cache)"""
+        """前向传播 (支持 KV-cache 和记忆锚点)"""
         # 确保默认值
         out_attentions = output_attentions if output_attentions is not None else False
         ret_dict = return_dict if return_dict is not None else True
         use_cache = use_cache if use_cache is not None else False
         
+        # 存储记忆锚点，供注意力层使用
+        self._current_memory_anchor = memory_anchor
+        
+        # 设置DualWeightAttention的类变量（供所有注意力层访问）
+        from core.dual_weight_layers import DualWeightAttention
+        DualWeightAttention.set_memory_anchor(memory_anchor)
+        
         # 清理 kwargs 避免重复冲突
-        exclude = {'return_dict', 'output_attentions', 'output_hidden_states', 'use_cache', 'past_key_values'}
+        exclude = {'return_dict', 'output_attentions', 'output_hidden_states', 'use_cache', 'past_key_values', 'memory_anchor'}
         clean_kwargs = {k: v for k, v in kwargs.items() if k not in exclude}
         
         # 使用 base_model 进行推理 (如果 base_model 支持 past_key_values)
@@ -565,7 +584,7 @@ class QwenInterface:
             token_text = self.model.tokenizer.decode([next_token_id], skip_special_tokens=True)
             yield token_text
             
-            if next_token_id == self.model.tokenizer.eos_token_id:
+            if next_token_id in stop_token_ids:
                 break
             
             # 优化6: 写入预分配缓冲区，无内存分配
@@ -585,11 +604,19 @@ class QwenInterface:
         max_tokens: int = 100,
         temperature: float = 0.7,
         use_self_loop: bool = False,
+        memory_anchor: Optional[torch.Tensor] = None,
         **kwargs
     ):
         """
         STDP Strict Generate
         Using the 10ms execution engine step by step.
+        
+        Args:
+            input_text: 输入文本
+            max_tokens: 最大生成token数
+            temperature: 温度参数
+            use_self_loop: 是否使用自闭环
+            memory_anchor: 海马体记忆锚点张量
         """
         start_time = time.time()
         
@@ -605,6 +632,11 @@ class QwenInterface:
         input_ids = inputs.input_ids.to(self.device)
         attention_mask = inputs.attention_mask.to(self.device)
         
+        # 定义停止token（包括EOS和ChatML的im_end）
+        eos_token_id = self.model.tokenizer.eos_token_id
+        im_end_token_id = 151645  # <|im_end|> 的 token ID
+        stop_token_ids = {eos_token_id, im_end_token_id}
+        
         generated_tokens = []
         
         # Initialize internal STDP tracker (Simulated loop injection)
@@ -612,13 +644,14 @@ class QwenInterface:
             step_outputs = self.forward_step(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                memory_anchor_gate=memory_anchor,
                 **kwargs
             )
             
             next_token_id = step_outputs['token_id']
             generated_tokens.append(next_token_id)
             
-            if next_token_id == self.model.tokenizer.eos_token_id:
+            if next_token_id in stop_token_ids:
                 break
                 
             # Append token for next step

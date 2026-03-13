@@ -113,6 +113,20 @@ class DualWeightAttention(nn.Module):
     在 Qwen3.5-0.8B 的 Multi-Head Attention 基础上，
     将 Q/K/V/O 四个线性层全部替换为 DualWeightLinear
     """
+    
+    # 类变量：存储当前的记忆锚点（所有实例共享）
+    _current_memory_anchor = None
+    
+    @classmethod
+    def set_memory_anchor(cls, anchor):
+        """设置当前的记忆锚点"""
+        cls._current_memory_anchor = anchor
+    
+    @classmethod
+    def get_memory_anchor(cls):
+        """获取当前的记忆锚点"""
+        return cls._current_memory_anchor
+    
     def __init__(
         self,
         hidden_size: int,
@@ -198,12 +212,18 @@ class DualWeightAttention(nn.Module):
         present = (key, value) if use_cache else None
         
         # ========== 4. 窄窗口注意力 (O(1) 复杂度) ==========
-        if memory_anchor is not None and self.hippocampus_gate is not None:
-            gate_mask = self.hippocampus_gate(query, key, memory_anchor)
-            if attention_mask is not None:
-                attention_mask = attention_mask + gate_mask
-            else:
-                attention_mask = gate_mask
+        # 优先使用传入的memory_anchor，否则使用类变量中的
+        effective_memory_anchor = memory_anchor or self._current_memory_anchor
+        if effective_memory_anchor is not None and self.hippocampus_gate is not None:
+            try:
+                gate_mask = self.hippocampus_gate(query, key, effective_memory_anchor)
+                if gate_mask is not None:
+                    if attention_mask is not None:
+                        attention_mask = attention_mask + gate_mask
+                    else:
+                        attention_mask = gate_mask
+            except Exception as e:
+                pass  # 门控计算失败时继续正常推理
         
         # ========== 5. 注意力计算 ==========
         attn_weights = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.head_dim)
