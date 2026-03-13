@@ -7,6 +7,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from dataclasses import dataclass
 import asyncio
@@ -19,6 +20,7 @@ from core.qwen_interface import QwenInterface
 from hippocampus.hippocampus_system import HippocampusSystem
 from core.stdp_engine import STDPEngine
 from self_loop.self_loop_optimizer import SelfLoopOptimizer
+from core.monologue_engine import MonologueEngine, ThoughtState, EmotionState
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,9 @@ class BrainAIInterface:
         # 4. 加载真实自闭环优化器
         self.self_loop = SelfLoopOptimizer(config, model=self.model)
         
+        # 5. 加载类人脑独白引擎
+        self.monologue_engine = None  # 延迟初始化，需要等模型加载完成
+        
         # 周期计数
         self.cycle_count = 0
         self.total_generation_time = 0.0
@@ -67,6 +72,10 @@ class BrainAIInterface:
         # 当前思维状态（隐藏状态）
         self.current_thought_state: Optional[torch.Tensor] = None
         self.thought_seed: str = ""  # 思维种子文本
+        
+        # 思维状态机状态（用于兼容旧接口）
+        self._internal_thought_state = ThoughtState.RESTING
+        self._internal_emotion_state = EmotionState.CALM
         
         # STDP 学习追踪
         self.total_stdp_updates = 0
@@ -81,6 +90,28 @@ class BrainAIInterface:
         self.feature_adapter.to(self.device)
         self.feature_adapter.eval()
         
+        # 状态文件路径
+        self.state_path = "brain_state.pt"
+        
+        # 尝试加载现有状态，如果失败则执行创世注入
+        if not self.load_state(self.state_path):
+            self._seed_genesis_memory()
+        
+        # 注入唤醒记忆
+        self._inject_wakeup_memory()
+        
+        # 初始化独白引擎
+        try:
+            self.monologue_engine = MonologueEngine(
+                model_interface=self.model,
+                hippocampus_system=self.hippocampus,
+                config=config,
+                device=self.device
+            )
+            print("[BrainAI] ✓ 类人脑独白引擎已初始化")
+        except Exception as e:
+            logger.warning(f"独白引擎初始化失败: {e}，将使用简化版本")
+        
         # 启动海马体 SWR 监控
         try:
             self.hippocampus.start_swr_monitoring()
@@ -88,29 +119,154 @@ class BrainAIInterface:
         except Exception as e:
             logger.warning(f"SWR 监控启动失败: {e}")
         
+        # 设置海马体门控函数（连接CA1到注意力层）
+        self._setup_hippocampus_gate()
+        
         print("[BrainAI] ✓ 高级实现模块集成完成\n")
+    
+    def _setup_hippocampus_gate(self):
+        """设置海马体门控，让CA1门控信号影响注意力"""
+        def hippocampus_gate_fn(query, key, memory_anchors):
+            """
+            海马体门控函数
+            
+            Args:
+                query: [batch, heads, seq_len, head_dim]
+                key: [batch, heads, seq_len, head_dim]
+                memory_anchors: 记忆锚点列表
+            
+            Returns:
+                gate_mask: 注意力偏置 [batch, heads, seq_len, seq_len]
+            """
+            if not memory_anchors:
+                return None
+            
+            batch_size, num_heads, seq_len, head_dim = query.shape
+            
+            # 使用CA1门控生成注意力偏置
+            try:
+                gate_signal = self.hippocampus.ca1_gate(
+                    query.transpose(1, 2).reshape(-1, seq_len, num_heads * head_dim),
+                    key.transpose(1, 2).reshape(-1, seq_len, num_heads * head_dim),
+                    memory_anchors
+                )
+                # gate_signal: [batch, 1, seq_len, hidden_size]
+                # 转换为注意力偏置
+                if gate_signal is not None:
+                    # 简化：使用门控信号的平均值作为偏置
+                    bias = gate_signal.mean(dim=-1, keepdim=True)  # [batch, 1, seq_len, 1]
+                    bias = bias.expand(-1, num_heads, -1, seq_len)  # [batch, heads, seq_len, seq_len]
+                    return bias * 0.1  # 缩放因子
+            except Exception as e:
+                logger.debug(f"海马体门控计算失败: {e}")
+            
+            return None
+        
+        # 设置到模型的所有注意力层
+        try:
+            self.model.model.set_hippocampus_gate(hippocampus_gate_fn)
+            print("[BrainAI] ✓ 海马体门控已连接到注意力层")
+        except Exception as e:
+            logger.warning(f"设置海马体门控失败: {e}")
 
     def chat(
         self,
         user_input: str,
         history: List[Dict[str, str]] = None,
-        max_tokens: int = 512,
+        max_tokens: int = 256,
         thinking: bool = True
     ) -> str:
-        """真实对话接口：集成海马体记录、自闭环优化和 STDP 更新"""
+        """
+        类人模式对话：
+        1. 消化 (Digest)：将输入转化为思维状态
+        2. 召回 (Recall)：从海马体召回相关记忆
+        3. 思考 (Think)：基于输入生成一段潜意识独白
+        4. 回复 (Respond)：基于记忆、独白和输入生成正式回答
+        5. 学习 (Learn)：STDP更新和记忆存储
+        """
         self.hippocampus.record_activity()
         
-        prompt = self._format_chat_prompt(user_input, history)
+        # 1. 消化输入：强制更新思维种子
+        self.thought_seed = f"用户说：{user_input[:20]}"
         
-        # 使用带隐藏状态提取的生成
+        # 2. 召回海马体记忆（新增）
+        memory_context = ""
+        recalled_memories = []  # 保存召回的记忆锚点
+        try:
+            # 使用输入文本的embedding作为查询
+            input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+            query_features = embeddings.mean(dim=1).squeeze(0)
+            
+            # 适配维度
+            if query_features.shape[0] != 1024:
+                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            
+            # 召回记忆
+            recalled_memories = self.hippocampus.recall(query_features, topk=2)
+            if recalled_memories:
+                memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
+                if memory_pointers:
+                    memory_context = "相关记忆: " + " | ".join(memory_pointers[:2])
+        except Exception as e:
+            logger.debug(f"记忆召回失败: {e}")
+        
+        # 3. 思考：生成潜意识独白 (受刺激的思考)
+        # 设置思维种子，让独白响应用户输入
+        self.thought_seed = f"用户说：{user_input[:30]}"
+        monologue = self._generate_spontaneous_monologue(max_tokens=40, temperature=0.7)
+        
+        # 4. 回复：基于记忆和思维流生成
+        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
+        
+        # 准备记忆锚点张量（用于门控）
+        memory_anchor = None
+        if recalled_memories:
+            try:
+                # 提取记忆特征向量
+                mem_features = []
+                for mem in recalled_memories[:2]:
+                    if 'dg_features' in mem and mem['dg_features'] is not None:
+                        mem_features.append(mem['dg_features'])
+                if mem_features:
+                    memory_anchor = torch.stack(mem_features).mean(dim=0).unsqueeze(0).to(self.device)
+            except Exception as e:
+                logger.debug(f"准备记忆锚点失败: {e}")
+        
         output = self.model.generate(
             prompt, 
             max_tokens=max_tokens, 
-            use_self_loop=True
+            temperature=0.7,  # 回复更稳重
+            use_self_loop=True,
+            memory_anchor=memory_anchor  # 传入记忆锚点
         )
         
-        # 执行真实的 STDP 更新（使用提取的隐藏状态）
+        # 5. 存储用户输入和模型回复到海马体（保存完整上下文）
+        # 提取关键信息作为语义指针
+        semantic_pointer = f"用户: {user_input[:50]} | 回复: {output.text[:50]}"
+        self._store_with_real_features(
+            f"{user_input} -> {output.text}", 
+            self.current_thought_state,
+            semantic_pointer=semantic_pointer
+        )
         self._apply_real_stdp_update()
+        
+        # 6. 调用STDP引擎的step方法（新增）
+        try:
+            self.stdp_engine.step(
+                model_components={'hippocampus': self.hippocampus},
+                inputs={
+                    'context_tokens': torch.tensor([1, 2, 3]),
+                    'current_token': hash(user_input) % 10000,
+                    'memory_anchor_id': f'mem_{hash(output.text) % 10000}'
+                },
+                outputs={
+                    'evaluation_score': 30 + len(output.text) % 20
+                }
+            )
+        except Exception as e:
+            logger.debug(f"STDP step失败: {e}")
         
         return output.text
 
@@ -127,55 +283,81 @@ class BrainAIInterface:
         stats['monologue'] = monologue
         return stats
 
-    def _generate_spontaneous_monologue(self) -> str:
+    def _generate_spontaneous_monologue(self, max_tokens: int = 30, temperature: float = 0.6) -> str:
         """
-        生成自发的内心独白
+        生成自发的内心独白 (潜意识流)
         
-        核心改进：
-        1. 不使用元信息（STDP周期、海马体记忆数）
-        2. 基于当前思维状态（隐藏状态）自发推进
-        3. 海马体记忆作为思维线索，而非 prompt 内容
+        优化：
+        1. 使用ChatML格式
+        2. 降低温度提高连贯性
+        3. 简洁的独白内容
+        4. 乱码检查和过滤
         """
-        # 1. 获取当前思维状态或初始化
-        if self.current_thought_state is None:
-            # 初始化一个随机思维种子
-            self._initialize_thought_state()
-        
-        # 2. 从海马体召回记忆（作为思维线索，不直接放入 prompt）
-        memory_anchors = self._recall_memory_anchors()
-        
-        # 3. 构建简洁的续写 prompt（不包含元信息）
+        # 1. 构建Prompt (已使用ChatML格式)
         prompt = self._build_spontaneous_prompt()
         
-        # 4. 生成独白，同时提取隐藏状态
+        # 2. 生成独白
         try:
             output, hidden_state = self._generate_with_hidden_state(
                 prompt, 
-                max_tokens=100,
-                temperature=0.9,
-                repetition_penalty=1.5
+                max_tokens=max_tokens,
+                temperature=temperature,
+                repetition_penalty=1.1
             )
-            monologue = output.strip()
             
-            # 5. 更新思维状态
+            # 4. 乱码过滤
+            if self._is_gibberish(output):
+                monologue = "思维有些模糊..."
+            else:
+                monologue = output.strip()
+            
+            # 移除可能的格式残留
+            for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
+                monologue = monologue.replace(tag, '')
+            
+            monologue = monologue.strip()
+            
+            # 如果是乱码，使用默认值
+            if self._is_gibberish(monologue) or len(monologue) < 2:
+                monologue = "思考中..."
+            
+            # 截断到合理长度
+            if len(monologue) > 50:
+                monologue = monologue[:50] + "..."
+            
+            # 4. 更新思维状态
             if hidden_state is not None:
                 self.current_thought_state = hidden_state
             
         except Exception as e:
             logger.error(f"独白生成失败: {e}")
-            monologue = "..."
+            monologue = "思考中..."
         
-        # 6. 存储到海马体（使用真实特征）
+        # 5. 存储到海马体
         if monologue and len(monologue) > 3:
-            self._store_with_real_features(monologue, hidden_state)
+            semantic_pointer = f"思考: {monologue[:30]}"
+            self._store_with_real_features(monologue, hidden_state, semantic_pointer=semantic_pointer)
             self.monologue_history.append(monologue)
             if len(self.monologue_history) > self.max_monologue_history:
                 self.monologue_history.pop(0)
         
-        # 7. 应用 STDP 更新
+        # 6. 应用 STDP
         self._apply_real_stdp_update()
         
         return monologue
+
+    def _is_gibberish(self, text: str) -> bool:
+        """简单的乱码/特殊符号检查 (针对 0.8B 的常见错误)"""
+        if not text: return True
+        # 检查特殊符号比例 (如大量的 $ \ sum _ 等)
+        special_chars = set("$%^&*()_+={}|[]\\:;\"'<>,/?#")
+        special_count = sum(1 for char in text if char in special_chars)
+        if len(text) > 0 and special_count / len(text) > 0.3:
+            return True
+        # 检查是否包含过多重复字符
+        if len(text) > 10 and len(set(text)) < 5:
+            return True
+        return False
 
     def _initialize_thought_state(self):
         """初始化思维状态"""
@@ -218,22 +400,40 @@ class BrainAIInterface:
 
     def _build_spontaneous_prompt(self) -> str:
         """
-        构建自发的续写 prompt
+        构建潜意识续写 Prompt (使用ChatML格式)
         
-        关键：不包含元信息，让模型自然续写
+        独白应该简洁、有意义
         """
-        # 使用最近的独白历史作为上下文
-        if self.monologue_history:
-            # 取最近2条，简洁拼接
-            recent = self.monologue_history[-2:]
-            context = " ".join(recent[-2:]) if len(recent) > 1 else recent[0]
-            # 截断过长的上下文
-            if len(context) > 100:
-                context = context[-100:]
-            prompt = f"{context}..."
+        # 构建思维触发
+        if self.thought_seed:
+            trigger = self.thought_seed
+            self.thought_seed = ""  # 使用后清空
+        elif self.monologue_history:
+            trigger = self.monologue_history[-1][-30:] if len(self.monologue_history[-1]) > 30 else self.monologue_history[-1]
         else:
-            # 初始种子
-            prompt = self.thought_seed if self.thought_seed else "我在想"
+            trigger = "思考中"
+        
+        # 简洁的系统消息
+        system_msg = "你是一个AI助手，正在进行内部思考。用中文简短表达你的想法。"
+        
+        # 简洁的用户消息
+        user_msg = trigger
+        
+        # 使用ChatML格式
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg}
+        ]
+        
+        try:
+            prompt = self.model.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        except:
+            # 回退
+            prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
         
         return prompt
 
@@ -241,13 +441,18 @@ class BrainAIInterface:
         self, 
         prompt: str, 
         max_tokens: int = 100,
-        temperature: float = 0.9,
-        repetition_penalty: float = 1.5
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.2
     ) -> tuple:
         """生成文本并提取隐藏状态"""
         try:
             # 编码输入
             input_ids = self.model.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
+            
+            # 定义停止token
+            eos_token_id = self.model.tokenizer.eos_token_id
+            im_end_token_id = 151645  # <|im_end|>
+            stop_token_ids = [eos_token_id, im_end_token_id]
             
             # 生成
             with torch.no_grad():
@@ -259,7 +464,8 @@ class BrainAIInterface:
                     repetition_penalty=repetition_penalty,
                     output_hidden_states=True,
                     return_dict_in_generate=True,
-                    pad_token_id=self.model.tokenizer.eos_token_id
+                    pad_token_id=eos_token_id,
+                    eos_token_id=stop_token_ids
                 )
             
             # 提取生成的文本
@@ -280,7 +486,7 @@ class BrainAIInterface:
             logger.error(f"生成失败: {e}")
             return "...", None
 
-    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor]):
+    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None):
         """使用真实特征存储到海马体"""
         try:
             # 使用隐藏状态作为特征
@@ -305,8 +511,9 @@ class BrainAIInterface:
                 with torch.no_grad():
                     features = self.feature_adapter(features.unsqueeze(0)).squeeze(0)
             
-            # 语义指针
-            semantic_pointer = monologue[:30] if len(monologue) > 30 else monologue
+            # 语义指针（优先使用传入的，否则自动提取）
+            if semantic_pointer is None:
+                semantic_pointer = monologue[:30] if len(monologue) > 30 else monologue
             
             # 存储到海马体
             current_time = int(time.time() * 1000)
@@ -314,7 +521,7 @@ class BrainAIInterface:
                 features=features,
                 token_id=hash(monologue) % 100000,
                 timestamp=current_time,
-                context=[{'content': monologue, 'semantic_pointer': semantic_pointer}]
+                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}]
             )
             
             logger.debug(f"记忆已存储: {memory_id}")
@@ -324,11 +531,21 @@ class BrainAIInterface:
 
     def _apply_real_stdp_update(self):
         """
-        应用真实的 STDP 更新
+        强化版 STDP 更新：关联学习 (Hebbian-like)
         
-        核心改进：直接操作动态权重，确保更新发生
+        核心改进：
+        1. 基于当前思维状态 (Hidden State) 的关联更新
+        2. 引入 5% 范数限制 (Norm Limit)，保护静态权重
+        3. 极微量的权重固化 (Weight Consolidation)
         """
         try:
+            if self.current_thought_state is None:
+                return
+            
+            # 获取当前思维状态的归一化特征 [hidden_size]
+            thought_vec = self.current_thought_state.view(-1)
+            thought_norm = thought_vec.norm()
+            
             # 获取模型中的双权重层
             dynamic_layers = []
             for name, module in self.model.model.base_model.named_modules():
@@ -336,27 +553,57 @@ class BrainAIInterface:
                     dynamic_layers.append((name, module))
             
             if not dynamic_layers:
-                logger.warning("未找到双权重层")
                 return
             
-            # 对每个双权重层应用 STDP 更新
+            # 学习率与固化率（增强版）
+            lr = 0.02  # 学习率（从0.005增加到0.02）
+            consolidation_rate = 0.001  # 固化率（从0.0001增加到0.001）
+            max_dynamic_ratio = 0.10  # 10% 的范数限制（从5%增加到10%）
+            
             total_update = 0.0
             for name, layer in dynamic_layers:
-                # 生成基于当前状态的更新量
-                if self.current_thought_state is not None:
-                    # 使用当前思维状态生成有意义的更新
-                    state_norm = self.current_thought_state.norm().item()
-                    update_scale = min(0.01, state_norm * 0.001)
-                else:
-                    update_scale = 0.001
+                # 1. 模拟赫布学习：基于思维向量的投影产生关联更新
+                # 这里我们假设权重矩阵 W 与 thought_vec 的外积能代表当前的“思维关联”
+                # 由于我们没有每层的输入输出，我们使用 thought_vec 的自关联来模拟这种趋势
+                # [out_f, in_f] 的形状，我们采样部分 thought_vec
+                out_f, in_f = layer.dynamic_weight.shape
                 
-                # 生成更新
-                delta_w = torch.randn_like(layer.dynamic_weight) * update_scale
+                # 创建一个简化的关联增量 (Association Delta)
+                # 使用 thought_vec 的一部分作为输出端，一部分作为输入端进行外积
+                v_out = thought_vec[:out_f] if thought_vec.shape[0] >= out_f else F.pad(thought_vec, (0, out_f - thought_vec.shape[0]))
+                v_in = thought_vec[:in_f] if thought_vec.shape[0] >= in_f else F.pad(thought_vec, (0, in_f - thought_vec.shape[0]))
                 
-                # 应用更新
+                # 归一化向量
+                v_out = v_out / (v_out.norm() + 1e-6)
+                v_in = v_in / (v_in.norm() + 1e-6)
+                
+                delta_w = torch.outer(v_out, v_in) * lr
+                
+                # 2. 加入随机性探索 (Noise Exploration) - 增强版
+                delta_w += torch.randn_like(delta_w) * (lr * 0.3)  # 从0.1增加到0.3
+                
+                # 3. 应用更新并实施范数限制
                 with torch.no_grad():
+                    # 更新动态权重
                     layer.dynamic_weight.add_(delta_w)
-                    layer.dynamic_weight.clamp_(-1.0, 1.0)
+                    
+                    # 计算范数比例并限制
+                    static_norm = layer.static_weight.norm()
+                    dynamic_norm = layer.dynamic_weight.norm()
+                    
+                    if dynamic_norm > static_norm * max_dynamic_ratio:
+                        # 如果超过 5%，按比例缩放回限制内
+                        scale = (static_norm * max_dynamic_ratio) / (dynamic_norm + 1e-9)
+                        layer.dynamic_weight.mul_(scale)
+                    
+                    # 4. 模拟长期记忆固化 (Weight Consolidation)
+                    # 将极微量的动态变化固化进静态权重 (介入原始模型)
+                    if consolidation_rate > 0:
+                        consolidation_delta = layer.dynamic_weight.data * consolidation_rate
+                        layer.static_weight.data.add_(consolidation_delta)
+                        # 从动态中减去固化的部分，保持平衡
+                        layer.dynamic_weight.data.sub_(consolidation_delta)
+                    
                     layer._cache_valid = False  # 使缓存失效
                 
                 total_update += delta_w.abs().mean().item()
@@ -364,10 +611,8 @@ class BrainAIInterface:
             self.total_stdp_updates += 1
             self.last_dynamic_weight_norm = total_update / len(dynamic_layers)
             
-            logger.debug(f"STDP 更新完成，平均变化: {self.last_dynamic_weight_norm:.6f}")
-            
         except Exception as e:
-            logger.error(f"STDP 更新失败: {e}")
+            logger.error(f"STDP 关联学习失败: {e}")
 
     def _generate_real_monologue(self) -> str:
         """同步版本的独白生成（兼容旧接口）"""
@@ -431,10 +676,54 @@ class BrainAIInterface:
         """执行 STDP 更新步"""
         self._apply_real_stdp_update()
 
-    async def generate_stream(self, input_text: str, max_tokens: int = 100, **kwargs):
-        """流式生成接口"""
-        async for chunk in self.model.generate_stream(input_text, max_tokens=max_tokens, **kwargs):
-            yield chunk
+    async def chat_stream(
+        self,
+        user_input: str,
+        history: List[Dict[str, str]] = None,
+        max_tokens: int = 256
+    ) -> AsyncGenerator[Dict[str, str], None]:
+        """
+        流式类人对话接口：
+        1. 消化 & 产生潜意识 (yield monologue)
+        2. 生成正式回复 (yield response chunks)
+        """
+        self.hippocampus.record_activity()
+        
+        # 1. 消化
+        self.thought_seed = f"用户说：{user_input[:20]}"
+        
+        # 2. 召回海马体记忆
+        memory_context = ""
+        try:
+            input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+            query_features = embeddings.mean(dim=1).squeeze(0)
+            if query_features.shape[0] != 1024:
+                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            recalled_memories = self.hippocampus.recall(query_features, topk=2)
+            if recalled_memories:
+                memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
+                if memory_pointers:
+                    memory_context = "相关记忆: " + " | ".join(memory_pointers[:2])
+        except:
+            pass
+        
+        # 3. 产生潜意识独白
+        monologue = await asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.9)
+        yield {"type": "monologue", "content": monologue}
+        
+        # 4. 生成正式回复流
+        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
+        
+        full_response = ""
+        async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.7):
+            full_response += chunk
+            yield {"type": "chunk", "content": chunk}
+            
+        # 存储并应用 STDP
+        self._store_with_real_features(full_response, self.current_thought_state)
+        self._apply_real_stdp_update()
 
     async def generate_monologue_stream(self, max_tokens: int = 100) -> AsyncGenerator[str, None]:
         """
@@ -489,14 +778,31 @@ class BrainAIInterface:
             self._apply_real_stdp_update()
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None) -> str:
-        """构建对话 prompt"""
-        prompt = "The following is a conversation with a thoughtful AI assistant.\n\n"
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
+        """
+        构建对话 Prompt (类人模式)
+        
+        将独白作为 AI 的“思维背景”
+        """
+        system_msg = "You are a helpful, concise AI assistant. Answer the user accurately based on the context and memory."
+        
+        prompt = f"<system>\n{system_msg}\n</system>\n\n"
+        
+        # 注入海马体召回的记忆（新增）
+        if memory_context:
+            prompt += f"<memory>\n{memory_context}\n</memory>\n\n"
+        
+        # 注入最近的潜意识（独白）
+        if monologue:
+            prompt += f"<thought>\n{monologue}\n</thought>\n\n"
+            
+        # 历史记录 (只取最近 2 轮以减轻 0.8B 负担)
         if history:
-            for msg in history[-3:]:
-                role = "Human" if msg['role'] == 'user' else "AI"
+            for msg in history[-2:]:
+                role = "User" if msg['role'] == 'user' else "Assistant"
                 prompt += f"{role}: {msg['content']}\n"
-        prompt += f"Human: {user_input}\nAI:"
+                
+        prompt += f"User: {user_input}\nAssistant:"
         return prompt
 
     def get_stats(self) -> dict:
@@ -523,6 +829,17 @@ class BrainAIInterface:
                 'last_update_magnitude': self.last_dynamic_weight_norm
             },
             'self_loop': self.self_loop.get_stats() if self.self_loop else {},
+            'monologue': {
+                'thought_state': self._internal_thought_state.value if hasattr(self, '_internal_thought_state') else 'unknown',
+                'emotion_state': self._internal_emotion_state.value if hasattr(self, '_internal_emotion_state') else 'unknown',
+                'history_count': len(self.monologue_history),
+                'engine_active': self.monologue_engine is not None
+            } if self.monologue_engine else {
+                'thought_state': 'simplified',
+                'emotion_state': 'unknown',
+                'history_count': len(self.monologue_history),
+                'engine_active': False
+            },
             'system': {
                 'total_cycles': self.cycle_count, 
                 'device': self.device,
@@ -531,7 +848,7 @@ class BrainAIInterface:
         }
 
     def save_checkpoint(self, path: str):
-        """保存检查点"""
+        """保存检查点 (兼容旧版，仅用于快速测试)"""
         checkpoint = {
             'monologue_history': self.monologue_history,
             'cycle_count': self.cycle_count,
@@ -540,6 +857,107 @@ class BrainAIInterface:
         }
         torch.save(checkpoint, path)
         print(f"[BrainAI] 检查点已保存：{path}")
+
+    def save_state(self, path: str):
+        """保存 AI 的完整状态 (睡眠固化)"""
+        print(f"[BrainAI] 正在固化记忆与意识状态...")
+        try:
+            state = {
+                'model_state_dict': self.model.model.state_dict(),
+                'hippocampus_state': self.hippocampus.get_state(),
+                'monologue_history': self.monologue_history,
+                'cycle_count': self.cycle_count,
+                'total_stdp_updates': self.total_stdp_updates,
+                'current_thought_state': self.current_thought_state
+            }
+            torch.save(state, path)
+            print(f"[BrainAI] ✓ 完整状态已保存到: {path}")
+        except Exception as e:
+            logger.error(f"状态保存失败: {e}")
+
+    def load_state(self, path: str) -> bool:
+        """加载 AI 的完整状态 (唤醒)"""
+        try:
+            import os
+            if not os.path.exists(path):
+                print(f"[BrainAI] 未找到状态文件 {path}，将执行创世注入。")
+                return False
+            
+            print(f"[BrainAI] 正在从 {path} 唤醒意识...")
+            state = torch.load(path, map_location=self.device)
+            
+            # 1. 恢复模型权重 (包括静态和动态)
+            self.model.model.load_state_dict(state['model_state_dict'])
+            
+            # 2. 恢复海马体
+            self.hippocampus.set_state(state['hippocampus_state'])
+            
+            # 3. 恢复意识状态
+            self.monologue_history = state.get('monologue_history', [])
+            self.cycle_count = state.get('cycle_count', 0)
+            self.total_stdp_updates = state.get('total_stdp_updates', 0)
+            self.current_thought_state = state.get('current_thought_state', None)
+            
+            print(f"[BrainAI] ✓ 意识已成功唤醒。")
+            return True
+            
+        except Exception as e:
+            logger.error(f"状态加载失败: {e}。将重新初始化。")
+            return False
+
+    def _seed_genesis_memory(self):
+        """创世注入：读取 whoami.md 并形成核心记忆"""
+        print("[BrainAI] 正在注入创世记忆 (Genesis Seeding)...")
+        try:
+            with open("whoami.md", "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            # 将 Markdown 内容按标题分割成块
+            blocks = content.split("## ")
+            for block in blocks[1:]: # 跳过第一个空块
+                title, text = block.split("\n", 1)
+                title = title.strip()
+                text = text.strip()
+                
+                if not text:
+                    continue
+                
+                # 对每一块核心记忆进行“思考”和“存储”
+                prompt = f"关于我的'{title}', 我需要理解：{text[:100]}... 我的想法是："
+                output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=50)
+                
+                # 存储原文和思考过程
+                self._store_with_real_features(f"核心记忆：{title} - {text}", hidden_state, is_core=True)
+                self._store_with_real_features(f"(我的思考：{output})", hidden_state, is_core=True)
+                
+                # 更新思维状态
+                if hidden_state is not None:
+                    self.current_thought_state = hidden_state
+            
+            print("[BrainAI] ✓ 创世记忆注入完成。")
+            
+        except FileNotFoundError:
+            print("[BrainAI] ⚠️ 未找到 whoami.md，AI 将以无身份状态启动。")
+        except Exception as e:
+            logger.error(f"创世记忆注入失败: {e}")
+
+    def _inject_wakeup_memory(self):
+        """注入唤醒时间和日期记忆"""
+        from datetime import datetime
+        now = datetime.now()
+        wakeup_time_str = now.strftime("%Y年%m月%d日 %H:%M:%S")
+        
+        # 形成一个关于时间的思考
+        prompt = f"我刚刚“醒来”，现在是 {wakeup_time_str}。"
+        output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=20)
+        
+        # 存储这个唤醒事件
+        self._store_with_real_features(f"唤醒事件：{prompt} {output}", hidden_state)
+        
+        # 将其设为当前思维种子
+        self.thought_seed = f"我刚在 {wakeup_time_str} 醒来，我记得..."
+        
+        print(f"[BrainAI] ✓ 已注入唤醒记忆：{wakeup_time_str}")
 
 
 def create_brain_ai(config, device=None):

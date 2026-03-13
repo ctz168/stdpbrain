@@ -10,6 +10,7 @@ CA3 区 - 情景记忆库 + 模式补全单元
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import time
@@ -170,19 +171,37 @@ class CA3EpisodicMemory(nn.Module):
                         if mem_id in self.memories:
                             candidates.append(self.memories[mem_id])
         
-        # ========== 3. 特征相似度检索 ==========
-        if query_features is not None:
-            # 计算与所有记忆的 DG 特征相似度
-            similarities = []
-            for mem_id, memory in self.memories.items():
-                if memory.dg_features is not None:
-                    sim = self._compute_similarity(query_features, memory.dg_features)
-                    if sim > self.recall_threshold:
-                        candidates.append((sim, memory))
+        # ========== 3. 特征相似度检索 (向量化) ==========
+        if query_features is not None and len(self.memories) > 0:
+            # 1. 批量提取所有记忆的 DG 特征
+            all_features = torch.stack([mem.dg_features for mem in self.memories.values() if mem.dg_features is not None])
+            all_ids = [mem.memory_id for mem in self.memories.values() if mem.dg_features is not None]
             
-            # 按相似度排序
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            candidates = [mem for _, mem in candidates]
+            if all_features.numel() > 0:
+                # 确保query_features是二维的
+                if query_features.dim() == 1:
+                    query_features = query_features.unsqueeze(0)
+                
+                # 2. 批量计算余弦相似度 (O(1) 并行操作)
+                query_norm = F.normalize(query_features, p=2, dim=-1)
+                all_features_norm = F.normalize(all_features, p=2, dim=-1)
+                
+                # 确保维度匹配
+                if query_norm.dim() == 2 and all_features_norm.dim() == 2:
+                    similarities = torch.mm(query_norm, all_features_norm.t()).squeeze(0)
+                else:
+                    # 回退到逐个计算
+                    similarities = torch.zeros(1, all_features_norm.shape[0])
+                    for i, feat in enumerate(all_features_norm):
+                        similarities[0, i] = F.cosine_similarity(query_norm.flatten().unsqueeze(0), feat.flatten().unsqueeze(0))
+                
+                # 3. 获取 Top-K 相似的记忆
+                top_sim, top_indices = torch.topk(similarities, k=min(topk * 2, len(all_ids)))
+                
+                for i, sim in enumerate(top_sim):
+                    if sim > self.recall_threshold:
+                        memory_id = all_ids[top_indices[i]]
+                        candidates.append(self.memories[memory_id])
         
         # ========== 4. 去重 ==========
         seen_ids = set()
@@ -195,6 +214,22 @@ class CA3EpisodicMemory(nn.Module):
         # ========== 5. 按激活强度排序并返回 TopK ==========
         unique_candidates.sort(key=lambda m: m.activation_strength, reverse=True)
         return unique_candidates[:topk]
+    
+    def get_state(self) -> dict:
+        """获取 CA3 模块的完整状态"""
+        return {
+            'memories': self.memories,
+            'time_index': self.time_index,
+            'semantic_index': self.semantic_index,
+            'current_timestamp': self.current_timestamp
+        }
+    
+    def set_state(self, state: dict):
+        """从状态字典恢复 CA3 模块"""
+        self.memories = state.get('memories', OrderedDict())
+        self.time_index = state.get('time_index', {})
+        self.semantic_index = state.get('semantic_index', {})
+        self.current_timestamp = state.get('current_timestamp', 0)
     
     def complete_pattern(
         self,
@@ -231,14 +266,27 @@ class CA3EpisodicMemory(nn.Module):
         """
         更新记忆激活强度 (STDP 更新接口)
         
+        优化:
+        - 添加衰减机制，防止过度增强
+        - 添加时间衰减因子
+        
         Args:
             memory_id: 记忆 ID
             delta: 强度变化量
         """
         if memory_id in self.memories:
             memory = self.memories[memory_id]
-            memory.activation_strength += delta
-            memory.activation_strength = max(0.0, min(2.0, memory.activation_strength))
+            
+            # 时间衰减因子：越久的记忆衰减越慢（长期记忆固化）
+            time_elapsed = (self.current_timestamp - memory.timestamp) / 1000.0  # 秒
+            time_decay = 1.0 / (1.0 + time_elapsed * 0.001)  # 轻微衰减
+            
+            # 应用更新
+            effective_delta = delta * time_decay
+            memory.activation_strength += effective_delta
+            
+            # 限制范围 [0.1, 2.0]，最低0.1防止完全遗忘
+            memory.activation_strength = max(0.1, min(2.0, memory.activation_strength))
     
     def prune_weak_memories(self, threshold: float = 0.3):
         """

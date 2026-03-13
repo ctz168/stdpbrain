@@ -133,7 +133,14 @@ class HippocampusSystem(nn.Module):
             causal_links.append(f"preceded_by_{prev_tokens[-1]}" if prev_tokens else "start")
         
         # ========== 5. CA3 存储 ==========
+        # 优先使用context中的semantic_pointer，否则使用token_id
         semantic_pointer = f"token_{token_id}"
+        if context and len(context) > 0:
+            # 从context中提取semantic_pointer
+            for ctx in context:
+                if 'semantic_pointer' in ctx and ctx['semantic_pointer']:
+                    semantic_pointer = ctx['semantic_pointer']
+                    break
         
         self.ca3_memory.store(
             memory_id=memory_id,
@@ -200,7 +207,44 @@ class HippocampusSystem(nn.Module):
             topk=topk
         )
         
-        # ========== 6. 添加 DG 特征到返回结果 ==========
+        # ========== 6. 添加记忆本身的 DG 特征到返回结果 ==========
+        # 创建memory_id到dg_features的映射
+        memory_features = {}
+        for mem in memories:
+            if hasattr(mem, 'dg_features') and mem.dg_features is not None:
+                memory_features[mem.memory_id] = mem.dg_features
+        
+        for mem_dict in sorted_memories:
+            mem_id = mem_dict.get('memory_id', '')
+            if mem_id in memory_features:
+                mem_dict['dg_features'] = memory_features[mem_id].cpu()
+            else:
+                # 如果没有找到，使用查询的dg_features作为回退
+                mem_dict['dg_features'] = dg_features.cpu()
+        
+        return sorted_memories
+
+    def get_state(self) -> dict:
+        """获取海马体系统的完整状态"""
+        return {
+            'ca3_state': self.ca3_memory.get_state(),
+            'ec_encoder_state': self.ec_encoder.state_dict(),
+            'dg_separator_state': self.dg_separator.state_dict(),
+            'ca1_gate_state': self.ca1_gate.state_dict(),
+            'cycle_count': self.cycle_count
+        }
+
+    def set_state(self, state: dict):
+        """从状态字典恢复海马体系统"""
+        if 'ca3_state' in state:
+            self.ca3_memory.set_state(state['ca3_state'])
+        if 'ec_encoder_state' in state:
+            self.ec_encoder.load_state_dict(state['ec_encoder_state'])
+        if 'dg_separator_state' in state:
+            self.dg_separator.load_state_dict(state['dg_separator_state'])
+        if 'ca1_gate_state' in state:
+            self.ca1_gate.load_state_dict(state['ca1_gate_state'])
+        self.cycle_count = state.get('cycle_count', 0)# ========== 6. 添加 DG 特征到返回结果 ==========
         for mem in sorted_memories:
             mem['dg_features'] = dg_features.cpu()
         

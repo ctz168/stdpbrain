@@ -99,7 +99,8 @@ class BrainAIBot:
                         # 流式生成独白
                         full_monologue = ""
                         last_update_time = time.time()
-                        update_interval = 0.8
+                        last_sent_text = ""
+                        update_interval = 1.5  # 增加间隔以避免 429
                         
                         try:
                             async for chunk in self.ai.generate_monologue_stream(max_tokens=150):
@@ -107,21 +108,31 @@ class BrainAIBot:
                                 
                                 current_time = time.time()
                                 if current_time - last_update_time > update_interval:
-                                    last_update_time = current_time
                                     display_text = full_monologue[:500]
-                                    try:
-                                        await message.edit_text(
-                                            text=f"💭 *[内心独白]*\n_{display_text}▌_",
-                                            parse_mode='Markdown'
-                                        )
-                                    except:
+                                    new_text = f"💭 *[内心独白]*\n_{display_text}▌_"
+                                    
+                                    # 只有在内容变化时才更新，避免 400 错误
+                                    if new_text != last_sent_text:
                                         try:
                                             await message.edit_text(
-                                                text=f"💭 内心独白:\n{display_text}▌",
-                                                parse_mode=None
+                                                text=new_text,
+                                                parse_mode='Markdown'
                                             )
-                                        except:
-                                            pass
+                                            last_sent_text = new_text
+                                            last_update_time = current_time
+                                        except Exception as e:
+                                            if "Message is not modified" in str(e):
+                                                pass
+                                            elif "Flood control exceeded" in str(e):
+                                                await asyncio.sleep(5) # 遇到 429 暂停
+                                            else:
+                                                try:
+                                                    fallback_text = f"💭 内心独白:\n{display_text}▌"
+                                                    if fallback_text != last_sent_text:
+                                                        await message.edit_text(text=fallback_text, parse_mode=None)
+                                                        last_sent_text = fallback_text
+                                                except:
+                                                    pass
                                             
                         except Exception as e:
                             logger.error(f"流式独白生成失败: {e}")
@@ -137,19 +148,30 @@ class BrainAIBot:
                                 self.monologue_buffer.pop(0)
                             
                             # 最终消息
-                            try:
-                                await message.edit_text(
-                                    text=f"💭 *[内心独白]*\n_{clean_monologue}_",
-                                    parse_mode='Markdown'
-                                )
-                            except:
-                                try:
-                                    await message.edit_text(
-                                        text=f"💭 内心独白:\n{clean_monologue}",
-                                        parse_mode=None
-                                    )
-                                except:
-                                    pass
+                            final_text = f"💭 *[内心独白]*\n_{clean_monologue}_"
+                            if final_text != last_sent_text:
+                                for attempt in range(3):
+                                    try:
+                                        await message.edit_text(
+                                            text=final_text,
+                                            parse_mode='Markdown'
+                                        )
+                                        break
+                                    except Exception as e:
+                                        if "Message is not modified" in str(e):
+                                            break
+                                        if "Flood control exceeded" in str(e) and attempt < 2:
+                                            await asyncio.sleep(2)
+                                            continue
+                                        try:
+                                            await message.edit_text(
+                                                text=f"💭 内心独白:\n{clean_monologue}",
+                                                parse_mode=None
+                                            )
+                                            break
+                                        except:
+                                            if attempt == 2: logger.error(f"内心独白最终编辑失败: {e}")
+                                            await asyncio.sleep(1)
                             
                             logger.info(f"[Monologue Push] Sent to {chat_id}: {clean_monologue[:50]}...")
                 else:
@@ -295,67 +317,67 @@ class BrainAIBot:
         user_message: str
     ):
         try:
-            thought_text = "💭 **内心独白流**\n"
-            
-            if self.monologue_buffer:
-                for m in self.monologue_buffer:
-                    thought_text += f"> ... {m}\n"
-            
-            interruption_thought = ""
-            if self.ai and hasattr(self.ai, '_generate_thought_process'):
-                interruption_thought = self.ai._generate_thought_process(user_message)
-                formatted_interruption = interruption_thought.replace('\n', '\n> ')
-                thought_text += f"> {formatted_interruption}\n"
-            
-            thought_text += "\n"
-            self.monologue_buffer = []
-            
+            # 初始状态消息
             initial_message = await update.message.reply_text(
-                thought_text,
+                "💭 *[潜意识消化中...]*",
                 parse_mode='Markdown'
             )
             
             full_response = ""
+            monologue = ""
             last_update_time = time.time()
-            max_chars = 3800
+            last_sent_text = ""
+            update_interval = 1.2
             
-            stream_gen = self.stream_handler.generate_stream(
-                input_text,
-                temperature=0.8,
-                top_k=50,
-                repetition_penalty=1.5
-            )
-            
-            async for chunk in stream_gen:
-                full_response += chunk
-                
-                if len(full_response) > max_chars:
-                    full_response = full_response[:max_chars] + "\n\n⚠️ (内容过长，已自动截断)"
-                    break
-                
-                current_time = time.time()
-                if current_time - last_update_time > 0.8:
-                    last_update_time = current_time
-                    
+            # 使用新的 chat_stream 接口
+            history = self.user_history.get(user_id, [])
+            async for event in self.ai.chat_stream(user_message, history):
+                if event["type"] == "monologue":
+                    monologue = event["content"]
+                    # 立即显示潜意识
+                    display_text = f"💭 *[潜意识]*\n_{monologue}_\n\n✨ *[准备回复...]*"
                     try:
-                        display_text = f"{thought_text}✨ **回复:**\n{full_response}▌"
                         await initial_message.edit_text(display_text, parse_mode='Markdown')
-                    except Exception as e:
-                        try:
-                            await initial_message.edit_text(f"{thought_text}✨ 回复:\n{full_response}▌", parse_mode=None)
-                        except:
-                            logger.warning(f"流式编辑失败: {e}")
+                        last_sent_text = display_text
+                    except:
+                        pass
+                
+                elif event["type"] == "chunk":
+                    full_response += event["content"]
+                    
+                    current_time = time.time()
+                    if current_time - last_update_time > update_interval:
+                        display_text = f"💭 *[潜意识]*\n_{monologue}_\n\n✨ **回复:**\n{full_response}▌"
+                        if display_text != last_sent_text:
+                            try:
+                                await initial_message.edit_text(display_text, parse_mode='Markdown')
+                                last_sent_text = display_text
+                                last_update_time = current_time
+                            except Exception as e:
+                                if "Flood control exceeded" in str(e):
+                                    await asyncio.sleep(2)
+                                else:
+                                    # 回退到无 Markdown
+                                    try:
+                                        fallback = f"潜意识:\n{monologue}\n\n回复:\n{full_response}▌"
+                                        await initial_message.edit_text(fallback, parse_mode=None)
+                                    except:
+                                        pass
             
             await typing.stop_typing()
             
-            final_display = f"{thought_text}✨ **回复:**\n{full_response}"
-            try:
-                await initial_message.edit_text(final_display, parse_mode='Markdown')
-            except Exception as e:
+            # 最终显示
+            final_display = f"💭 *[潜意识]*\n_{monologue}_\n\n✨ **回复:**\n{full_response}"
+            for attempt in range(3):
                 try:
-                    await initial_message.edit_text(f"{thought_text}✨ 回复:\n{full_response}", parse_mode=None)
+                    await initial_message.edit_text(final_display, parse_mode='Markdown')
+                    break
                 except:
-                    logger.error(f"最终编辑失败: {e}")
+                    try:
+                        await initial_message.edit_text(f"潜意识:\n{monologue}\n\n回复:\n{full_response}", parse_mode=None)
+                        break
+                    except:
+                        await asyncio.sleep(1)
             
             self._update_history(user_id, user_message, full_response)
             logger.info(f"回复用户 {user_id} 完成 (长度: {len(full_response)})")
@@ -392,7 +414,7 @@ class BrainAIBot:
         logger.info("正在启动 Telegram Bot...")
         
         if self.proxy_url:
-            request = HTTPXRequest(proxy_url=self.proxy_url)
+            request = HTTPXRequest(proxy=self.proxy_url)
             self.application = Application.builder().token(self.token).request(request).build()
         else:
             self.application = Application.builder().token(self.token).build()

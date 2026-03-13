@@ -26,7 +26,7 @@ python main.py --mode telegram
 ```bash
 python telegram_bot/run.py \
     --token YOUR_BOT_TOKEN \
-    --model-path ./models/Qwen3.5-0.8B-Base \
+    --model-path ./models/Qwen3.5-0.8B \
     --chunk-size 2 \
     --delay-ms 100 \
     --async-mode
@@ -71,7 +71,7 @@ MAX_CONTEXT_LENGTH = 10    # 保留 10 轮对话
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--token` | Bot Token | 无 (必须提供) |
-| `--model-path` | 模型路径 | `./models/Qwen3.5-0.8B-Base` |
+| `--model-path` | 模型路径 | `./models/Qwen3.5-0.8B` |
 | `--device` | 运行设备 | 自动选择 |
 | `--chunk-size` | 流式块大小 | 1 |
 | `--delay-ms` | 流式延迟 (毫秒) | 50 |

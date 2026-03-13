@@ -1,49 +1,25 @@
 # 类人脑双系统全闭环 AI架构
 
-基于 **Qwen3.5-0.8B-Base** 底座模型，实现与人脑同源的"刷新即推理、推理即学习、学习即优化、记忆即锚点"全闭环智能架构。
+基于 **Qwen3.5-0.8B** 底座模型，实现与人脑同源的"刷新即推理、推理即学习、学习即优化、记忆即锚点"全闭环智能架构。
+<div align="center">
 
-## 🎯 核心特性
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ctz168/stdpbrain/blob/main/colab_stdpbrain_bot.ipynb)
+
+</div>
+
+## 🚀 快速开始 (Google Colab)
+
+点击上方 **Open In Colab** 按钮，即可在云端一键部署。
+---## 🎯 核心特性
 
 - ✅ **100% 遵守刚性红线**: 仅使用 Qwen3.5-0.8B单模型，90% 静态权重永久冻结
 - ✅ **10ms/100Hz 高刷新推理**: 窄窗口 O(1) 复杂度注意力机制
 - ✅ **STDP 时序可塑性学习**: 无反向传播，纯本地时序信号驱动
 - ✅ **海马体 - 新皮层双系统**: 情景记忆编码、模式分离、记忆补全
 - ✅ **自闭环优化**: 自生成组合、自博弈竞争、自评判选优三模式
-- ✅ **端侧部署优化**: INT4 量化后≤420MB 显存，树莓派/安卓流畅运行
 - ✅ **Telegram Bot 支持**: 流式输出、实时交互、多用户并发
 
-## 📁 项目结构
 
-```
-stdpbrian/
-├── configs/              # 配置文件
-│   └── arch_config.py    # 全局架构配置
-├── core/                 # 核心模块
-│   ├── dual_weight_layers.py  # 双权重层 (模块 1)
-│   ├── stdp_engine.py         # STDP 引擎 (模块 3)
-│   ├── refresh_engine.py      # 100Hz 推理引擎 (模块 2)
-│   └── interfaces.py          # 统一接口
-├── hippocampus/          # 海马体记忆系统 (模块 5)
-│   ├── ec_encoder.py     # 内嗅皮层特征编码
-│   ├── dg_separator.py   # 齿状回模式分离
-│   ├── ca3_memory.py     # CA3 情景记忆库
-│   ├── ca1_gate.py       # CA1 注意力门控
-│   ├── swr_consolidation.py  # SWR 离线回放
-│   └── hippocampus_system.py # 完整系统集成
-├── self_loop/            # 自闭环优化系统 (模块 4)
-│   └── self_loop_optimizer.py
-├── training/             # 专项训练模块 (模块 6)
-├── deployment/           # 端侧部署脚本
-├── telegram_bot/         # Telegram Bot (新增)
-│   ├── bot.py           # Bot 主程序
-│   ├── stream_handler.py # 流式输出处理器
-│   ├── run.py           # 启动脚本
-│   └── README.md        # Bot 使用指南
-├── tests/                # 单元测试
-├── main.py               # 主入口
-├── requirements.txt      # 依赖包
-└── ARCHITECTURE.md       # 详细架构文档
-```
 
 ## 🚀 快速开始
 
@@ -76,10 +52,10 @@ pip install numpy scipy scikit-learn pandas tqdm
 
 ```bash
 # 从 HuggingFace 下载
-huggingface-cli download Qwen/Qwen3.5-0.8B-Base --local-dir ./models/Qwen3.5-0.8B-Base
+huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir ./models/Qwen3.5-0.8B
 
 # 或从 ModelScope 下载
-modelscope download Qwen/Qwen3.5-0.8B-Base --local_dir ./models/Qwen3.5-0.8B-Base
+modelscope download Qwen/Qwen3.5-0.8B --local_dir ./models/Qwen3.5-0.8B
 ```
 
 ### 4. 测试运行
@@ -174,7 +150,7 @@ python main.py --mode telegram --telegram-token YOUR_BOT_TOKEN
 from core.interfaces import create_brain_ai
 
 # 创建 AI 实例
-ai = create_brain_ai(model_path="./models/Qwen3.5-0.8B-Base")
+ai = create_brain_ai(model_path="./models/Qwen3.5-0.8B")
 
 # 对话
 response = ai.chat("你好，请介绍一下自己")
@@ -197,9 +173,7 @@ ai.save_checkpoint("./checkpoints/latest.pt")
 - [ARCHITECTURE.md](ARCHITECTURE.md) - 完整架构设计文档
 - [configs/arch_config.py](configs/arch_config.py) - 配置详解
 - [core/interfaces.py](core/interfaces.py) - API 接口文档
-- **[TELEGRAM_BOT_SUMMARY.md](TELEGRAM_BOT_SUMMARY.md)** - Telegram Bot 功能总结 ⭐ **新增**
-- **[INSTALL_TELEGRAM.md](INSTALL_TELEGRAM.md)** - Bot 安装说明 ⭐ **新增**
-- **[telegram_bot/README.md](telegram_bot/README.md)** - Bot 详细使用指南 ⭐ **新增**
+- **[TELEGRAM_BOT_SUMMARY.md](TELEGRAM_BOT_SUMMARY.md)** - Telegram 
 
 ## 🔧 配置说明
 
@@ -224,7 +198,7 @@ config.hippocampus.CA3_max_capacity = 10000 # 记忆容量
 
 ## ⚠️ 注意事项
 
-1. **模型权重**: 需自行下载 Qwen3.5-0.8B-Base 官方权重
+1. **模型权重**: 需自行下载 Qwen3.5-0.8B 官方权重
 2. **显存要求**: INT4 量化后约 400MB，建议设备至少 512MB 可用内存
 3. **Python 版本**: 需要 Python 3.8+
 4. **PyTorch 版本**: 需要 PyTorch 2.0+
