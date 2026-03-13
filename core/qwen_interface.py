@@ -7,6 +7,7 @@
 - 提供完整的生成和对话接口
 """
 
+import os
 import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Tuple, Any
@@ -41,16 +42,40 @@ class QwenModelWrapper(nn.Module):
         
         # ========== 1. 加载 Tokenizer ==========
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-               model_path,
-                trust_remote_code=True,
-               padding_side="left"
-            )
+            # 首先尝试从本地路径加载
+            import os
+            if os.path.exists(model_path):
+                print(f"  从本地路径加载: {model_path}")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    padding_side="left",
+                    local_files_only=True
+                )
+            else:
+                # 如果本地不存在，从 HuggingFace 下载
+                print(f"  从 HuggingFace 下载: {model_path}")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    padding_side="left"
+                )
             print(f"✓ Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         except Exception as e:
-                print(f"⚠️ Tokenizer 加载失败：{e}")
+            print(f"⚠️ Tokenizer 加载失败：{e}")
+            # 尝试使用备用模型名称
+            try:
+                backup_model = "Qwen/Qwen2.5-0.5B"
+                print(f"  尝试备用模型: {backup_model}")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    backup_model,
+                    trust_remote_code=True,
+                    padding_side="left"
+                )
+                print(f"✓ Tokenizer 从备用模型加载成功，词表大小：{len(self.tokenizer)}")
+            except Exception as e2:
+                print(f"❌ 备用模型也失败: {e2}")
                 raise
-        print(f"✓ Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         
         # ========== 2. 加载模型 ==========
         self.base_model = self._load_model_with_quantization()
@@ -69,9 +94,15 @@ class QwenModelWrapper(nn.Module):
     
     def _load_model_with_quantization(self):
         """根据量化类型加载模型 (针对 macOS/CPU 优化)"""
+        import os
+        is_local = os.path.exists(self.model_path)
+        
         try:
             # 自动检测 Apple Silicon (M1/M2/M3)
             is_mac = torch.backends.mps.is_available()
+            
+            # 本地模型加载参数
+            local_kwargs = {"local_files_only": True} if is_local else {}
             
             if self.quantization == "INT4":
                 if self.device == "cuda":
@@ -87,7 +118,8 @@ class QwenModelWrapper(nn.Module):
                         self.model_path,
                         quantization_config=quantization_config,
                         device_map={"": self.device},
-                        trust_remote_code=True
+                        trust_remote_code=True,
+                        **local_kwargs
                     )
                     print("  ✓ [CUDA] INT4 量化加载成功")
                 elif is_mac:
@@ -97,7 +129,8 @@ class QwenModelWrapper(nn.Module):
                         self.model_path,
                         torch_dtype=dtype,
                         device_map={"": "mps"},
-                        trust_remote_code=True
+                        trust_remote_code=True,
+                        **local_kwargs
                     )
                     print(f"  ✓ [macOS/MPS] 使用 {dtype} 加载成功 (CPU 不支持 bitsandbytes INT4)")
                 else:
@@ -107,7 +140,8 @@ class QwenModelWrapper(nn.Module):
                         self.model_path,
                         torch_dtype=torch.float32,
                         device_map={"": "cpu"},
-                        trust_remote_code=True
+                        trust_remote_code=True,
+                        **local_kwargs
                     )
                 
             elif self.quantization == "INT8":
@@ -116,7 +150,8 @@ class QwenModelWrapper(nn.Module):
                         self.model_path,
                         load_in_8bit=True,
                         device_map={"": self.device},
-                        trust_remote_code=True
+                        trust_remote_code=True,
+                        **local_kwargs
                     )
                     print("  ✓ [CUDA] INT8 量化加载成功")
                 else:
@@ -125,7 +160,8 @@ class QwenModelWrapper(nn.Module):
                     model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
                         torch_dtype=torch.float32,
-                        trust_remote_code=True
+                        trust_remote_code=True,
+                        **local_kwargs
                     )
                     model = torch.quantization.quantize_dynamic(
                         model, {torch.nn.Linear}, dtype=torch.qint8
@@ -139,7 +175,8 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     torch_dtype=dtype,
                     device_map={"": target_device} if target_device != "cpu" else None,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    **local_kwargs
                 )
                 print(f"  ✓ {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
             
