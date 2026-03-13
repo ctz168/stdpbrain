@@ -53,9 +53,10 @@ class DualWeightLinear(nn.Module):
             )
         
         # ========== STDP动态增量分支 (初始为0) ==========
-        # 动态权重形状与静态权重完全匹配
+        # 动态权重形状与静态权重完全匹配，确保在同一设备上
         self.dynamic_weight = nn.Parameter(
-            torch.zeros_like(self.static_weight),
+            torch.zeros(self.static_weight.shape[0], self.static_weight.shape[1], 
+                       device=self.static_weight.device, dtype=self.static_weight.dtype),
             requires_grad=True  # 可学习
         )
         
