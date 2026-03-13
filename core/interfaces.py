@@ -20,6 +20,7 @@ from core.qwen_interface import QwenInterface
 from hippocampus.hippocampus_system import HippocampusSystem
 from core.stdp_engine import STDPEngine
 from self_loop.self_loop_optimizer import SelfLoopOptimizer
+from core.monologue_engine import MonologueEngine, ThoughtState, EmotionState
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,9 @@ class BrainAIInterface:
         # 4. 加载真实自闭环优化器
         self.self_loop = SelfLoopOptimizer(config, model=self.model)
         
+        # 5. 加载类人脑独白引擎
+        self.monologue_engine = None  # 延迟初始化，需要等模型加载完成
+        
         # 周期计数
         self.cycle_count = 0
         self.total_generation_time = 0.0
@@ -68,6 +72,10 @@ class BrainAIInterface:
         # 当前思维状态（隐藏状态）
         self.current_thought_state: Optional[torch.Tensor] = None
         self.thought_seed: str = ""  # 思维种子文本
+        
+        # 思维状态机状态（用于兼容旧接口）
+        self._internal_thought_state = ThoughtState.RESTING
+        self._internal_emotion_state = EmotionState.CALM
         
         # STDP 学习追踪
         self.total_stdp_updates = 0
@@ -91,6 +99,18 @@ class BrainAIInterface:
         
         # 注入唤醒记忆
         self._inject_wakeup_memory()
+        
+        # 初始化独白引擎
+        try:
+            self.monologue_engine = MonologueEngine(
+                model_interface=self.model,
+                hippocampus_system=self.hippocampus,
+                config=config,
+                device=self.device
+            )
+            print("[BrainAI] ✓ 类人脑独白引擎已初始化")
+        except Exception as e:
+            logger.warning(f"独白引擎初始化失败: {e}，将使用简化版本")
         
         # 启动海马体 SWR 监控
         try:
@@ -285,8 +305,11 @@ class BrainAIInterface:
                 repetition_penalty=1.1
             )
             
-            # 3. 质量检查和清理
-            monologue = output.strip()
+            # 4. 乱码过滤
+            if self._is_gibberish(output):
+                monologue = "思维有些模糊..."
+            else:
+                monologue = output.strip()
             
             # 移除可能的格式残留
             for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
@@ -806,6 +829,17 @@ class BrainAIInterface:
                 'last_update_magnitude': self.last_dynamic_weight_norm
             },
             'self_loop': self.self_loop.get_stats() if self.self_loop else {},
+            'monologue': {
+                'thought_state': self._internal_thought_state.value if hasattr(self, '_internal_thought_state') else 'unknown',
+                'emotion_state': self._internal_emotion_state.value if hasattr(self, '_internal_emotion_state') else 'unknown',
+                'history_count': len(self.monologue_history),
+                'engine_active': self.monologue_engine is not None
+            } if self.monologue_engine else {
+                'thought_state': 'simplified',
+                'emotion_state': 'unknown',
+                'history_count': len(self.monologue_history),
+                'engine_active': False
+            },
             'system': {
                 'total_cycles': self.cycle_count, 
                 'device': self.device,
