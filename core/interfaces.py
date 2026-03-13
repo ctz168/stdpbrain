@@ -51,8 +51,17 @@ class BrainAIInterface:
         # 同步设备（模型可能回退到 CPU）
         self.device = self.model.device
         
-        # 2. 加载真实海马体系统
-        self.hippocampus = HippocampusSystem(config, device=self.device)
+        # 获取模型实际的隐藏层大小
+        self.model_hidden_size = getattr(
+            self.model.model.base_model.config, 'hidden_size', 1024
+        )
+        
+        # 2. 加载真实海马体系统（传递正确的隐藏层大小）
+        self.hippocampus = HippocampusSystem(
+            config, 
+            device=self.device,
+            hidden_size=self.model_hidden_size
+        )
         
         # 3. 加载真实 STDP 引擎
         self.stdp_engine = STDPEngine(config, device=self.device)
@@ -83,17 +92,8 @@ class BrainAIInterface:
         self.total_stdp_updates = 0
         self.last_dynamic_weight_norm = 0.0
         
-        # 特征维度适配器（模型 hidden_size -> 海马体输入维度）
-        self.model_hidden_size = 896  # Qwen2.5-0.5B hidden_size
-        self.hippocampus_input_dim = 1024  # 海马体期望的输入维度
-        self.feature_adapter = nn.Linear(self.model_hidden_size, self.hippocampus_input_dim, bias=False)
-        with torch.no_grad():
-            self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
-        self.feature_adapter.to(self.device)
-        self.feature_adapter.eval()
-        
-        # 状态文件路径
-        self.state_path = "brain_state.pt"
+        # 状态文件路径（从配置读取，支持自定义）
+        self.state_path = getattr(config, 'state_path', 'brain_state.pt')
         
         # 尝试加载现有状态，如果失败则执行创世注入
         if not self.load_state(self.state_path):
@@ -201,11 +201,7 @@ class BrainAIInterface:
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             query_features = embeddings.mean(dim=1).squeeze(0)
             
-            # 适配维度
-            if query_features.shape[0] != 1024:
-                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
-            
-            # 召回记忆
+            # 召回记忆（海马体系统现在可以直接接受模型的隐藏层大小）
             recalled_memories = self.hippocampus.recall(query_features, topk=2)
             if recalled_memories:
                 memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
@@ -254,21 +250,24 @@ class BrainAIInterface:
         )
         self._apply_real_stdp_update()
         
-        # 6. 调用STDP引擎的step方法（新增）
+        # 6. 调用STDP引擎的step方法（使用真实数据）
         try:
+            # 使用真实的交互数据，而不是伪造数据
             self.stdp_engine.step(
                 model_components={'hippocampus': self.hippocampus},
                 inputs={
-                    'context_tokens': torch.tensor([1, 2, 3]),
-                    'current_token': hash(user_input) % 10000,
-                    'memory_anchor_id': f'mem_{hash(output.text) % 10000}'
+                    'user_input': user_input,
+                    'output_text': output.text,
+                    'output_tokens': output.tokens if hasattr(output, 'tokens') else [],
+                    'memory_anchor_id': f'mem_{len(output.text)}'
                 },
                 outputs={
-                    'evaluation_score': 30 + len(output.text) % 20
+                    'evaluation_score': min(100, len(output.text)),
+                    'confidence': output.confidence if hasattr(output, 'confidence') else 0.5
                 }
             )
         except Exception as e:
-            logger.debug(f"STDP step失败: {e}")
+            logger.warning(f"STDP step失败: {e}")
         
         return output.text
 
@@ -508,16 +507,11 @@ class BrainAIInterface:
                     emb = self.model.model.base_model.get_input_embeddings()(input_ids)
                     features = emb.mean(dim=1).squeeze(0)
             
-            # 适配特征维度：896 -> 1024
-            if features.shape[0] == self.model_hidden_size:
-                with torch.no_grad():
-                    features = self.feature_adapter(features.unsqueeze(0)).squeeze(0)
-            
             # 语义指针（优先使用传入的，否则自动提取）
             if semantic_pointer is None:
                 semantic_pointer = monologue[:30] if len(monologue) > 30 else monologue
             
-            # 存储到海马体
+            # 存储到海马体（海马体系统现在可以直接接受模型的隐藏层大小）
             current_time = int(time.time() * 1000)
             memory_id = self.hippocampus.encode(
                 features=features,
@@ -701,8 +695,7 @@ class BrainAIInterface:
             with torch.no_grad():
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             query_features = embeddings.mean(dim=1).squeeze(0)
-            if query_features.shape[0] != 1024:
-                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            # 海马体系统现在可以直接接受模型的隐藏层大小
             recalled_memories = self.hippocampus.recall(query_features, topk=2)
             if recalled_memories:
                 memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]

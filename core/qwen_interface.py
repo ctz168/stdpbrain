@@ -612,15 +612,14 @@ class QwenInterface:
         **kwargs
     ):
         """
-        STDP Strict Generate
-        Using the 10ms execution engine step by step.
+        生成文本 - 简化版本，直接使用 base_model.generate()
         
         Args:
             input_text: 输入文本
             max_tokens: 最大生成token数
             temperature: 温度参数
-            use_self_loop: 是否使用自闭环
-            memory_anchor: 海马体记忆锚点张量
+            use_self_loop: 是否使用自闭环（暂不支持）
+            memory_anchor: 海马体记忆锚点张量（暂不支持）
         """
         start_time = time.time()
         
@@ -636,59 +635,50 @@ class QwenInterface:
         input_ids = inputs.input_ids.to(self.device)
         attention_mask = inputs.attention_mask.to(self.device)
         
-        # 定义停止token（包括EOS和ChatML的im_end）
-        eos_token_id = self.model.tokenizer.eos_token_id
-        im_end_token_id = 151645  # <|im_end|> 的 token ID
-        stop_token_ids = {eos_token_id, im_end_token_id}
-        
-        generated_tokens = []
-        
-        # Initialize internal STDP tracker (Simulated loop injection)
-        for step in range(max_tokens):
-            step_outputs = self.forward_step(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                memory_anchor_gate=memory_anchor,
-                **kwargs
+        # ========== 2. 使用 base_model.generate() 生成 ==========
+        try:
+            with torch.inference_mode():
+                output_ids = self.model.base_model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=max_tokens,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=0.9,
+                    top_k=50,
+                    pad_token_id=self.model.tokenizer.eos_token_id,
+                    eos_token_id=self.model.tokenizer.eos_token_id,
+                )
+            
+            # 提取生成的部分（去掉输入）
+            generated_ids = output_ids[0][input_ids.shape[1]:].tolist()
+            
+            # 解码输出
+            output_text = self.model.tokenizer.decode(
+                generated_ids,
+                skip_special_tokens=True
             )
             
-            next_token_id = step_outputs['token_id']
-            generated_tokens.append(next_token_id)
-            
-            if next_token_id in stop_token_ids:
-                break
-                
-            # Append token for next step
-            next_token_tensor = torch.tensor([[next_token_id]], device=self.device)
-            input_ids = torch.cat([input_ids, next_token_tensor], dim=-1)
-            
-            # Update attention mask
-            attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=self.device)], dim=-1)
-            
-            # Apply STDP to the layer conceptually via local loop tracking (mocking the engine dispatch for tests)
-            if self.total_tokens_generated % 10 == 0:
-                self.apply_stdp_to_layer('model.layers.0', {'weight': torch.randn(1) * 0.01})
+        except Exception as e:
+            # 如果生成失败，返回错误信息
+            print(f"生成失败: {e}")
+            output_text = ""
+            generated_ids = []
         
-        # ========== 3. 解码输出 ==========
-        output_text = self.model.tokenizer.decode(
-            generated_tokens,
-            skip_special_tokens=True
-        )
-        
-        # ========== 4. 统计 ==========
+        # ========== 3. 统计 ==========
         elapsed = time.time() - start_time
         self.total_generation_time += elapsed
-        self.total_tokens_generated += len(generated_tokens)
+        self.total_tokens_generated += len(generated_ids)
         
-        # ========== 5. 构建返回结果 ==========
+        # ========== 4. 构建返回结果 ==========
         from core.interfaces_working import BrainAIOutput
         
         return BrainAIOutput(
             text=output_text,
-            tokens=generated_tokens,
+            tokens=generated_ids,
             confidence=min(0.95, 0.7 + len(output_text) / 200.0),
-            memory_anchors=[],  # 由海马体模块填充
-            stdp_stats={},  # 由 STDP 模块填充
+            memory_anchors=[],
+            stdp_stats={},
             cycle_stats={
                 'total_cycles': self.total_tokens_generated,
                 'avg_cycle_time_ms': (self.total_generation_time / self.total_tokens_generated * 1000)

@@ -32,17 +32,18 @@ class HippocampusSystem(nn.Module):
     输出：1-2 个记忆锚点 + 注意力门控信号
     """
     
-    def __init__(self, config, device: Optional[str] = None):
+    def __init__(self, config, device: Optional[str] = None, hidden_size: int = 1024):
         super().__init__()
         self.config = config
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.hidden_size = hidden_size  # 动态适配模型隐藏层大小
         
         # 从配置加载参数
         hc_config = config.hippocampus
         
         # ========== 1. EC 内嗅皮层 - 特征编码 ==========
         self.ec_encoder = EntorhinalEncoder(
-            input_dim=1024,              # Qwen3.5-0.8B hidden size (1024 for this variant)
+            input_dim=hidden_size,         # 动态适配模型隐藏层大小
             output_dim=hc_config.EC_feature_dim,
             sparsity=hc_config.DG_sparsity,
             freeze_encoder=True
@@ -68,7 +69,7 @@ class HippocampusSystem(nn.Module):
         # ========== 4. CA1 注意力 gate ==========
         self.ca1_gate = CA1AttentionGate(
             feature_dim=hc_config.EC_feature_dim * 2,
-            hidden_size=1024,             # Qwen3.5-0.8B hidden size
+            hidden_size=hidden_size,        # 动态适配模型隐藏层大小
             recall_topk=hc_config.recall_topk,
             temporal_encoding=hc_config.CA1_temporal_encoding,
             gate_type="additive"
