@@ -48,6 +48,8 @@ class BrainAIInterface:
             device=self.device,
             quantization=getattr(config, 'quantization', 'INT4')
         )
+        # 同步设备（模型可能回退到 CPU）
+        self.device = self.model.device
         
         # 2. 加载真实海马体系统
         self.hippocampus = HippocampusSystem(config, device=self.device)
