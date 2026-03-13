@@ -61,7 +61,7 @@ class DualWeightLinear(nn.Module):
         
         # ========== 偏置 ==========
         if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
+            self.bias = nn.Parameter(torch.zeros(out_features, device=self.static_weight.device, dtype=self.static_weight.dtype))
         else:
             self.register_parameter('bias', None)
         
