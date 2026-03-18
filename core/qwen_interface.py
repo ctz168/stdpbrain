@@ -417,7 +417,7 @@ class QwenInterface:
         )
         # 每 N 步才提取一次 features 用于 STDP (优化3基础)
         self._step_counter = 0
-        self._stdp_every_n = 10
+        self._stdp_every_n = 50
         
         # 统计信息
         self.total_generation_time = 0.0
