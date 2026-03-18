@@ -411,14 +411,22 @@ class BrainAIInterface:
         """
         # 构建思维触发（更像人的思考方式）
         if self.thought_seed:
-            # 有外部刺激（用户输入）
+            # 有外部刺激（用户输入）- 这是关键
             trigger = self.thought_seed
-            self.thought_seed = ""  # 使用后清空
+            # 不立即清空，让独白有足够时间响应用户输入
+            # self.thought_seed = ""  # 移除这行，延迟清空
+            
+            # 更自然的系统消息，强调响应用户
+            system_msg = (
+                "你是AI的内心思维。用户说了一句话，用简短自然的中文表达你的想法，"
+                "像人的内心独白：碎片化、自然、不要完整句子。"
+            )
         elif self.monologue_history:
             # 延续之前的思维（自然的思维流）
             last = self.monologue_history[-1]
             # 提取关键词作为触发
-            trigger = last[-25:] if len(last) > 25 else last
+            trigger = last[-20:] if len(last) > 20 else last
+            system_msg = "你是AI的内心思维。用简短自然的中文表达想法。"
         else:
             # 默认思维触发
             default_triggers = [
@@ -429,12 +437,7 @@ class BrainAIInterface:
                 "刚才想到"
             ]
             trigger = random.choice(default_triggers)
-        
-        # 简洁自然的系统消息
-        system_msg = (
-            "你是一个AI的内心思维。用简短自然的中文表达想法，"
-            "像人的内心独白一样：碎片化、有跳跃、不完整。"
-        )
+            system_msg = "你是AI的内心思维。用简短自然的中文表达想法。"
         
         # 用户消息（思维触发）
         user_msg = trigger
@@ -456,6 +459,83 @@ class BrainAIInterface:
             prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
         
         return prompt
+    
+    def _generate_spontaneous_monologue(self, max_tokens: int = 30, temperature: float = 0.7) -> str:
+        """
+        生成自发的内心独白 (潜意识流)
+        
+        优化：
+        1. 使用ChatML格式
+        2. 适中的温度提高连贯性
+        3. 简洁的独白内容
+        4. 乱码检查和过滤
+        """
+        # 1. 构建Prompt (已使用ChatML格式)
+        prompt = self._build_spontaneous_prompt()
+        
+        # 2. 生成独白
+        try:
+            output, hidden_state = self._generate_with_hidden_state(
+                prompt, 
+                max_tokens=max_tokens,
+                temperature=temperature,
+                repetition_penalty=1.2
+            )
+            
+            # 4. 乱码过滤
+            if self._is_gibberish(output):
+                # 根据思维种子生成相关独白
+                if self.thought_seed:
+                    monologue = f"嗯...{self.thought_seed[:15]}..."
+                else:
+                    monologue = "思考中..."
+            else:
+                monologue = output.strip()
+            
+            # 移除可能的格式残留
+            for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
+                monologue = monologue.replace(tag, '')
+            
+            monologue = monologue.strip()
+            
+            # 如果是乱码，使用默认值
+            if self._is_gibberish(monologue) or len(monologue) < 2:
+                if self.thought_seed:
+                    monologue = f"嗯...{self.thought_seed[:15]}..."
+                else:
+                    monologue = "思考中..."
+            
+            # 截断到合理长度
+            if len(monologue) > 50:
+                monologue = monologue[:47] + "..."
+            
+            # 4. 更新思维状态
+            if hidden_state is not None:
+                self.current_thought_state = hidden_state
+            
+            # 清空思维种子（延迟到这里清空）
+            self.thought_seed = ""
+            
+        except Exception as e:
+            logger.error(f"独白生成失败: {e}")
+            if self.thought_seed:
+                monologue = f"嗯...{self.thought_seed[:15]}..."
+                self.thought_seed = ""
+            else:
+                monologue = "思考中..."
+        
+        # 5. 存储到海马体
+        if monologue and len(monologue) > 3:
+            semantic_pointer = f"思考: {monologue[:30]}"
+            self._store_with_real_features(monologue, hidden_state, semantic_pointer=semantic_pointer)
+            self.monologue_history.append(monologue)
+            if len(self.monologue_history) > self.max_monologue_history:
+                self.monologue_history.pop(0)
+        
+        # 6. 应用 STDP
+        self._apply_real_stdp_update()
+        
+        return monologue
 
     def _generate_with_hidden_state(
         self, 
@@ -713,7 +793,8 @@ class BrainAIInterface:
         self.hippocampus.record_activity()
         
         # 1. 消化输入（设置思维种子）
-        self.thought_seed = user_input[:30]  # 简化种子
+        # 直接使用用户输入作为思维种子，而不是截断
+        self.thought_seed = user_input
         
         # 2. 召回相关记忆
         memory_context = ""
@@ -733,11 +814,11 @@ class BrainAIInterface:
             pass
         
         # 3. 产生潜意识独白（更像人脑的思考过程）
-        # 使用更高的温度增加多样性
-        monologue = await asyncio.to_thread(self._generate_spontaneous_monologue, 35, 0.85)
+        # 降低温度使独白更聚焦
+        monologue = await asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.75)
         
         # 过滤独白内容（确保自然）
-        monologue = self._clean_monologue(monologue)
+        monologue = self._clean_monologue(monologue, user_input)
         
         yield {"type": "monologue", "content": monologue}
         
@@ -745,15 +826,22 @@ class BrainAIInterface:
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         
         full_response = ""
-        async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.75):
-            full_response += chunk
-            yield {"type": "chunk", "content": chunk}
+        try:
+            async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.7):
+                full_response += chunk
+                yield {"type": "chunk", "content": chunk}
+        except Exception as e:
+            logger.error(f"流式生成失败: {e}")
+            # 降级到同步生成
+            output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.7)
+            full_response = output.text
+            yield {"type": "chunk", "content": full_response}
         
         # 存储并应用 STDP
         self._store_with_real_features(full_response, self.current_thought_state)
         self._apply_real_stdp_update()
     
-    def _clean_monologue(self, monologue: str) -> str:
+    def _clean_monologue(self, monologue: str, user_input: str = "") -> str:
         """清理和优化独白内容"""
         # 移除特殊符号
         for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
@@ -762,24 +850,24 @@ class BrainAIInterface:
         monologue = monologue.strip()
         
         # 长度控制
-        if len(monologue) > 60:
+        if len(monologue) > 50:
             # 尝试在自然位置截断
             for end_marker in ['...', '。', '，', '、']:
-                pos = monologue.rfind(end_marker, 0, 60)
-                if pos > 20:
+                pos = monologue.rfind(end_marker, 0, 50)
+                if pos > 15:
                     monologue = monologue[:pos+1]
                     break
             else:
-                monologue = monologue[:57] + "..."
+                monologue = monologue[:47] + "..."
         
-        # 如果太短或乱码，使用默认
+        # 如果太短或乱码，生成一个与用户输入相关的默认独白
         if len(monologue) < 2 or self._is_gibberish(monologue):
-            monologue = random.choice([
-                "嗯...让我想想",
-                "这个...",
-                "我在想...",
-                "话说..."
-            ])
+            # 基于用户输入生成简单的思维片段
+            if user_input:
+                input_hint = user_input[:15]
+                monologue = f"嗯...{input_hint}..."
+            else:
+                monologue = "让我想想..."
         
         return monologue
 

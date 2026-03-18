@@ -567,6 +567,11 @@ class QwenInterface:
         attention_mask = inputs.attention_mask.to(self.device)
         past_key_values = None
         
+        # 定义停止token
+        eos_token_id = self.model.tokenizer.eos_token_id
+        im_end_token_id = 151645  # <|im_end|>
+        stop_token_ids = {eos_token_id, im_end_token_id}
+        
         for step in range(max_tokens):
             # KV-cache 模式: 只传最后一个 token
             if past_key_values is not None:
