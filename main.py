@@ -96,9 +96,12 @@ def parse_args():
 
 
 def run_chat(ai):
-    """对话模式"""
+    """对话模式 - 增强版（支持流式独白显示）"""
+    import asyncio
+    
     print("=" * 60)
-    print("类人脑AI - 对话模式")
+    print("类人脑AI - 增强对话模式")
+    print("支持实时内心独白显示")
     print("输入 'quit' 或 'exit' 退出")
     print("=" * 60)
     
@@ -106,7 +109,7 @@ def run_chat(ai):
     
     while True:
         try:
-            user_input = input("\n你：").strip()
+            user_input = input("\n\033[92m你：\033[0m").strip()
             
             if user_input.lower() in ['quit', 'exit']:
                 break
@@ -114,13 +117,52 @@ def run_chat(ai):
             if not user_input:
                 continue
             
-            # 生成回复
+            # 使用流式对话接口
             start_time = time.time()
-            response = ai.chat(user_input, history)
-            elapsed = time.time() - start_time
             
-            print(f"\nAI: {response}")
-            print(f"[耗时：{elapsed*1000:.1f}ms]")
+            try:
+                # 检查是否支持 chat_stream
+                if hasattr(ai, 'chat_stream'):
+                    print("\033[90m💭 [潜意识消化中...]\033[0m")
+                    
+                    monologue = ""
+                    response = ""
+                    
+                    # 运行异步生成
+                    async def stream_chat():
+                        nonlocal monologue, response
+                        async for event in ai.chat_stream(user_input, history):
+                            if event["type"] == "monologue":
+                                monologue = event["content"]
+                                # 实时更新独白显示
+                                print(f"\r\033[90m💭 [潜意识] {monologue[:50]}...\033[0m", end="", flush=True)
+                            elif event["type"] == "chunk":
+                                if monologue and not response:
+                                    # 独白结束，开始回复
+                                    print()  # 换行
+                                    print(f"\033[90m💭 [内心独白] {monologue}\033[0m")
+                                    print("\n\033[93mAI:\033[0m", end=" ", flush=True)
+                                response += event["content"]
+                                print(event["content"], end="", flush=True)
+                        return response
+                    
+                    response = asyncio.run(stream_chat())
+                    print()  # 最终换行
+                else:
+                    # 降级到同步模式
+                    response = ai.chat(user_input, history)
+                    print(f"\n\033[93mAI:\033[0m {response}")
+                
+                elapsed = time.time() - start_time
+                print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
+                
+            except Exception as e:
+                # 异常处理，降级到基础模式
+                print(f"\n\033[91m[流式模式失败，使用基础模式]\033[0m")
+                response = ai.chat(user_input, history)
+                print(f"\n\033[93mAI:\033[0m {response}")
+                elapsed = time.time() - start_time
+                print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
             
             # 更新历史
             history.append({"role": "user", "content": user_input})
@@ -129,7 +171,7 @@ def run_chat(ai):
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"[错误] {e}")
+            print(f"\033[91m[错误] {e}\033[0m")
 
 
 def run_generate(ai, input_text: str):

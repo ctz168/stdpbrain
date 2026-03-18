@@ -384,68 +384,143 @@ class MonologueEngine:
         self.current_emotion = EmotionState.CURIOUS
     
     def _build_human_like_prompt(self) -> str:
-        """构建类人脑独白Prompt"""
-        parts = []
+        """
+        构建类人脑独白Prompt - 优化版
         
-        # 1. 状态和情绪前缀
-        state_prefix = self.state_style_prompts[self.current_thought_state]
-        emotion_prefix = self.emotion_style_prompts[self.current_emotion]
-        
-        # 2. 主题锚定
-        if self.current_theme and self.current_thought_state == ThoughtState.FOCUSED:
-            parts.append(f"关于「{self.current_theme.content}」")
-        
-        # 3. 联想链
-        if self.current_concept and self.current_thought_state == ThoughtState.WANDERING:
-            next_concept, link_type = self._generate_association(self.current_concept)
-            if link_type == "similarity":
-                parts.append(f"从{self.current_concept}联想到相似的{next_concept}")
-            elif link_type == "contrast":
-                parts.append(f"想到{self.current_concept}，却又想到相反的{next_concept}")
-            elif link_type == "causality":
-                parts.append(f"{self.current_concept}让我想到{next_concept}")
-            else:
-                parts.append(f"从{self.current_concept}到{next_concept}")
-            self.current_concept = next_concept
-        
-        # 4. 反思模式
-        if self.current_thought_state == ThoughtState.REFLECTING:
-            if self.monologue_history:
-                last_thought = list(self.monologue_history)[-1] if self.monologue_history else ""
-                parts.append(f"反思刚才的想法：「{last_thought[:30]}...」")
-            parts.append("我在想...")
-        
-        # 5. 回归主题
-        if self._should_return_to_theme() and self.current_theme:
-            parts.append(f"回到「{self.current_theme.content}」")
-            self.current_theme.return_count += 1
-            self.current_theme.drift_count = 0
-        
-        # 6. 思维种子
-        if self.thought_seed and time.time() - self.seed_timestamp < 60:
-            parts.append(f"用户说：{self.thought_seed[:20]}")
-        
-        # 7. 历史上下文
-        if self.monologue_history and self.current_thought_state != ThoughtState.REFLECTING:
-            recent = list(self.monologue_history)[-1] if self.monologue_history else ""
-            if recent and len(recent) > 10:
-                parts.append(f"刚才想到{recent[-30:]}")
-        
-        # 8. 构建最终Prompt
-        if parts:
-            prompt = "，".join(parts) + "..."
+        核心改进：
+        1. 碎片化思维（不是完整句子）
+        2. 自然思维跳跃
+        3. 更像内心独白
+        4. 避免过于形式化
+        """
+        # 根据状态选择不同的思维风格
+        if self.current_thought_state == ThoughtState.FOCUSED:
+            # 专注模式：围绕主题深入
+            return self._build_focused_thought()
+        elif self.current_thought_state == ThoughtState.WANDERING:
+            # 漂移模式：自由联想
+            return self._build_wandering_thought()
+        elif self.current_thought_state == ThoughtState.REFLECTING:
+            # 反思模式：自我审视
+            return self._build_reflecting_thought()
         else:
-            # 默认Prompt
-            default_prompts = [
-                "此刻我在想...",
-                "忽然想到...",
-                "思维在流动...",
-                "静静地思考...",
-                "回忆起..."
+            # 休息模式：后台处理
+            return self._build_resting_thought()
+    
+    def _build_focused_thought(self) -> str:
+        """专注模式思维"""
+        # 思维种子优先（用户输入）
+        if self.thought_seed and time.time() - self.seed_timestamp < 60:
+            seed = self.thought_seed[:25]
+            # 自然的分析思维
+            focus_patterns = [
+                f"嗯...{seed}",
+                f"让我想想...{seed}",
+                f"这让我想到...{seed}",
+                f"{seed}...需要理解",
+                f"关于{seed}..."
             ]
-            prompt = random.choice(default_prompts)
+            return random.choice(focus_patterns)
         
-        return prompt
+        # 主题锚定
+        if self.current_theme:
+            theme = self.current_theme.content
+            focus_patterns = [
+                f"{theme}...",
+                f"我在想{theme}",
+                f"关于{theme}，也许...",
+                f"{theme}...有意思"
+            ]
+            return random.choice(focus_patterns)
+        
+        # 默认专注思维
+        return random.choice(["嗯...", "让我想想...", "这个..."])
+    
+    def _build_wandering_thought(self) -> str:
+        """漂移模式思维 - 自由联想"""
+        # 基于联想链生成
+        if self.current_concept:
+            next_concept, link_type = self._generate_association(self.current_concept)
+            
+            # 自然的思维跳跃
+            if link_type == "similarity":
+                wander_patterns = [
+                    f"这让我想到{next_concept}",
+                    f"类似的...{next_concept}",
+                    f"{next_concept}也差不多",
+                    f"好像{next_concept}..."
+                ]
+            elif link_type == "contrast":
+                wander_patterns = [
+                    f"但{next_concept}不一样",
+                    f"反过来...{next_concept}",
+                    f"{next_concept}倒是相反"
+                ]
+            elif link_type == "causality":
+                wander_patterns = [
+                    f"所以...{next_concept}",
+                    f"这导致{next_concept}",
+                    f"{next_concept}可能因为..."
+                ]
+            else:
+                wander_patterns = [
+                    f"话说{next_concept}",
+                    f"对了，{next_concept}",
+                    f"想起来了...{next_concept}"
+                ]
+            
+            self.current_concept = next_concept
+            return random.choice(wander_patterns)
+        
+        # 随机漂移
+        wander_phrases = [
+            "话说回来...",
+            "对了...",
+            "忽然想到...",
+            "等等...",
+            "好像..."
+        ]
+        return random.choice(wander_phrases)
+    
+    def _build_reflecting_thought(self) -> str:
+        """反思模式思维 - 自我审视"""
+        if self.monologue_history:
+            last = list(self.monologue_history)[-1] if self.monologue_history else ""
+            if last:
+                # 自然的反思
+                reflect_patterns = [
+                    f"等等，我刚才说{last[:15]}...",
+                    f"嗯...{last[:15]}对吗？",
+                    f"回顾一下...{last[:20]}",
+                    f"我想想...{last[:15]}这样合理吗"
+                ]
+                return random.choice(reflect_patterns)
+        
+        # 空反思
+        reflect_patterns = [
+            "我在想...",
+            "这样对吗...",
+            "嗯...",
+            "让我反思一下..."
+        ]
+        return random.choice(reflect_patterns)
+    
+    def _build_resting_thought(self) -> str:
+        """休息模式思维 - 后台处理"""
+        # 从记忆中随机提取
+        if self.monologue_history and random.random() < 0.3:
+            memory = random.choice(list(self.monologue_history))
+            return f"刚才{memory[:20]}..."
+        
+        # 安静的思维
+        resting_phrases = [
+            "...",
+            "嗯...",
+            "...静静地",
+            "...没什么",
+            "...在想"
+        ]
+        return random.choice(resting_phrases)
     
     def _generate_with_style(
         self,
