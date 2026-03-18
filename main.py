@@ -27,8 +27,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 对话模式
+  # 对话模式（流式独白）
   python main.py --mode chat
+  
+  # 持续独白观察模式
+  python main.py --mode continuous
   
   # 生成模式
   python main.py --mode generate --input "请解释量子力学"
@@ -45,7 +48,7 @@ def parse_args():
         "--mode", 
         type=str, 
         default="chat",
-        choices=["chat", "generate", "eval", "stats", "telegram", "evaluate"],
+        choices=["chat", "continuous", "generate", "eval", "stats", "telegram", "evaluate"],
         help="运行模式"
     )
     
@@ -322,6 +325,11 @@ def main():
     try:
         if args.mode == "chat":
             run_chat(ai)
+        
+        elif args.mode == "continuous":
+            # 持续独白观察模式
+            from continuous_chat import run_continuous_chat
+            run_continuous_chat(ai)
         
         elif args.mode == "generate":
             run_generate(ai, args.input)
