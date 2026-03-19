@@ -26,6 +26,8 @@ class EpisodicMemory:
     semantic_pointer: str             # 语义指针 (不存完整文本)
     causal_links: List[str]           # 因果关联列表
     activation_strength: float = 1.0  # 激活强度 (STDP 权重)
+    is_core: bool = False             # 核心记忆标记
+    content: str = ""                 # 完整内容
     dg_features: Optional[torch.Tensor] = None  # DG 分离后的特征
     
     def to_dict(self) -> dict:
@@ -35,7 +37,9 @@ class EpisodicMemory:
             'temporal_skeleton': self.temporal_skeleton,
             'semantic_pointer': self.semantic_pointer,
             'causal_links': self.causal_links,
-            'activation_strength': self.activation_strength
+            'activation_strength': self.activation_strength,
+            'is_core': self.is_core,
+            'content': self.content
         }
 
 
@@ -84,7 +88,9 @@ class CA3EpisodicMemory(nn.Module):
         semantic_pointer: str,
         temporal_skeleton: str = "",
         causal_links: List[str] = None,
-        dg_features: Optional[torch.Tensor] = None
+        dg_features: Optional[torch.Tensor] = None,
+        is_core: bool = False,
+        content: str = ""
     ) -> EpisodicMemory:
         """
         存储情景记忆
@@ -96,6 +102,8 @@ class CA3EpisodicMemory(nn.Module):
             temporal_skeleton: 时序骨架
             causal_links: 因果关联
             dg_features: DG 特征
+            is_core: 是否为核心记忆
+            content: 完整内容
         
         Returns:
             memory: 存储的记忆对象
@@ -107,7 +115,10 @@ class CA3EpisodicMemory(nn.Module):
             temporal_skeleton=temporal_skeleton,
             semantic_pointer=semantic_pointer,
             causal_links=causal_links or [],
-            dg_features=dg_features
+            dg_features=dg_features,
+            is_core=is_core,
+            content=content,
+            activation_strength=10.0 if is_core else 1.0  # 核心记忆初始激活强度更高
         )
         
         # ========== 2. 检查容量，必要时删除最旧记忆 ==========
@@ -154,54 +165,72 @@ class CA3EpisodicMemory(nn.Module):
         """
         candidates = []
         
-        # ========== 1. 语义线索检索 ==========
-        if query_semantic and query_semantic in self.semantic_index:
-            memory_id = self.semantic_index[query_semantic]
-            if memory_id in self.memories:
-                candidates.append(self.memories[memory_id])
+        # ========== 1. 优先召回核心记忆（关键词匹配） ==========
+        core_memories = [m for m in self.memories.values() if m.is_core]
         
-        # ========== 2. 时间线索检索 ==========
-        if query_timestamp is not None:
-            ts_key = query_timestamp // self.timestamp_precision_ms
-            # 查找相邻时间窗口的记忆
-            for delta in [-1, 0, 1]:
-                neighbor_ts = ts_key + delta
-                if neighbor_ts in self.time_index:
-                    for mem_id in self.time_index[neighbor_ts]:
-                        if mem_id in self.memories:
-                            candidates.append(self.memories[mem_id])
+        # 如果有语义线索，优先匹配核心记忆的关键词
+        if query_semantic:
+            # 关键词匹配
+            keywords = query_semantic.lower().split()
+            for memory in core_memories:
+                # 检查语义指针或内容是否包含关键词
+                semantic_text = (memory.semantic_pointer + " " + memory.content).lower()
+                if any(kw in semantic_text for kw in keywords):
+                    candidates.append(memory)
         
-        # ========== 3. 特征相似度检索 (向量化) ==========
-        if query_features is not None and len(self.memories) > 0:
-            # 1. 批量提取所有记忆的 DG 特征
-            all_features = torch.stack([mem.dg_features for mem in self.memories.values() if mem.dg_features is not None])
-            all_ids = [mem.memory_id for mem in self.memories.values() if mem.dg_features is not None]
+        # ========== 2. 特征相似度匹配 ==========
+        if query_features is not None and len(candidates) < topk:
+            # 收集所有记忆的特征
+            all_features = []
+            all_ids = []
             
-            if all_features.numel() > 0:
-                # 确保query_features是二维的
-                if query_features.dim() == 1:
-                    query_features = query_features.unsqueeze(0)
+            for mid, memory in self.memories.items():
+                if memory.dg_features is not None:
+                    all_features.append(memory.dg_features)
+                    all_ids.append(mid)
+            
+            if all_features:
+                all_features = torch.stack(all_features)
                 
-                # 2. 批量计算余弦相似度 (O(1) 并行操作)
-                query_norm = F.normalize(query_features, p=2, dim=-1)
-                all_features_norm = F.normalize(all_features, p=2, dim=-1)
-                
-                # 确保维度匹配
-                if query_norm.dim() == 2 and all_features_norm.dim() == 2:
-                    similarities = torch.mm(query_norm, all_features_norm.t()).squeeze(0)
-                else:
-                    # 回退到逐个计算
-                    similarities = torch.zeros(1, all_features_norm.shape[0])
-                    for i, feat in enumerate(all_features_norm):
-                        similarities[0, i] = F.cosine_similarity(query_norm.flatten().unsqueeze(0), feat.flatten().unsqueeze(0))
-                
-                # 3. 获取 Top-K 相似的记忆
-                top_sim, top_indices = torch.topk(similarities, k=min(topk * 2, len(all_ids)))
-                
-                for i, sim in enumerate(top_sim):
-                    if sim > self.recall_threshold:
+                if all_features.numel() > 0:
+                    # 确保query_features是二维的
+                    if query_features.dim() == 1:
+                        query_features = query_features.unsqueeze(0)
+                    
+                    # 批量计算余弦相似度
+                    query_norm = F.normalize(query_features, p=2, dim=-1)
+                    all_features_norm = F.normalize(all_features, p=2, dim=-1)
+                    
+                    # 确保维度匹配
+                    if query_norm.dim() == 2 and all_features_norm.dim() == 2:
+                        similarities = torch.mm(query_norm, all_features_norm.t()).squeeze(0)
+                    else:
+                        # 回退到逐个计算
+                        similarities = torch.zeros(1, all_features_norm.shape[0])
+                        for i, feat in enumerate(all_features_norm):
+                            similarities[0, i] = F.cosine_similarity(query_norm.flatten().unsqueeze(0), feat.flatten().unsqueeze(0))
+                    
+                    # 获取 Top-K 相似的记忆
+                    # 核心记忆使用更低的阈值
+                    top_sim, top_indices = torch.topk(similarities, k=min(topk * 2, len(all_ids)))
+                    
+                    for i, sim in enumerate(top_sim):
                         memory_id = all_ids[top_indices[i]]
-                        candidates.append(self.memories[memory_id])
+                        memory = self.memories[memory_id]
+                        
+                        # 核心记忆使用更低的召回阈值
+                        threshold = 0.5 if memory.is_core else self.recall_threshold
+                        
+                        if sim > threshold:
+                            candidates.append(memory)
+        
+        # ========== 3. 如果召回结果不足，直接返回核心记忆 ==========
+        if len(candidates) < topk and core_memories:
+            for memory in core_memories:
+                if memory not in candidates:
+                    candidates.append(memory)
+                    if len(candidates) >= topk:
+                        break
         
         # ========== 4. 去重 ==========
         seen_ids = set()

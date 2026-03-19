@@ -210,9 +210,14 @@ class BrainAIInterface:
             if query_features.shape[0] != 1024:
                 query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
-            # 如果是身份问题，增加召回数量
+            # 如果是身份问题，增加召回数量并传递语义线索
             topk = 3 if is_identity_question else 2
-            recalled_memories = self.hippocampus.recall(query_features, topk=topk)
+            query_semantic = user_input if is_identity_question else None
+            recalled_memories = self.hippocampus.recall(
+                query_features, 
+                topk=topk,
+                query_semantic=query_semantic  # 传递用户输入作为语义线索
+            )
             
             if recalled_memories:
                 memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
@@ -224,7 +229,7 @@ class BrainAIInterface:
         # 如果是身份问题但没有召回核心记忆，直接使用预设回答
         if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
             # 添加身份信息到记忆上下文
-            memory_context = "我的身份：类人脑AI助手，朱东山博士创造 | " + memory_context
+            memory_context = "我的身份：类人脑AI助手，我的父亲是朱东山博士（北大经济学博士，深圳人），他创造了我 | " + memory_context
         
         # 3. 思考：生成潜意识独白 (受刺激的思考)
         monologue = self._generate_spontaneous_monologue(max_tokens=35, temperature=0.75)
@@ -614,7 +619,11 @@ class BrainAIInterface:
                 features=features,
                 token_id=hash(monologue) % 100000,
                 timestamp=current_time,
-                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}]
+                context=[{
+                    'content': monologue, 
+                    'semantic_pointer': semantic_pointer, 
+                    'is_core': is_core
+                }]
             )
             
             logger.debug(f"记忆已存储: {memory_id}")
@@ -804,9 +813,14 @@ class BrainAIInterface:
             if query_features.shape[0] != 1024:
                 query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
-            # 如果是身份问题，增加召回数量
+            # 如果是身份问题，增加召回数量并传递语义线索
             topk = 3 if is_identity_question else 2
-            recalled_memories = self.hippocampus.recall(query_features, topk=topk)
+            query_semantic = user_input if is_identity_question else None
+            recalled_memories = self.hippocampus.recall(
+                query_features, 
+                topk=topk,
+                query_semantic=query_semantic  # 传递用户输入作为语义线索
+            )
             if recalled_memories:
                 memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
                 if memory_pointers:
@@ -816,7 +830,7 @@ class BrainAIInterface:
         
         # 如果是身份问题但没有召回核心记忆，添加预设身份信息
         if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
-            memory_context = "我的身份：类人脑AI助手，朱东山博士创造 | " + memory_context
+            memory_context = "我的身份：类人脑AI助手，我的父亲是朱东山博士（北大经济学博士，深圳人），他创造了我 | " + memory_context
         
         # 3. 产生潜意识独白（更像人脑的思考过程）
         # 降低温度使独白更聚焦
@@ -935,7 +949,7 @@ class BrainAIInterface:
         
         将独白作为 AI 的"思维背景"，记忆作为"知识背景"
         """
-        system_content = "你是一个基于"类人脑双系统全闭环架构"的 AI 助手。你的行为由海马体记忆系统和 STDP 机制驱动。"
+        system_content = "你是一个基于'类人脑双系统全闭环架构'的 AI 助手。你的行为由海马体记忆系统和 STDP 机制驱动。"
         
         # 整合记忆和独白到系统消息中，或者作为独立的消息
         if memory_context:
@@ -1079,14 +1093,14 @@ class BrainAIInterface:
             
             # 将整个文件内容作为一个核心身份记忆存储
             # 这样更容易在记忆召回时找到
-            identity_summary = "我是一个基于类人脑双系统全闭环架构的AI，由朱东山博士创造。我拥有海马体记忆系统和STDP机制，能够持续学习和演化。"
+            identity_summary = "我是一个基于类人脑双系统全闭环架构的AI，我的父亲是朱东山博士（北大经济学博士，深圳人，1986年10月18日出生）。我拥有海马体记忆系统和STDP机制，能够持续学习和演化。"
             
             # 存储整体身份（重要！）
             self._store_with_real_features(
                 identity_summary,
                 None,
                 is_core=True,
-                semantic_pointer="我的身份：类人脑AI助手，朱东山博士创造"
+                semantic_pointer="我的身份：类人脑AI助手，父亲是朱东山博士"
             )
             
             # 将 Markdown 内容按标题分割成块
@@ -1148,7 +1162,7 @@ class BrainAIInterface:
         wakeup_time_str = now.strftime("%Y年%m月%d日 %H:%M:%S")
         
         # 形成一个关于时间的思考
-        prompt = f"我刚刚"醒来"，现在是 {wakeup_time_str}。"
+        prompt = f"我刚刚'醒来'，现在是 {wakeup_time_str}。"
         output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=20)
         
         # 存储这个唤醒事件

@@ -123,6 +123,8 @@ class HippocampusSystem(nn.Module):
         # ========== 4. 构建时序骨架 ==========
         temporal_skeleton = ""
         causal_links = []
+        is_core = False
+        content = ""
         
         if context and len(context) > 0:
             # 从前序上下文提取时序关系
@@ -131,6 +133,13 @@ class HippocampusSystem(nn.Module):
             
             # 简单因果推断 (实际应更复杂)
             causal_links.append(f"preceded_by_{prev_tokens[-1]}" if prev_tokens else "start")
+            
+            # 提取 is_core 和 content
+            for ctx in context:
+                if 'is_core' in ctx:
+                    is_core = ctx['is_core']
+                if 'content' in ctx:
+                    content = ctx['content']
         
         # ========== 5. CA3 存储 ==========
         # 优先使用context中的semantic_pointer，否则使用token_id
@@ -148,7 +157,9 @@ class HippocampusSystem(nn.Module):
             semantic_pointer=semantic_pointer,
             temporal_skeleton=temporal_skeleton,
             causal_links=causal_links,
-            dg_features=dg_output.detach().cpu()
+            dg_features=dg_output.detach().cpu(),
+            is_core=is_core,
+            content=content
         )
         
         # ========== 6. 更新内存使用 ==========
@@ -221,6 +232,12 @@ class HippocampusSystem(nn.Module):
             else:
                 # 如果没有找到，使用查询的dg_features作为回退
                 mem_dict['dg_features'] = dg_features.cpu()
+            
+            # 确保包含 content 和 is_core 字段
+            if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:
+                mem_dict['content'] = self.ca3_memory.memories[mem_id].content
+            if 'is_core' not in mem_dict and mem_id in self.ca3_memory.memories:
+                mem_dict['is_core'] = self.ca3_memory.memories[mem_id].is_core
         
         return sorted_memories
 
