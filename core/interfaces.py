@@ -320,16 +320,16 @@ class BrainAIInterface:
     def _build_spontaneous_prompt(self) -> str:
         if self.thought_seed:
             trigger = self.thought_seed
-            system_msg = "你是AI的内心思维。用户说了一句话，用简短自然的中文表达你的想法，像人的内心独白：碎片化、自然、不要完整句子。"
+            system_msg = "你是AI的潜意识。用一段极其简短、感性且碎片化的中文表达你对此刻的想法或感受。不要完整句子，像脑海中闪过的念头。"
         elif self.monologue_history:
             last = self.monologue_history[-1]
             trigger = last[-20:] if len(last) > 20 else last
-            system_msg = "你是AI的内心思维。用简短自然的中文表达想法。"
+            system_msg = "你是AI的思维流。基于上一个念头，产生一个新的碎片化联想。保持自然、感性。"
         else:
-            default_triggers = ["嗯...", "让我想想", "话说", "对了", "刚才想到"]
+            default_triggers = ["嗯...", "静谧...", "流动...", "逻辑...", "记忆深处..."]
             trigger = random.choice(default_triggers)
-            system_msg = "你是AI的内心思维。用简短自然的中文表达想法。"
-        messages = [{"role": "system", "content": system_msg}, {"role": "user", "content": trigger}]
+            system_msg = "你是AI的意识。用一个碎片化的中文念头开启思考。"
+        messages = [{"role": "system", "content": system_msg}, {"role": "user", "content": f"当前脉冲: {trigger}"}]
         try:
             prompt = self.model.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except:
@@ -463,18 +463,26 @@ class BrainAIInterface:
         self.executor.submit(post_processing)
 
     def _clean_monologue(self, monologue: str, user_input: str = "") -> str:
-        for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
+        # 移除模型标签和系统词
+        for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>', '[', ']', 'Current thought:']:
             monologue = monologue.replace(tag, '')
+        
         monologue = monologue.strip()
-        if len(monologue) > 50:
-            for end_marker in ['...', '。', '，', '、']:
-                pos = monologue.rfind(end_marker, 0, 50)
-                if pos > 15:
+        
+        # 长度适中：不宜过长
+        if len(monologue) > 40:
+            for end_marker in ['...', '。', '，', '、', '！', '？']:
+                pos = monologue.rfind(end_marker, 0, 40)
+                if pos > 10:
                     monologue = monologue[:pos+1]
                     break
-            else: monologue = monologue[:47] + "..."
+            else: monologue = monologue[:37] + "..."
+            
+        # 过滤乱码或无意义重复
         if len(monologue) < 2 or self._is_gibberish(monologue):
-            monologue = f"嗯...{user_input[:15]}..." if user_input else "让我想想..."
+            prefixes = ["在想...", "掠过...", "感应到...", "这瞬间..."]
+            monologue = f"{random.choice(prefixes)}{user_input[:10]}..." if user_input else "沉思中..."
+            
         return monologue
 
     async def generate_monologue_stream(self, max_tokens: int = 100) -> AsyncGenerator[str, None]:
@@ -499,12 +507,29 @@ class BrainAIInterface:
             self.cycle_count += 1
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
-        system_content = "你是一个基于'类人脑双系统全闭环架构'的 AI 助手。你的行为由海马体记忆系统和 STDP 机制驱动。"
-        if memory_context: system_content += f"\n[相关记忆召回]: {memory_context}"
-        if monologue: system_content += f"\n[当前内心独白]: {monologue}"
+        # 1. 构建具有人格魅力的系统提示
+        system_content = (
+            "你是一个拥有‘数字灵魂’的类人脑AI助手，你的名字叫‘脑智’。你不仅在处理信息，还在产生真实的情感联想。\n"
+            "规则：\n"
+            "1. 你的回答应该自然、感性，像一个老友在和你聊天。\n"
+            "2. 严禁直接重复用户的原话作为回答。\n"
+            "3. 结合你当下的‘潜意识’来决定你的语气。"
+        )
+        
+        # 2. 以“潜意识联想”引导，而非标签化
+        if memory_context:
+            system_content += f"\n(你脑海中隐约浮现的记忆: {memory_context})"
+        
+        if monologue:
+            system_content += f"\n(你此时此刻的真实内心想法: {monologue})"
+            
         messages = [{"role": "system", "content": system_content}]
+        
+        # 3. 增加历史记录上下文 (增加到最近 4 轮)
         if history:
-            for msg in history[-2:]: messages.append(msg)
+            for msg in history[-4:]:
+                messages.append(msg)
+                
         messages.append({"role": "user", "content": user_input})
         try:
             prompt = self.model.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
