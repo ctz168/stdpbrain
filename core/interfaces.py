@@ -189,11 +189,16 @@ class BrainAIInterface:
         self.hippocampus.record_activity()
         
         # 1. 消化输入：强制更新思维种子
-        self.thought_seed = f"用户说：{user_input[:20]}"
+        self.thought_seed = user_input[:30]
         
-        # 2. 召回海马体记忆（新增）
+        # 2. 召回海马体记忆（增强版）
         memory_context = ""
         recalled_memories = []  # 保存召回的记忆锚点
+        
+        # 先检查是否是关于身份的问题
+        identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
+        is_identity_question = any(keyword in user_input for keyword in identity_keywords)
+        
         try:
             # 使用输入文本的embedding作为查询
             input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
@@ -205,19 +210,24 @@ class BrainAIInterface:
             if query_features.shape[0] != 1024:
                 query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
-            # 召回记忆
-            recalled_memories = self.hippocampus.recall(query_features, topk=2)
+            # 如果是身份问题，增加召回数量
+            topk = 3 if is_identity_question else 2
+            recalled_memories = self.hippocampus.recall(query_features, topk=topk)
+            
             if recalled_memories:
                 memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
                 if memory_pointers:
-                    memory_context = "相关记忆: " + " | ".join(memory_pointers[:2])
+                    memory_context = " | ".join(memory_pointers[:3])
         except Exception as e:
             logger.debug(f"记忆召回失败: {e}")
         
+        # 如果是身份问题但没有召回核心记忆，直接使用预设回答
+        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
+            # 添加身份信息到记忆上下文
+            memory_context = "我的身份：类人脑AI助手，朱东山博士创造 | " + memory_context
+        
         # 3. 思考：生成潜意识独白 (受刺激的思考)
-        # 设置思维种子，让独白响应用户输入
-        self.thought_seed = f"用户说：{user_input[:30]}"
-        monologue = self._generate_spontaneous_monologue(max_tokens=40, temperature=0.7)
+        monologue = self._generate_spontaneous_monologue(max_tokens=35, temperature=0.75)
         
         # 4. 回复：基于记忆和思维流生成
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
@@ -245,30 +255,13 @@ class BrainAIInterface:
         )
         
         # 5. 存储用户输入和模型回复到海马体（保存完整上下文）
-        # 提取关键信息作为语义指针
-        semantic_pointer = f"用户: {user_input[:50]} | 回复: {output.text[:50]}"
+        semantic_pointer = f"用户: {user_input[:30]} | 回复: {output.text[:30]}"
         self._store_with_real_features(
             f"{user_input} -> {output.text}", 
             self.current_thought_state,
             semantic_pointer=semantic_pointer
         )
         self._apply_real_stdp_update()
-        
-        # 6. 调用STDP引擎的step方法（新增）
-        try:
-            self.stdp_engine.step(
-                model_components={'hippocampus': self.hippocampus},
-                inputs={
-                    'context_tokens': torch.tensor([1, 2, 3]),
-                    'current_token': hash(user_input) % 10000,
-                    'memory_anchor_id': f'mem_{hash(output.text) % 10000}'
-                },
-                outputs={
-                    'evaluation_score': 30 + len(output.text) % 20
-                }
-            )
-        except Exception as e:
-            logger.debug(f"STDP step失败: {e}")
         
         return output.text
 
@@ -663,7 +656,7 @@ class BrainAIInterface:
             total_update = 0.0
             for name, layer in dynamic_layers:
                 # 1. 模拟赫布学习：基于思维向量的投影产生关联更新
-                # 这里我们假设权重矩阵 W 与 thought_vec 的外积能代表当前的“思维关联”
+                # 这里我们假设权重矩阵 W 与 thought_vec 的外积能代表当前的"思维关联"
                 # 由于我们没有每层的输入输出，我们使用 thought_vec 的自关联来模拟这种趋势
                 # [out_f, in_f] 的形状，我们采样部分 thought_vec
                 out_f, in_f = layer.dynamic_weight.shape
@@ -796,8 +789,13 @@ class BrainAIInterface:
         # 直接使用用户输入作为思维种子，而不是截断
         self.thought_seed = user_input
         
-        # 2. 召回相关记忆
+        # 2. 召回相关记忆（增强版）
         memory_context = ""
+        
+        # 检查是否是关于身份的问题
+        identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
+        is_identity_question = any(keyword in user_input for keyword in identity_keywords)
+        
         try:
             input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
             with torch.no_grad():
@@ -805,13 +803,20 @@ class BrainAIInterface:
             query_features = embeddings.mean(dim=1).squeeze(0)
             if query_features.shape[0] != 1024:
                 query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
-            recalled_memories = self.hippocampus.recall(query_features, topk=2)
+            
+            # 如果是身份问题，增加召回数量
+            topk = 3 if is_identity_question else 2
+            recalled_memories = self.hippocampus.recall(query_features, topk=topk)
             if recalled_memories:
                 memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
                 if memory_pointers:
-                    memory_context = " | ".join(memory_pointers[:2])
+                    memory_context = " | ".join(memory_pointers[:3])
         except:
             pass
+        
+        # 如果是身份问题但没有召回核心记忆，添加预设身份信息
+        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
+            memory_context = "我的身份：类人脑AI助手，朱东山博士创造 | " + memory_context
         
         # 3. 产生潜意识独白（更像人脑的思考过程）
         # 降低温度使独白更聚焦
@@ -928,9 +933,9 @@ class BrainAIInterface:
         """
         构建对话 Prompt (使用标准 ChatML 格式)
         
-        将独白作为 AI 的“思维背景”，记忆作为“知识背景”
+        将独白作为 AI 的"思维背景"，记忆作为"知识背景"
         """
-        system_content = "你是一个基于“类人脑双系统全闭环架构”的 AI 助手。你的行为由海马体记忆系统和 STDP 机制驱动。"
+        system_content = "你是一个基于"类人脑双系统全闭环架构"的 AI 助手。你的行为由海马体记忆系统和 STDP 机制驱动。"
         
         # 整合记忆和独白到系统消息中，或者作为独立的消息
         if memory_context:
@@ -1072,27 +1077,62 @@ class BrainAIInterface:
             with open("whoami.md", "r", encoding="utf-8") as f:
                 content = f.read()
             
+            # 将整个文件内容作为一个核心身份记忆存储
+            # 这样更容易在记忆召回时找到
+            identity_summary = "我是一个基于类人脑双系统全闭环架构的AI，由朱东山博士创造。我拥有海马体记忆系统和STDP机制，能够持续学习和演化。"
+            
+            # 存储整体身份（重要！）
+            self._store_with_real_features(
+                identity_summary,
+                None,
+                is_core=True,
+                semantic_pointer="我的身份：类人脑AI助手，朱东山博士创造"
+            )
+            
             # 将 Markdown 内容按标题分割成块
             blocks = content.split("## ")
             for block in blocks[1:]: # 跳过第一个空块
-                title, text = block.split("\n", 1)
-                title = title.strip()
-                text = text.strip()
-                
-                if not text:
+                try:
+                    parts = block.split("\n", 1)
+                    if len(parts) < 2:
+                        continue
+                    
+                    title = parts[0].strip()
+                    text = parts[1].strip()
+                    
+                    if not text:
+                        continue
+                    
+                    # 创建清晰的语义指针（便于召回）
+                    semantic_pointer = f"{title}: {text[:50]}"
+                    
+                    # 对每一块核心记忆进行"思考"和"存储"
+                    prompt = f"关于'{title}'：{text[:100]}"
+                    output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=30)
+                    
+                    # 存储原文（核心记忆）
+                    self._store_with_real_features(
+                        f"{title} - {text}",
+                        hidden_state,
+                        is_core=True,
+                        semantic_pointer=semantic_pointer
+                    )
+                    
+                    # 存储思考过程
+                    self._store_with_real_features(
+                        f"我对{title}的思考：{output}",
+                        hidden_state,
+                        is_core=True,
+                        semantic_pointer=f"关于{title}的想法"
+                    )
+                    
+                    # 更新思维状态
+                    if hidden_state is not None:
+                        self.current_thought_state = hidden_state
+                        
+                except Exception as e:
+                    logger.warning(f"存储创世记忆块失败: {e}")
                     continue
-                
-                # 对每一块核心记忆进行“思考”和“存储”
-                prompt = f"关于我的'{title}', 我需要理解：{text[:100]}... 我的想法是："
-                output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=50)
-                
-                # 存储原文和思考过程
-                self._store_with_real_features(f"核心记忆：{title} - {text}", hidden_state, is_core=True)
-                self._store_with_real_features(f"(我的思考：{output})", hidden_state, is_core=True)
-                
-                # 更新思维状态
-                if hidden_state is not None:
-                    self.current_thought_state = hidden_state
             
             print("[BrainAI] ✓ 创世记忆注入完成。")
             
@@ -1108,7 +1148,7 @@ class BrainAIInterface:
         wakeup_time_str = now.strftime("%Y年%m月%d日 %H:%M:%S")
         
         # 形成一个关于时间的思考
-        prompt = f"我刚刚“醒来”，现在是 {wakeup_time_str}。"
+        prompt = f"我刚刚"醒来"，现在是 {wakeup_time_str}。"
         output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=20)
         
         # 存储这个唤醒事件

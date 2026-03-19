@@ -110,6 +110,10 @@ def run_chat(ai):
     
     history = []
     
+    # 创建事件循环（避免重复创建）
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     while True:
         try:
             user_input = input("\n\033[92m你：\033[0m").strip()
@@ -131,7 +135,7 @@ def run_chat(ai):
                     monologue = ""
                     response = ""
                     
-                    # 运行异步生成
+                    # 运行异步生成（使用已创建的事件循环）
                     async def stream_chat():
                         nonlocal monologue, response
                         async for event in ai.chat_stream(user_input, history):
@@ -149,7 +153,8 @@ def run_chat(ai):
                                 print(event["content"], end="", flush=True)
                         return response
                     
-                    response = asyncio.run(stream_chat())
+                    # 使用已存在的事件循环
+                    response = loop.run_until_complete(stream_chat())
                     print()  # 最终换行
                 else:
                     # 降级到同步模式
@@ -175,6 +180,9 @@ def run_chat(ai):
             break
         except Exception as e:
             print(f"\033[91m[错误] {e}\033[0m")
+    
+    # 关闭事件循环
+    loop.close()
 
 
 def run_generate(ai, input_text: str):
