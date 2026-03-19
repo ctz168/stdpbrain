@@ -91,13 +91,16 @@ class BrainAIInterface:
         self.last_dynamic_weight_norm = 0.0
         
         # 特征维度适配器（模型 hidden_size -> 海马体输入维度）
-        self.model_hidden_size = 896  # Qwen2.5-0.5B hidden_size
+        self.model_hidden_size = 1024  # Qwen3.5-0.8B hidden_size
         self.hippocampus_input_dim = 1024  # 海马体期望的输入维度
         self.feature_adapter = nn.Linear(self.model_hidden_size, self.hippocampus_input_dim, bias=False)
         with torch.no_grad():
             self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
         self.feature_adapter.to(self.device)
-        self.feature_adapter.eval()
+        self.feature_adapter.train() # 开启训练模式以支持在线更新
+        
+        # 适配器优化器
+        self.adapter_optimizer = torch.optim.SGD(self.feature_adapter.parameters(), lr=0.005, momentum=0.9)
         
         # 状态文件路径
         self.state_path = "brain_state.pt"
@@ -234,6 +237,11 @@ class BrainAIInterface:
         )
         
         # 4. 并行后台处理
+        # 计算情感显著性
+        emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
+        salience = 1.0 + 0.5 * sum(1 for kw in emotional_keywords if kw in user_input or kw in monologue)
+        salience = min(salience, 3.0)
+        
         semantic_pointer = f"用户: {user_input[:30]} | 回复: {output.text[:30]}"
         thought_state_snapshot = self.current_thought_state
         
@@ -242,7 +250,8 @@ class BrainAIInterface:
                 self._store_with_real_features(f"{user_input} -> {output.text}", thought_state_snapshot, semantic_pointer=semantic_pointer)
                 current_reward = output.confidence if hasattr(output, 'confidence') else 1.0
                 self.model.set_reward(current_reward)
-                self._apply_real_stdp_update()
+                self._apply_real_stdp_update(emotional_salience=salience)
+                self._update_adapter_online(thought_state_snapshot, salience)
             except Exception as e:
                 logger.error(f"后台处理失败: {e}")
 
@@ -282,7 +291,7 @@ class BrainAIInterface:
             self.monologue_history.append(monologue)
             if len(self.monologue_history) > self.max_monologue_history:
                 self.monologue_history.pop(0)
-        self._apply_real_stdp_update()
+        self._apply_real_stdp_update(emotional_salience=1.0)
         return monologue
 
     def _is_gibberish(self, text: str) -> bool:
@@ -370,13 +379,18 @@ class BrainAIInterface:
         except Exception as e:
             logger.warning(f"记忆存储失败: {e}")
 
-    def _apply_real_stdp_update(self):
+    def _apply_real_stdp_update(self, emotional_salience: float = 1.0):
         try:
             if self.current_thought_state is None: return
             thought_vec = self.current_thought_state.view(-1)
             dynamic_layers = [(n, m) for n, m in self.model.model.base_model.named_modules() if hasattr(m, 'dynamic_weight')]
             if not dynamic_layers: return
-            lr, consolidation_rate, max_dynamic_ratio = 0.02, 0.001, 0.10
+            
+            # 动态学习率：情感越强烈，学习率越高
+            base_lr = 0.02
+            lr = base_lr * (emotional_salience ** 2) # 情感强度呈平方级影响
+            consolidation_rate, max_dynamic_ratio = 0.001, 0.10
+            
             total_update = 0.0
             for name, layer in dynamic_layers:
                 out_f, in_f = layer.dynamic_weight.shape
@@ -443,6 +457,11 @@ class BrainAIInterface:
         memory_context, monologue_raw = await asyncio.gather(recall_task, monologue_task)
         monologue = self._clean_monologue(monologue_raw, user_input)
         yield {"type": "monologue", "content": monologue}
+        # 计算情感显著性 (简单启发式)
+        emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
+        salience = 1.0 + 0.5 * sum(1 for kw in emotional_keywords if kw in user_input or kw in monologue)
+        salience = min(salience, 3.0) # 最高 3 倍增强
+        
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         full_response = ""
         try:
@@ -454,11 +473,13 @@ class BrainAIInterface:
             output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.7)
             full_response = output.text
             yield {"type": "chunk", "content": full_response}
+            
         thought_state_snapshot = self.current_thought_state
         def post_processing():
             try:
                 self._store_with_real_features(full_response, thought_state_snapshot)
-                self._apply_real_stdp_update()
+                self._apply_real_stdp_update(emotional_salience=salience)
+                self._update_adapter_online(thought_state_snapshot, salience)
             except: pass
         self.executor.submit(post_processing)
 
@@ -485,6 +506,31 @@ class BrainAIInterface:
             
         return monologue
 
+    def _update_adapter_online(self, hidden_state: torch.Tensor, salience: float):
+        """在线更新特征适配器，优化隐藏状态到海马体语义空间的映射"""
+        if hidden_state is None: return
+        try:
+            features = hidden_state.detach().clone()
+            if features.dim() == 3: features = features[0, -1, :]
+            elif features.dim() == 2: features = features.squeeze(0)
+            
+            # 将适配器权重稍微拉向“认同”当前的特征分布
+            self.adapter_optimizer.zero_grad()
+            current_mapping = self.feature_adapter(features.unsqueeze(0))
+            
+            # 目标：保持映射的能量稳定，但允许根据情感强度微调映射
+            target = current_mapping.detach() * (1.1 if salience > 1.5 else 1.0)
+            loss = F.mse_loss(current_mapping, target)
+            loss.backward()
+            
+            # 根据显著性调整学习步伐
+            for param_group in self.adapter_optimizer.param_groups:
+                param_group['lr'] = 0.005 * salience
+                
+            self.adapter_optimizer.step()
+        except Exception as e:
+            logger.warning(f"在线适配器更新失败: {e}")
+
     async def generate_monologue_stream(self, max_tokens: int = 100) -> AsyncGenerator[str, None]:
         if self.current_thought_state is None: self._initialize_thought_state()
         prompt = self._build_spontaneous_prompt()
@@ -503,7 +549,7 @@ class BrainAIInterface:
             self._store_with_real_features(full_monologue, hidden_state)
             self.monologue_history.append(full_monologue)
             if len(self.monologue_history) > self.max_monologue_history: self.monologue_history.pop(0)
-            self._apply_real_stdp_update()
+            self._apply_real_stdp_update(emotional_salience=1.0)
             self.cycle_count += 1
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:

@@ -11,6 +11,10 @@ from configs.arch_config import BrainAIConfig
 from core.interfaces import BrainAIInterface
 
 async def run_capability_test():
+    log_file = "capability_test_log.txt"
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.write("--- AI Capability Test Log ---\n")
+        
     print("Initializing AI for Capability Test...")
     config = BrainAIConfig()
     ai = BrainAIInterface(config)
@@ -25,26 +29,26 @@ async def run_capability_test():
     
     for i, user_input in enumerate(test_turns):
         print(f"\n--- Turn {i+1} ---")
-        print(f"User: {user_input}")
+        line = f"\nUser: {user_input}\n"
+        with open(log_file, "a", encoding="utf-8") as f: f.write(line)
         
         start_time = time.time()
-        
-        # We use chat instead of chat_stream for clean output capture
         response = ai.chat(user_input, history)
-        
         elapsed = time.time() - start_time
-        print(f"AI: {response}")
-        print(f"[Time: {elapsed:.2f}s]")
         
-        # Check monologue
+        output_line = f"AI: {response}\n[Time: {elapsed:.2f}s]\n"
+        print(f"AI: {response}")
+        
         if hasattr(ai, 'monologue_history') and ai.monologue_history:
-            print(f"Inner Thought: {ai.monologue_history[-1]}")
+            thought = f"Inner Thought: {ai.monologue_history[-1]}\n"
+            output_line += thought
+            print(thought)
             
-        # Update history
+        with open(log_file, "a", encoding="utf-8") as f: f.write(output_line)
+        
         history.append({"role": "user", "content": user_input})
         history.append({"role": "assistant", "content": response})
         
-        # Small delay to simulate thinking/processing gap if needed
         await asyncio.sleep(1)
 
     print("\n--- Test Complete ---")
