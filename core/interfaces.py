@@ -605,7 +605,16 @@ class BrainAIInterface:
     def save_state(self, path: str):
         print(f"[BrainAI] 正在固化记忆与意识状态...")
         try:
-            state = {'model_state_dict': self.model.model.state_dict(), 'hippocampus_state': self.hippocampus.get_state(), 'monologue_history': self.monologue_history, 'cycle_count': self.cycle_count, 'total_stdp_updates': self.total_stdp_updates, 'current_thought_state': self.current_thought_state}
+            state = {
+                'model_state_dict': self.model.model.state_dict(),
+                'adapter_state_dict': self.feature_adapter.state_dict(),
+                'adapter_optimizer_state_dict': self.adapter_optimizer.state_dict(),
+                'hippocampus_state': self.hippocampus.get_state(),
+                'monologue_history': self.monologue_history,
+                'cycle_count': self.cycle_count,
+                'total_stdp_updates': self.total_stdp_updates,
+                'current_thought_state': self.current_thought_state
+            }
             torch.save(state, path)
             print(f"[BrainAI] ✓ 完整状态已保存到: {path}")
         except Exception as e: logger.error(f"状态保存失败: {e}")
@@ -617,6 +626,17 @@ class BrainAIInterface:
             print(f"[BrainAI] 正在从 {path} 唤醒意识...")
             state = torch.load(path, map_location=self.device, weights_only=False)
             self.model.model.load_state_dict(state['model_state_dict'])
+            
+            if 'adapter_state_dict' in state:
+                self.feature_adapter.load_state_dict(state['adapter_state_dict'])
+            if 'adapter_optimizer_state_dict' in state:
+                self.adapter_optimizer.load_state_dict(state['adapter_optimizer_state_dict'])
+                
+            # 重置推理引擎内部缓存组件
+            for name, module in self.model.model.base_model.named_modules():
+                if hasattr(module, '_cache_valid'):
+                    module._cache_valid = False
+            
             self.hippocampus.set_state(state['hippocampus_state'])
             self.monologue_history = state.get('monologue_history', [])
             self.cycle_count = state.get('cycle_count', 0)
