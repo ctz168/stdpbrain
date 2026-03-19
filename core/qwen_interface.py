@@ -46,11 +46,11 @@ class QwenModelWrapper(nn.Module):
                 trust_remote_code=True,
                padding_side="left"
             )
-            print(f"✓ Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
+            print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         except Exception as e:
-                print(f"⚠️ Tokenizer 加载失败：{e}")
+                print(f"[ERROR] Tokenizer 加载失败：{e}")
                 raise
-        print(f"✓ Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
+        print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         
         # ========== 2. 加载模型 ==========
         self.base_model = self._load_model_with_quantization()
