@@ -1069,7 +1069,7 @@ class BrainAIInterface:
                 return False
             
             print(f"[BrainAI] 正在从 {path} 唤醒意识...")
-            state = torch.load(path, map_location=self.device)
+            state = torch.load(path, map_location=self.device, weights_only=False)
             
             # 1. 恢复模型权重 (包括静态和动态)
             self.model.model.load_state_dict(state['model_state_dict'])

@@ -102,19 +102,15 @@ class QwenModelWrapper(nn.Module):
                     )
                     print("  ✓ [macOS/MPS] 使用 FP16 加载成功")
                 else:
-                    # CPU 环境：使用动态 8-bit 量化 (最平衡的选择)
-                    print(f"  ⚠️ [CPU] 量化优化：将模型加载为 FP32 并执行动态量化...")
+                    # CPU 环境：使用更高兼容性的 FP32 加载
+                    print(f"  ⚠️ [CPU] 已启用优化加载流程...")
                     model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
                         torch_dtype=torch.float32,
                         low_cpu_mem_usage=True,
                         trust_remote_code=True
                     ).to("cpu")
-                    # 动态量化核心线性层
-                    model = torch.quantization.quantize_dynamic(
-                        model, {torch.nn.Linear}, dtype=torch.qint8
-                    )
-                    print("  ✓ [CPU] 动态量化完成 (INT8)")
+                    print("  ✓ [CPU] FP32 模型加载完成")
                 
             else:  # FP16 或 FP32
                 dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
@@ -151,58 +147,67 @@ class QwenModelWrapper(nn.Module):
         
         print("\n[集成] 开始集成双权重层...")
         
-        # 遍历所有 Transformer 层
+        # 遍历所有命名模块，寻找 Linear 层进行替换
         replaced_count = 0
-        for name, module in self.base_model.named_modules():
-            # 替换注意力层
-            if hasattr(module, 'attn'):
-                try:
-                    # 获取原始权重
-                    static_q = module.attn.q_proj.weight.data.clone()
-                    static_k = module.attn.k_proj.weight.data.clone()
-                    static_v = module.attn.v_proj.weight.data.clone()
-                    static_o = module.attn.o_proj.weight.data.clone()
-                    
-                    # 创建双权重注意力层
-                    dual_attn = DualWeightAttention(
-                        hidden_size=self.base_model.config.hidden_size,
-                        num_heads=self.base_model.config.num_attention_heads,
-                        qkv_bias=False,
-                        static_q=static_q,
-                        static_k=static_k,
-                        static_v=static_v,
-                        static_o=static_o
-                    )
-                    
-                    # 替换
-                    module.attn = dual_attn
-                    replaced_count += 1
-                    
-                except Exception as e:
-                    print(f"  ⚠️ 替换注意力层失败 {name}: {e}")
-            
-            # 替换 FFN 层
-            elif hasattr(module, 'mlp'):
-                try:
-                    static_gate = module.mlp.gate_proj.weight.data.clone()
-                    static_up = module.mlp.up_proj.weight.data.clone()
-                    static_proj = module.mlp.down_proj.weight.data.clone()
-                    
-                    dual_ffn = DualWeightFFN(
-                        hidden_size=self.base_model.config.hidden_size,
-                        intermediate_size=self.base_model.config.intermediate_size,
-                        static_gate=static_gate,
-                        static_up=static_up,
-                        static_proj=static_proj
-                    )
-                    
-                    module.mlp = dual_ffn
-                    replaced_count += 1
-                    
-                except Exception as e:
-                   print(f"  ⚠️ 替换 FFN 层失败 {name}: {e}")
         
-        print(f"✓ 已替换 {replaced_count} 个层为双权重版本")
+        # 记录需要替换的目标属性名映射
+        # 注意：我们只替换 Q, K, V, O 投影以及 MLP 的 gate, up, down 投影
+        target_names = {
+            'q_proj', 'k_proj', 'v_proj', 'o_proj',
+            'gate_proj', 'up_proj', 'down_proj'
+        }
+        
+        # 使用 list 存储层，避免遍历时修改字典
+        for name, module in list(self.base_model.named_modules()):
+            # 检查是否包含目标投影
+            for attr_name in target_names:
+                if hasattr(module, attr_name):
+                    target_layer = getattr(module, attr_name)
+                    
+                    # 确保是 Linear 层且尚未被替换 (避免重复计数)
+                    if isinstance(target_layer, nn.Linear) and not isinstance(target_layer, DualWeightLinear):
+                        try:
+                            # 获取原始权重
+                            static_weight = target_layer.weight.data.clone()
+                            bias = target_layer.bias.data.clone() if target_layer.bias is not None else None
+                            
+                            # 创建双权重线性层
+                            dual_layer = DualWeightLinear(
+                                in_features=target_layer.in_features,
+                                out_features=target_layer.out_features,
+                                bias=(bias is not None),
+                                static_weight=static_weight
+                            )
+                            if bias is not None:
+                                dual_layer.bias.data.copy_(bias)
+                            
+                            # 替换
+                            setattr(module, attr_name, dual_layer)
+                            replaced_count += 1
+                        except Exception as e:
+                            print(f"  ⚠️ 替换层失败 {name}.{attr_name}: {e}")
+        
+        print(f"✓ 已替换 {replaced_count} 个底层投影为双权重版本")
+        
+        # ========== 后置优化：如果是 CPU，执行动态量化 ==========
+        if self.device == "cpu" and self.quantization == "INT8":
+            print(f"  ⚡ 正在对基础模型执行动态量化 (INT8)...")
+            # 动态量化会寻找 nn.Linear。注意：DualWeightLinear 默认不被识别，这很好，
+            # 因为我们需要动态权重保持浮点高精度以进行 STDP 学习。
+            self.base_model = torch.quantization.quantize_dynamic(
+                self.base_model, {torch.nn.Linear}, dtype=torch.qint8
+            )
+            print("  ✓ [CPU] 后置动态量化完成")
+        
+        # ========== 后置优化：如果是 CPU，执行动态量化 ==========
+        # 注意：我们只量化非 DualWeight 的部分，或者直接对整个模型尝试
+        if self.device == "cpu" and self.quantization == "INT8":
+            print(f"  ⚡ 正在对基础模型执行动态量化 (INT8)...")
+            # 仅量化 nn.Linear 层，回避我们的 DualWeight 模块
+            self.base_model = torch.quantization.quantize_dynamic(
+                self.base_model, {torch.nn.Linear}, dtype=torch.qint8
+            )
+            print("  ✓ [CPU] 后置动态量化完成")
     
     def set_hippocampus_gate(self, gate_fn):
         """
@@ -799,7 +804,7 @@ class QwenInterface:
     
     def load_checkpoint(self, path: str):
         """加载检查点"""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         # 恢复动态权重
         dynamic_weights = checkpoint.get('dynamic_weights', {})
