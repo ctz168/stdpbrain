@@ -73,13 +73,15 @@ class QwenModelWrapper(nn.Module):
             # 自动检测 Apple Silicon (M1/M2/M3)
             is_mac = torch.backends.mps.is_available()
             
-            if self.quantization == "INT4":
+            if self.quantization in ["INT4", "INT8"]:
                 if self.device == "cuda":
-                    # CUDA 环境下的 INT4 量化
+                    # CUDA 环境下的量化
                     from transformers import BitsAndBytesConfig
+                    load_in_4bit = (self.quantization == "INT4")
                     quantization_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.float32,
+                        load_in_4bit=load_in_4bit,
+                        load_in_8bit=not load_in_4bit,
+                        bnb_4bit_compute_dtype=torch.float16,
                         bnb_4bit_quant_type="nf4",
                         bnb_4bit_use_double_quant=True
                     )
@@ -89,48 +91,30 @@ class QwenModelWrapper(nn.Module):
                         device_map={"": self.device},
                         trust_remote_code=True
                     )
-                    print("  ✓ [CUDA] INT4 量化加载成功")
+                    print(f"  ✓ [CUDA] {self.quantization} 量化加载成功")
                 elif is_mac:
-                    # macOS 环境下的优化加载 (使用 FP16/BF16 在 MPS 上运行)
-                    dtype = torch.float16 if torch.backends.mps.is_built() else torch.float32
+                    # macOS 下使用 FP16
                     model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
-                        torch_dtype=dtype,
+                        torch_dtype=torch.float16,
                         device_map={"": "mps"},
                         trust_remote_code=True
                     )
-                    print(f"  ✓ [macOS/MPS] 使用 {dtype} 加载成功 (CPU 不支持 bitsandbytes INT4)")
+                    print("  ✓ [macOS/MPS] 使用 FP16 加载成功")
                 else:
-                    # 纯 CPU 环境，bitsandbytes 不可用，回退到 FP32 或尝试动态量化
-                    print("  ⚠️ [CPU] 不支持 bitsandbytes INT4 量化，尝试使用 FP32 加载")
+                    # CPU 环境：使用动态 8-bit 量化 (最平衡的选择)
+                    print(f"  ⚠️ [CPU] 量化优化：将模型加载为 FP32 并执行动态量化...")
                     model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
                         torch_dtype=torch.float32,
-                        device_map={"": "cpu"},
+                        low_cpu_mem_usage=True,
                         trust_remote_code=True
-                    )
-                
-            elif self.quantization == "INT8":
-                if self.device == "cuda":
-                    model = AutoModelForCausalLM.from_pretrained(
-                        self.model_path,
-                        load_in_8bit=True,
-                        device_map={"": self.device},
-                        trust_remote_code=True
-                    )
-                    print("  ✓ [CUDA] INT8 量化加载成功")
-                else:
-                    # CPU 下尝试动态量化
-                    print("  ⚠️ [CPU] 尝试对模型进行动态量化以节省内存")
-                    model = AutoModelForCausalLM.from_pretrained(
-                        self.model_path,
-                        torch_dtype=torch.float32,
-                        trust_remote_code=True
-                    )
+                    ).to("cpu")
+                    # 动态量化核心线性层
                     model = torch.quantization.quantize_dynamic(
                         model, {torch.nn.Linear}, dtype=torch.qint8
                     )
-                    print("  ✓ [CPU] 动态量化完成")
+                    print("  ✓ [CPU] 动态量化完成 (INT8)")
                 
             else:  # FP16 或 FP32
                 dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
@@ -410,12 +394,23 @@ class QwenInterface:
         # 优化2: 模型加载后只调用一次 eval()，不在每次 forward_step 重复调用
         self.model.eval()
         
+        # 优化1: CPU 线程控制
+        if self.device == "cpu":
+            import multiprocessing
+            num_cores = multiprocessing.cpu_count()
+            # 设置线程数为物理核心数（通常比逻辑核心数效率更高）
+            torch.set_num_threads(max(1, num_cores // 2))
+            print(f"[QwenInterface] CPU 优化：设置线程数为 {torch.get_num_threads()}")
+
         # 优化4: STDP 后台线程池，不阻塞生成循环
         import concurrent.futures
         self._stdp_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix='stdp_worker'
         )
         # 每 N 步才提取一次 features 用于 STDP (优化3基础)
+        self._step_counter = 0
+        self._stdp_every_n = getattr(config.stdp, 'every_n_tokens', 1)
+        self._last_reward = 1.0  # 存储最近一次对话的评判得分
         self._step_counter = 0
         self._stdp_every_n = 50
         
@@ -436,6 +431,11 @@ class QwenInterface:
         self.model.apply_stdp_to_all(grad_dict, lr)
     
 
+    def set_reward(self, reward: float):
+        """设置反馈奖励 (来自优化器)"""
+        self._last_reward = max(0.1, min(2.0, reward))
+        print(f"[QwenInterface] 已接收新奖励反馈: {self._last_reward:.2f}")
+
     def forward_step(
         self,
         input_ids: torch.Tensor,
@@ -447,6 +447,18 @@ class QwenInterface:
         **kwargs
     ) -> Dict[str, Any]:
         """单步前向推理 (KV-cache + inference_mode + 条件特征提取)"""
+        # 工具提示检测：简单的启发式
+        is_tool_call = False
+        if input_ids.shape[-1] > 0:
+             last_token = input_ids[0, -1].item()
+             # 占位：检测 '!' (33) 或 '{' (123) 或 'tool' 等 token ID
+             # 实际项目中应根据 tokenizer 确定
+             if last_token in [33, 123, 151644]: 
+                 is_tool_call = True
+        
+        # 记录推理进度 (仅针对 CPU 缓慢环境)
+        if self.device == "cpu":
+             print(".", end="", flush=True)
         # 优化2: eval() 已在 __init__ 中调用，不再每步重复
         outputs = {}
         start_time = time.time()
@@ -528,6 +540,25 @@ class QwenInterface:
         outputs['cycle_time_ms'] = elapsed * 1000.0
         outputs['past_key_values'] = output_tensors.past_key_values if hasattr(output_tensors, 'past_key_values') else None
         self.total_tokens_generated += 1
+        
+        # ========== 优化3: 启动后台 STDP 学习任务 ==========
+        if self.config.stdp.enabled and need_features:
+            # 使用最近一次的奖励反馈，如果没有则使用 baseline
+            current_reward = self._last_reward
+            
+            # 触发所有层的 STDP 更新 (在后台线程运行)
+            for name, layer in self.model.base_model.named_modules():
+                if hasattr(layer, 'apply_stdp_to_all'):
+                    self._stdp_executor.submit(
+                        self.model.config.stdp_engine.update_attention_layer,
+                        layer,
+                        input_ids.flatten(),
+                        outputs['token_id'],
+                        outputs.get('features', torch.zeros(1)), # 这里的 features 用于 contributions
+                        time.time() * 1000,
+                        reward=current_reward,
+                        is_tool_call=is_tool_call
+                    )
         
         return outputs
 

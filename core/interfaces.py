@@ -266,6 +266,12 @@ class BrainAIInterface:
             self.current_thought_state,
             semantic_pointer=semantic_pointer
         )
+        
+        # 实时学习：将当前的评判结果反馈给模型，供下一次推理使用
+        # 如果 output 有 confidence，将其作为 reward
+        current_reward = output.confidence if hasattr(output, 'confidence') else 1.0
+        self.model.set_reward(current_reward)
+        
         self._apply_real_stdp_update()
         
         return output.text

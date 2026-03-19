@@ -150,38 +150,35 @@ class CA1AttentionGate(nn.Module):
             temporal_feature = self.temporal_encoder(timestamp)
             mem_features = mem_features + temporal_feature.squeeze(0)
         
-        # ========== 计算注意力权重 ==========
-        # 将记忆特征与 query/key 结合
-        query_mean = query.mean(dim=1, keepdim=True)  # [batch, 1, hidden]
+        # ========== 计算 token-wise 注意力权重 ==========
+        # 将记忆特征投影到 hidden_size 空间，以便与 query 进行相似度计算
+        mem_proj = self.gate_projection(mem_features.unsqueeze(0)) # [1, hidden_size]
         
-        combined = torch.cat([
-            mem_features.unsqueeze(0).expand(batch_size, -1),
-            query_mean.squeeze(1)
-        ], dim=-1)
+        # 计算 query 与 记忆特征 的余弦相似度作为权重
+        # query: [batch, seq_len, hidden_size]
+        query_norm = F.normalize(query, p=2, dim=-1)
+        mem_norm = F.normalize(mem_proj, p=2, dim=-1)
         
-        attention_score = self.attention_scorer(combined)  # [batch, 1]
-        attention_weight = torch.sigmoid(attention_score)
+        # attention_weight: [batch, seq_len, 1] - 每个 token 对该记忆的相关度
+        attention_weight = torch.matmul(query_norm, mem_norm.transpose(-2, -1))
+        attention_weight = torch.sigmoid(attention_weight * 5.0) # 放大差异
         
         # ========== 生成门控掩码 ==========
         if self.gate_type == "additive":
-            # 加法门控：生成偏置项加到注意力分数上
-            gate_projection = self.gate_projection(mem_features.unsqueeze(0))
-            gate_mask = gate_projection.view(batch_size, 1, 1, hidden_size)
-            gate_mask = gate_mask.expand(-1, -1, seq_len, -1)
+            # 加法门控：生成偏置项
+            # 直接使用投影后的记忆特征与 key 的交互
+            gate_bias = torch.matmul(mem_proj, key.transpose(-2, -1)) # [batch, 1, seq_len]
             
-            # 与 key 做外积得到注意力偏置
-            gate_mask = torch.matmul(gate_mask, key.unsqueeze(1).transpose(-2, -1))
-            gate_mask = gate_mask * attention_weight.view(batch_size, 1, 1, 1)
+            # gate_mask: [batch, 1, seq_len, seq_len]
+            # 这里对应于 DualWeightAttention 中的 attn_weights = QK^T + mask
+            # 我们希望特定的 query token 看到特定的 context (key)
+            gate_mask = gate_bias.unsqueeze(1) # [batch, 1, 1, seq_len]
+            gate_mask = gate_mask * attention_weight.unsqueeze(1) # [batch, 1, seq_len, seq_len]
             
         elif self.gate_type == "multiplicative":
-            # 乘法门控：直接缩放注意力
-            gate_projection = self.gate_projection(mem_features.unsqueeze(0))
-            gate_mask = gate_projection.view(batch_size, 1, 1, hidden_size)
-            gate_mask = gate_mask.expand(-1, -1, seq_len, -1)
-            
-            # 与 key 逐元素相乘
-            gate_mask = gate_mask * key.unsqueeze(1)
-            gate_mask = torch.matmul(gate_mask, key.unsqueeze(1).transpose(-2, -1))
+            # 乘法门控同理
+            gate_mask = torch.sigmoid(torch.matmul(mem_proj, key.transpose(-2, -1))).unsqueeze(1)
+            gate_mask = gate_mask * attention_weight.unsqueeze(1)
         
         return gate_mask
     

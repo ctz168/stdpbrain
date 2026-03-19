@@ -235,9 +235,20 @@ class DualWeightAttention(nn.Module):
         attn_weights = torch.matmul(query, key.transpose(-2, -1)) / np.sqrt(self.head_dim)
         
         if attention_mask is not None:
-            # 处理 KV-cache 时的注意力掩码
-            if attention_mask.shape[-1] != attn_weights.shape[-1]:
-                 attention_mask = attention_mask[:, :, -attn_weights.shape[-2]:, :]
+            # 处理多种形状的注意力掩码 (2D, 3D, 4D)
+            # Qwen 模型通常提供 [batch, 1, 1, seq_len] 或 [batch, seq_len]
+            if attention_mask.dim() == 2:
+                # 扩展 [batch, seq_len] -> [batch, 1, 1, seq_len]
+                attention_mask = attention_mask[:, None, None, :]
+            
+            # 处理 KV-cache 时的长度对齐
+            if attention_mask.shape[-1] > attn_weights.shape[-1]:
+                 attention_mask = attention_mask[..., -attn_weights.shape[-1]:]
+            elif attention_mask.shape[-1] < attn_weights.shape[-1]:
+                 # 这种情况较少见，尝试填充
+                 padding = attn_weights.shape[-1] - attention_mask.shape[-1]
+                 attention_mask = F.pad(attention_mask, (padding, 0), value=-10000.0)
+                 
             attn_weights = attn_weights + attention_mask
         
         attn_weights = F.softmax(attn_weights, dim=-1)

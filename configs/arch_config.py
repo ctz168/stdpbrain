@@ -35,6 +35,7 @@ class HardConstraints:
 @dataclass
 class STDPConfig:
     """STDP 时序可塑性权重更新配置"""
+    enabled: bool = True  # 是否启用 STDP 学习机制
     # 学习率
     alpha_LTP: float = 0.01  # 权重增强学习率 (Long-Term Potentiation)
     beta_LTD: float = 0.008  # 权重减弱学习率 (Long-Term Depression)

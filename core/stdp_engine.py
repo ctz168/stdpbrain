@@ -52,9 +52,10 @@ class STDPRule:
         self, 
         pre_times: torch.Tensor, 
         post_times: torch.Tensor, 
-        contributions: torch.Tensor
+        contributions: torch.Tensor,
+        reward: float = 1.0
     ) -> torch.Tensor:
-        """向量化计算 STDP 权重更新量"""
+        """向量化计算 STDP 权重更新量 (支持奖励信号)"""
         delta_t = post_times - pre_times
         
         # 掩码：仅在时间窗口内更新
@@ -62,22 +63,24 @@ class STDPRule:
         
         # LTP (Δt > 0): alpha * exp(-dt/tau)
         ltp_mask = delta_t > 0
-        ltp_update = self.alpha_LTP * torch.exp(-delta_t / self.time_constant)
+        # 奖励信号主要增强 LTP (正向学习)
+        ltp_update = self.alpha_LTP * torch.exp(-delta_t / self.time_constant) * max(0.1, reward)
         
         # LTD (Δt < 0): -beta * exp(dt/tau)
         ltd_mask = delta_t < 0
-        ltd_update = -self.beta_LTD * torch.exp(delta_t / self.time_constant)
+        # 负奖励会增强 LTD (惩罚)
+        ltd_update = -self.beta_LTD * torch.exp(delta_t / self.time_constant) * (1.1 - min(1.0, reward))
         
         # 同时激活 (Δt == 0)
         zero_mask = delta_t == 0
-        zero_update = torch.ones_like(delta_t) * (self.alpha_LTP * 0.5)
+        zero_update = torch.ones_like(delta_t) * (self.alpha_LTP * 0.5 * reward)
         
         delta_w = torch.zeros_like(delta_t)
         delta_w[ltp_mask] = ltp_update[ltp_mask]
         delta_w[ltd_mask] = ltd_update[ltd_mask]
         delta_w[zero_mask] = zero_update[zero_mask]
         
-        # 根据贡献度调整 (向量化运算)
+        # 根据贡献度调整
         pos_contrib_mask = contributions > 0
         neg_contrib_mask = contributions <= 0
         
@@ -134,9 +137,11 @@ class FullLinkSTDP:
         context_tokens: torch.Tensor,
         current_token: int,
         output: torch.Tensor,
-        timestamp: float
+        timestamp: float,
+        reward: float = 1.0,
+        is_tool_call: bool = False
     ):
-        """注意力层 STDP 更新 (向量化实现)"""
+        """注意力层 STDP 更新 (支持奖励和工具调用强化)"""
         if not self.config.stdp.update_attention:
             return
             
@@ -148,7 +153,10 @@ class FullLinkSTDP:
         post_times = torch.full_like(pre_times, timestamp)
         contributions = torch.full_like(pre_times, self.contribution_cache.get('attention', 0.5))
         
-        delta_ws = self.stdp_rule.compute_update(pre_times, post_times, contributions)
+        # 工具调用强化：如果是工具调用，大幅提升奖励信号
+        effective_reward = reward * (5.0 if is_tool_call else 1.0)
+        
+        delta_ws = self.stdp_rule.compute_update(pre_times, post_times, contributions, reward=effective_reward)
         
         # 如果有显著更新
         if torch.any(torch.abs(delta_ws) > 0):
@@ -280,9 +288,9 @@ class FullLinkSTDP:
         
         # 计算权重更新量
         delta_w = self.stdp_rule.compute_update(
-            pre_time=self.activation_times.get('hippocampus_gate', {}).get(hash(memory_anchor_id) % 1000, timestamp - 5),
-            post_time=timestamp,
-            contribution=contribution
+            pre_times=self.activation_times.get('hippocampus_gate', {}).get(hash(memory_anchor_id) % 1000, timestamp - 5),
+            post_times=timestamp,
+            contributions=contribution
         )
         
         # 更新海马体中的记忆连接强度
@@ -316,8 +324,10 @@ class STDPEngine:
         self.full_link_stdp.set_contribution(type, contribution)
         
     def reset(self):
-        self.full_link_stdp.reset()
+        """重置 STDP 引擎状态"""
         self.cycle_count = 0
+        self.full_link_stdp.activation_times_tensor.fill_(-1e9)
+        self.full_link_stdp.contribution_cache.clear()
     
     def step(
         self,
@@ -351,7 +361,9 @@ class STDPEngine:
                 context_tokens=inputs['context_tokens'],
                 current_token=inputs['current_token'],
                 output=outputs.get('attention_output', torch.zeros(1)),
-                timestamp=timestamp
+                timestamp=timestamp,
+                reward=outputs.get('evaluation_score', 1.0) / 100.0,
+                is_tool_call=inputs.get('is_tool_call', False)
             )
         
         # ========== 2. FFN 层 STDP 更新 ==========
@@ -381,11 +393,6 @@ class STDPEngine:
                 timestamp=timestamp
             )
     
-    def reset(self):
-        """重置 STDP 引擎状态"""
-        self.cycle_count = 0
-        self.full_link_stdp.activation_times_tensor.fill_(-1e9)
-        self.full_link_stdp.contribution_cache.clear()
     
     def get_stats(self) -> dict:
         """获取 STDP 更新统计信息"""
