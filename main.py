@@ -83,6 +83,14 @@ def parse_args():
     )
     
     parser.add_argument(
+        "--model-type",
+        type=str,
+        default="qwen",
+        choices=["qwen", "glm"],
+        help="模型类型 (qwen 或 glm)"
+    )
+    
+    parser.add_argument(
         "--telegram-token",
         type=str,
         default=secret_config.TELEGRAM_BOT_TOKEN,
@@ -304,7 +312,8 @@ def main():
     
     print("=" * 60)
     print("类人脑双系统全闭环 AI架构")
-    print("底座模型：Qwen3.5-0.8B")
+    model_type = args.model_type.upper()
+    print(f"底座模型：{model_type}")
     print("=" * 60)
     
     # ========== 1. 初始化配置 ==========
@@ -317,16 +326,31 @@ def main():
     print("\n[初始化] 加载模型和模块...")
     
     try:
-        from core.interfaces import BrainAIInterface
-        
-        ai = BrainAIInterface(config, device=args.device)
+        if args.model_type == "glm":
+            # 使用 GLM 模型
+            from core.glm_interface import GLMInterface
+            ai = GLMInterface(
+                model_path=args.model_path,
+                config=config,
+                device=args.device or "cpu",
+                quantization=args.quantization
+            )
+        else:
+            # 默认使用 Qwen 模型
+            from core.interfaces import BrainAIInterface
+            ai = BrainAIInterface(config, device=args.device)
         print("[初始化] 完成 ✓")
         
     except Exception as e:
         print(f"[错误] 初始化失败：{e}")
-        print("\n提示：请确保已下载 Qwen3.5-0.8B 模型到指定路径")
-        print("可使用以下命令下载:")
-        print("  huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir ./models/Qwen3.5-0.8B")
+        if args.model_type == "glm":
+            print("\n提示：请确保已下载 GLM 模型到指定路径")
+            print("可使用以下命令下载:")
+            print("  huggingface-cli download THUDM/chatglm3-6b --local-dir ./models/chatglm3-6b")
+        else:
+            print("\n提示：请确保已下载 Qwen3.5-0.8B 模型到指定路径")
+            print("可使用以下命令下载:")
+            print("  huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir ./models/Qwen3.5-0.8B")
         sys.exit(1)
     
     # ========== 3. 执行对应模式 ==========
