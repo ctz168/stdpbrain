@@ -589,8 +589,40 @@ class MonologueEngine:
     
     def _update_hidden_state(self, hidden_state: torch.Tensor):
         """更新隐藏状态"""
-        # 这里可以添加更复杂的状态更新逻辑
-        pass
+        if hidden_state is None:
+            return
+        
+        # 初始化隐藏状态缓存（如果不存在）
+        if not hasattr(self, '_hidden_state_cache'):
+            self._hidden_state_cache = None
+            self._hidden_state_momentum = 0.9  # 动量因子
+        
+        # 使用指数移动平均更新隐藏状态
+        if self._hidden_state_cache is not None:
+            # 检查形状是否匹配
+            if self._hidden_state_cache.shape == hidden_state.shape:
+                # 动量更新：新状态 = 动量 * 旧状态 + (1-动量) * 当前状态
+                self._hidden_state_cache = (
+                    self._hidden_state_momentum * self._hidden_state_cache +
+                    (1 - self._hidden_state_momentum) * hidden_state.detach()
+                )
+            else:
+                # 形状不匹配，直接替换
+                self._hidden_state_cache = hidden_state.detach().clone()
+        else:
+            # 首次初始化
+            self._hidden_state_cache = hidden_state.detach().clone()
+        
+        # 更新当前思维状态（如果有接口）
+        if hasattr(self, 'current_thought_state') and hasattr(self, 'thought_state_duration'):
+            # 根据隐藏状态的变化调整思维状态
+            if self._hidden_state_cache is not None:
+                # 计算状态变化幅度
+                state_change = torch.norm(hidden_state - self._hidden_state_cache).item()
+                
+                # 如果状态变化较大，可能需要切换思维状态
+                if state_change > 1.0:  # 阈值
+                    self.thought_state_duration += 1
     
     def _postprocess_monologue(self, monologue: str) -> str:
         """后处理独白"""

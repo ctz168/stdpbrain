@@ -311,7 +311,41 @@ class RefreshCycleEngine:
         """步骤 7: 更新工作记忆"""
         # 压缩更新全局工作记忆
         # 保留最近 N 个周期的关键信息
-        pass
+        
+        # 提取关键信息
+        key_info = {
+            'token_id': output.get('output_token', 0),
+            'features_norm': output.get('output_features', torch.zeros(1)).norm().item() if isinstance(output.get('output_features'), torch.Tensor) else 0,
+            'memory_count': len(output.get('memory_anchors', [])),
+            'timestamp': time.time() * 1000
+        }
+        
+        # 添加到上下文缓冲区
+        if hasattr(self, 'context_buffer'):
+            self.context_buffer.append(key_info)
+            
+            # 保持缓冲区大小固定
+            max_buffer_size = 100
+            if len(self.context_buffer) > max_buffer_size:
+                self.context_buffer = self.context_buffer[-max_buffer_size:]
+        
+        # 更新工作记忆摘要（压缩表示）
+        if not hasattr(self, 'working_memory_summary'):
+            self.working_memory_summary = {
+                'total_tokens': 0,
+                'avg_feature_norm': 0.0,
+                'total_memories': 0
+            }
+        
+        # 增量更新摘要
+        self.working_memory_summary['total_tokens'] += 1
+        # 使用指数移动平均更新特征范数
+        alpha = 0.1  # 平滑因子
+        self.working_memory_summary['avg_feature_norm'] = (
+            (1 - alpha) * self.working_memory_summary['avg_feature_norm'] +
+            alpha * key_info['features_norm']
+        )
+        self.working_memory_summary['total_memories'] += key_info['memory_count']
     
     def _update_context_buffer(self, token_id: int, output: dict):
         """更新上下文缓冲区"""

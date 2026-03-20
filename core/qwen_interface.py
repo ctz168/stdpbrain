@@ -808,11 +808,38 @@ class QwenInterface:
         
         # 恢复动态权重
         dynamic_weights = checkpoint.get('dynamic_weights', {})
-        for layer_name, weights in dynamic_weights.items():
-            # TODO: 实现权重恢复逻辑
-           pass
+        restored_count = 0
         
-        print(f"[QwenInterface] 检查点已加载：{path}")
+        for layer_name, weights in dynamic_weights.items():
+            try:
+                # 查找对应的层并恢复权重
+                for name, module in self.model.base_model.named_modules():
+                    if name == layer_name and hasattr(module, 'apply_stdp_to_all'):
+                        # 使用 apply_stdp_to_all 方法恢复权重
+                        module.apply_stdp_to_all(weights, lr=1.0)  # lr=1.0 直接设置权重
+                        restored_count += 1
+                        break
+                    elif hasattr(module, 'q_proj') and hasattr(module, 'apply_stdp_to_all'):
+                        # 对于注意力层，尝试匹配子层
+                        for proj_name in ['q_proj', 'k_proj', 'v_proj', 'o_proj']:
+                            if f"{layer_name}.{proj_name}" in weights or proj_name in weights:
+                                proj = getattr(module, proj_name, None)
+                                if proj and hasattr(proj, 'dynamic_weight'):
+                                    w = weights.get(proj_name, weights.get(f"{layer_name}.{proj_name}"))
+                                    if w is not None:
+                                        proj.dynamic_weight.data.copy_(w)
+                                        restored_count += 1
+            except Exception as e:
+                print(f"[QwenInterface] 恢复权重失败 {layer_name}: {e}")
+        
+        # 恢复统计信息
+        if 'stats' in checkpoint:
+            stats = checkpoint['stats']
+            if 'system' in stats:
+                self.total_generation_time = stats['system'].get('total_time', 0)
+                self.total_tokens_generated = stats['system'].get('total_tokens', 0)
+        
+        print(f"[QwenInterface] 检查点已加载：{path} (恢复 {restored_count} 个权重层)")
 
 
 def create_real_qwen_ai(
