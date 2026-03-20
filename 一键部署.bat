@@ -1,17 +1,16 @@
 @echo off
-chcp 65001 >nul
+chcp 65001 >nul 2>&1
 title 类人脑AI - 国内一键部署脚本
 color 0A
 
 echo ============================================================
 echo          类人脑双系统全闭环 AI架构 - 一键部署
-echo              专为国内用户优化 | ModelScope镜像
+echo              专为国内用户优化 - ModelScope镜像
 echo ============================================================
 echo.
 
 REM 设置项目目录
-set PROJECT_DIR=%~dp0
-cd /d %PROJECT_DIR%
+pushd "%~dp0"
 
 REM ===== 第一步：检查Python =====
 echo [1/4] 检查Python环境...
@@ -93,7 +92,7 @@ if exist "models\Qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors" (
     echo                 shutil.copy2(src, dst) >> _download_temp.py
     echo print("ModelScope下载完成") >> _download_temp.py
     
-    python _download_temp.py 2>nul
+    python _download_temp.py
     del _download_temp.py 2>nul
     
     REM 检查ModelScope是否成功
@@ -109,7 +108,7 @@ if exist "models\Qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors" (
         echo snapshot_download("Qwen/Qwen3.5-0.8B", local_dir="models/Qwen3.5-0.8B", local_dir_use_symlinks=False) >> _download_hf.py
         echo print("HF-Mirror下载完成") >> _download_hf.py
         
-        python _download_hf.py 2>nul
+        python _download_hf.py
         del _download_hf.py 2>nul
         
         if exist "models\Qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors" (
@@ -150,14 +149,17 @@ if "%choice%"=="1" (
     echo 输入 'quit' 或 'exit' 退出
     echo.
     python main.py --mode chat
+    pause
 ) else if "%choice%"=="2" (
     echo.
     set /p input_text="请输入文本: "
     python main.py --mode generate --input "%input_text%"
+    pause
 ) else if "%choice%"=="3" (
     echo.
     echo 启动评估模式...
     python main.py --mode eval
+    pause
 ) else (
     echo.
     echo 使用方法：
@@ -167,6 +169,7 @@ if "%choice%"=="1" (
     echo.
     echo 或双击运行 对话模式.bat
     echo.
+    pause
 )
 
-pause
+popd
