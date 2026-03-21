@@ -29,6 +29,17 @@ from core.global_workspace import GlobalWorkspace, create_global_workspace
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class BrainAIOutput:
+    """AI输出结果数据结构"""
+    text: str
+    tokens: List[str]
+    confidence: float
+    memory_anchors: List[Dict] = field(default_factory=list)
+    stdp_stats: Dict = field(default_factory=dict)
+    cycle_stats: Dict = field(default_factory=dict)
+
+
 class BrainAIInterface:
     """
     类人脑 AI 架构生产级统一接口

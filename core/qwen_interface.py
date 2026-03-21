@@ -799,7 +799,7 @@ class QwenInterface:
         self.total_tokens_generated += len(generated_tokens)
         
         # ========== 5. 构建返回结果 ==========
-        from core.interfaces_working import BrainAIOutput
+        from core.interfaces import BrainAIOutput
         
         return BrainAIOutput(
             text=output_text,
