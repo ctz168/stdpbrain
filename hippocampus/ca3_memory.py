@@ -219,7 +219,7 @@ class CA3EpisodicMemory(nn.Module):
                         memory = self.memories[memory_id]
                         
                         # 核心记忆使用更低的召回阈值
-                        threshold = 0.5 if memory.is_core else self.recall_threshold
+                        threshold = 0.4 if memory.is_core else 0.5  # 降低阈值提高召回率
                         
                         if sim > threshold:
                             candidates.append(memory)

@@ -253,17 +253,48 @@ class BrainAIInterface:
         )
         
         # 4. 并行后台处理
-        # 计算情感显著性
+        # 计算情感显著性和核心记忆检测
         emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
         salience = 1.0 + 0.5 * sum(1 for kw in emotional_keywords if kw in user_input or kw in monologue)
         salience = min(salience, 3.0)
         
-        semantic_pointer = f"用户: {user_input[:30]} | 回复: {output.text[:30]}"
+        # 检测是否为核心记忆（个人身份信息）
+        identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住"]
+        is_core_memory = any(pattern in user_input for pattern in identity_patterns)
+        
+        # 提取实体信息增强semantic_pointer
+        enhanced_pointer = f"用户: {user_input[:30]} | 回复: {output.text[:30]}"
+        if is_core_memory:
+            # 提取关键实体
+            import re
+            name_match = re.search(r"我叫(.{2,6})|我的名字(是|叫)(.{2,6})", user_input)
+            age_match = re.search(r"我今年(\d+)", user_input)
+            job_match = re.search(r"我是(.{2,10})(工程师|医生|老师|学生|设计师|程序员)", user_input)
+            hobby_match = re.search(r"我喜欢(.{2,20})", user_input)
+            
+            entities = []
+            if name_match:
+                entities.append(f"名字:{name_match.group(1) or name_match.group(3)}")
+            if age_match:
+                entities.append(f"年龄:{age_match.group(1)}岁")
+            if job_match:
+                entities.append(f"职业:{job_match.group(0)}")
+            if hobby_match:
+                entities.append(f"爱好:{hobby_match.group(1)}")
+            
+            if entities:
+                enhanced_pointer = " | ".join(entities) + " | " + enhanced_pointer
+        
         thought_state_snapshot = self.current_thought_state
         
         def post_processing():
             try:
-                self._store_with_real_features(f"{user_input} -> {output.text}", thought_state_snapshot, semantic_pointer=semantic_pointer)
+                self._store_with_real_features(
+                    f"{user_input} -> {output.text}", 
+                    thought_state_snapshot, 
+                    is_core=is_core_memory,
+                    semantic_pointer=enhanced_pointer
+                )
                 current_reward = output.confidence if hasattr(output, 'confidence') else 1.0
                 self.model.set_reward(current_reward)
                 self._apply_real_stdp_update(emotional_salience=salience)
@@ -602,7 +633,7 @@ class BrainAIInterface:
         
         # 2. 添加记忆上下文
         if memory_context:
-            system_content += f"\n\n[相关记忆] {memory_context}"
+            system_content += f"\n\n[重要记忆 - 请务必参考]\n{memory_context}\n[请根据记忆内容回答用户问题]"
         
         # 3. 添加当前思考状态
         if monologue:
