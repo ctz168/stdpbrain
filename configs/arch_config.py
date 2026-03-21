@@ -14,8 +14,8 @@ import torch
 class HardConstraints:
     """不可突破的硬性约束配置"""
     # 权重安全约束
-    STATIC_WEIGHT_RATIO: float = 0.9  # 90% 静态基础权重比例
-    DYNAMIC_WEIGHT_RATIO: float = 0.1  # 10% STDP动态增量权重比例
+    STATIC_WEIGHT_RATIO: float = 0.7  # 70% 静态基础权重比例
+    DYNAMIC_WEIGHT_RATIO: float = 0.3  # 30% STDP动态增量权重比例（增强学习能力）
     
     # 端侧算力约束
     MAX_MEMORY_MB: int = 420  # INT4 量化后最大显存占用 (MB)

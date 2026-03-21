@@ -23,6 +23,8 @@ from core.stdp_engine import STDPEngine
 from self_loop.self_loop_optimizer import SelfLoopOptimizer
 from core.monologue_engine import MonologueEngine, ThoughtState, EmotionState
 from core.thought_flow import ThoughtFlowEngine
+from core.goal_system import GoalSystem, create_goal_system
+from core.global_workspace import GlobalWorkspace, create_global_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,29 @@ class BrainAIInterface:
         # 5. 加载类人脑独白引擎
         self.monologue_engine = None  # 延迟初始化，需要等模型加载完成
         
+        # 特征维度适配器（模型 hidden_size -> 海马体输入维度）
+        # 必须在使用 model_hidden_size 之前定义
+        self.model_hidden_size = 1024  # Qwen3.5-0.8B hidden_size
+        self.hippocampus_input_dim = 1024  # 海马体期望的输入维度
+        self.feature_adapter = nn.Linear(self.model_hidden_size, self.hippocampus_input_dim, bias=False)
+        with torch.no_grad():
+            self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
+        self.feature_adapter.to(self.device)
+        self.feature_adapter.train() # 开启训练模式以支持在线更新
+        
+        # 适配器优化器
+        self.adapter_optimizer = torch.optim.SGD(self.feature_adapter.parameters(), lr=0.005, momentum=0.9)
+        
+        # 6. 加载目标系统 (新增)
+        from core.goal_system import GoalSystem
+        self.goal_system = GoalSystem(hidden_size=self.model_hidden_size, device=self.device)
+        print("[BrainAI] [OK] 目标驱动系统已初始化")
+        
+        # 7. 加载全局工作空间 (新增)
+        from core.global_workspace import GlobalWorkspace
+        self.global_workspace = GlobalWorkspace(hidden_size=self.model_hidden_size, device=self.device)
+        print("[BrainAI] [OK] 全局工作空间已初始化")
+        
         # 周期计数
         self.cycle_count = 0
         self.total_generation_time = 0.0
@@ -90,18 +115,6 @@ class BrainAIInterface:
         # STDP 学习追踪
         self.total_stdp_updates = 0
         self.last_dynamic_weight_norm = 0.0
-        
-        # 特征维度适配器（模型 hidden_size -> 海马体输入维度）
-        self.model_hidden_size = 1024  # Qwen3.5-0.8B hidden_size
-        self.hippocampus_input_dim = 1024  # 海马体期望的输入维度
-        self.feature_adapter = nn.Linear(self.model_hidden_size, self.hippocampus_input_dim, bias=False)
-        with torch.no_grad():
-            self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
-        self.feature_adapter.to(self.device)
-        self.feature_adapter.train() # 开启训练模式以支持在线更新
-        
-        # 适配器优化器
-        self.adapter_optimizer = torch.optim.SGD(self.feature_adapter.parameters(), lr=0.005, momentum=0.9)
         
         # 状态文件路径
         self.state_path = "brain_state.pt"
@@ -147,6 +160,22 @@ class BrainAIInterface:
         except Exception as e:
             logger.warning(f"SWR 监控启动失败: {e}")
         
+        # 初始化目标系统
+        try:
+            self.goal_system = create_goal_system(hidden_size=self.model_hidden_size, device=self.device)
+            print("[BrainAI] [OK] 目标系统已初始化")
+        except Exception as e:
+            logger.warning(f"目标系统初始化失败: {e}")
+            self.goal_system = None
+        
+        # 初始化全局工作空间
+        try:
+            self.global_workspace = create_global_workspace(hidden_size=self.model_hidden_size, device=self.device)
+            print("[BrainAI] [OK] 全局工作空间已初始化")
+        except Exception as e:
+            logger.warning(f"全局工作空间初始化失败: {e}")
+            self.global_workspace = None
+        
         # 设置海马体门控函数（连接CA1到注意力层）
         self._setup_hippocampus_gate()
         
@@ -155,19 +184,21 @@ class BrainAIInterface:
     def _setup_hippocampus_gate(self):
         """设置海马体门控，让CA1门控信号影响注意力"""
         def hippocampus_gate_fn(query, key, memory_anchors):
-            if not memory_anchors:
+            # 使用保存的完整记忆字典，而不是传入的tensor
+            recalled_memories = getattr(self, '_current_recalled_memories', None)
+            if not recalled_memories:
                 return None
             batch_size, num_heads, seq_len, head_dim = query.shape
             try:
                 gate_signal = self.hippocampus.ca1_gate(
                     query.transpose(1, 2).reshape(-1, seq_len, num_heads * head_dim),
                     key.transpose(1, 2).reshape(-1, seq_len, num_heads * head_dim),
-                    memory_anchors
+                    recalled_memories  # 传递完整的记忆字典列表
                 )
                 if gate_signal is not None:
                     bias = gate_signal.mean(dim=-1, keepdim=True)
                     bias = bias.expand(-1, num_heads, -1, seq_len)
-                    return bias * 0.1
+                    return bias * 0.5  # 增强门控信号：0.1 → 0.5
             except Exception as e:
                 logger.debug(f"海马体门控计算失败: {e}")
             return None
@@ -233,9 +264,13 @@ class BrainAIInterface:
         memory_context, recalled_memories = future_recall.result()
         monologue = future_monologue.result()
         
+        # 存储完整记忆字典供注意力层使用
+        self._current_recalled_memories = recalled_memories
+        
         # 3. 回复
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         
+        # 准备记忆锚点（保持原有逻辑兼容性）
         memory_anchor = None
         if recalled_memories:
             try:
