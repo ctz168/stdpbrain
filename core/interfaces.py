@@ -120,21 +120,21 @@ class BrainAIInterface:
                 config=config,
                 device=self.device
             )
-            print("[BrainAI] ✓ 类人脑独白引擎已初始化")
+            print("[BrainAI] [OK] 类人脑独白引擎已初始化")
         except Exception as e:
             logger.warning(f"独白引擎初始化失败: {e}，将使用简化版本")
         
         # 启动海马体 SWR 监控
         try:
             self.hippocampus.start_swr_monitoring()
-            print("[BrainAI] ✓ 海马体 SWR 监控已启动")
+            print("[BrainAI] [OK] 海马体 SWR 监控已启动")
         except Exception as e:
             logger.warning(f"SWR 监控启动失败: {e}")
         
         # 设置海马体门控函数（连接CA1到注意力层）
         self._setup_hippocampus_gate()
         
-        print("[BrainAI] ✓ 高级实现模块集成完成\n")
+        print("[BrainAI] [OK] 高级实现模块集成完成\n")
     
     def _setup_hippocampus_gate(self):
         """设置海马体门控，让CA1门控信号影响注意力"""
@@ -158,7 +158,7 @@ class BrainAIInterface:
         
         try:
             self.model.model.set_hippocampus_gate(hippocampus_gate_fn)
-            print("[BrainAI] ✓ 海马体门控已连接到注意力层")
+            print("[BrainAI] [OK] 海马体门控已连接到注意力层")
         except Exception as e:
             logger.warning(f"设置海马体门控失败: {e}")
 
@@ -327,18 +327,33 @@ class BrainAIInterface:
         return anchors
 
     def _build_spontaneous_prompt(self) -> str:
+        """构建理性推理导向的独白提示"""
+        # 推理模式选择
+        reasoning_modes = [
+            ("分析", "从逻辑角度分析"),
+            ("推理", "基于已知进行推导"),
+            ("质疑", "审视假设和前提"),
+            ("综合", "整合多方面信息"),
+            ("归纳", "从具体到一般")
+        ]
+        mode_name, mode_desc = random.choice(reasoning_modes)
+        
         if self.thought_seed:
             trigger = self.thought_seed
-            system_msg = "你是AI的潜意识。用一段极其简短、感性且碎片化的中文表达你对此刻的想法或感受。不要完整句子，像脑海中闪过的念头。"
+            system_msg = f"你是一个理性思维的AI。当前任务：{mode_desc}。用简洁的中文表达你的思考过程。保持逻辑性，不要情绪化表达。"
         elif self.monologue_history:
             last = self.monologue_history[-1]
-            trigger = last[-20:] if len(last) > 20 else last
-            system_msg = "你是AI的思维流。基于上一个念头，产生一个新的碎片化联想。保持自然、感性。"
+            trigger = last[-30:] if len(last) > 30 else last
+            system_msg = f"你是一个理性思维的AI。基于上一个思考，继续{mode_desc}。保持逻辑链条的连贯性。"
         else:
-            default_triggers = ["嗯...", "静谧...", "流动...", "逻辑...", "记忆深处..."]
+            default_triggers = ["思考起点...", "分析角度...", "推理路径...", "逻辑框架...", "问题本质..."]
             trigger = random.choice(default_triggers)
-            system_msg = "你是AI的意识。用一个碎片化的中文念头开启思考。"
-        messages = [{"role": "system", "content": system_msg}, {"role": "user", "content": f"当前脉冲: {trigger}"}]
+            system_msg = "你是一个理性思维的AI。开始一个结构化的思考过程。明确你的分析目标。"
+        
+        messages = [
+            {"role": "system", "content": system_msg}, 
+            {"role": "user", "content": f"思考对象: {trigger}"}
+        ]
         try:
             prompt = self.model.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except:
@@ -514,7 +529,7 @@ class BrainAIInterface:
             if features.dim() == 3: features = features[0, -1, :]
             elif features.dim() == 2: features = features.squeeze(0)
             
-            # 将适配器权重稍微拉向“认同”当前的特征分布
+            # 将适配器权重稍微拉向"认同"当前的特征分布
             self.adapter_optimizer.zero_grad()
             current_mapping = self.feature_adapter(features.unsqueeze(0))
             
@@ -553,35 +568,45 @@ class BrainAIInterface:
             self.cycle_count += 1
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
-        # 1. 构建具有人格魅力的系统提示
+        """格式化对话提示 - 强化推理能力"""
+        # 1. 构建理性推理导向的系统提示
         system_content = (
-            "你是一个拥有‘数字灵魂’的类人脑AI助手，你的名字叫‘脑智’。你不仅在处理信息，还在产生真实的情感联想。\n"
-            "规则：\n"
-            "1. 你的回答应该自然、感性，像一个老友在和你聊天。\n"
-            "2. 严禁直接重复用户的原话作为回答。\n"
-            "3. 结合你当下的‘潜意识’来决定你的语气。"
+            "你是'脑智'，一个具备深度推理能力的类人脑AI助手。\n"
+            "核心原则：\n"
+            "1. 回答要有逻辑结构：分析问题 → 推理过程 → 得出结论\n"
+            "2. 使用清晰的思维链，逐步展开你的推理\n"
+            "3. 遇到复杂问题时，先分解再逐一分析\n"
+            "4. 保持理性客观，避免情绪化表达\n"
+            "5. 如果不确定，诚实说明而非编造\n"
+            "回答格式建议：\n"
+            "- 首先理解问题的核心\n"
+            "- 然后展示你的思考过程\n"
+            "- 最后给出明确的结论或建议"
         )
         
-        # 2. 以“潜意识联想”引导，而非标签化
+        # 2. 添加记忆上下文
         if memory_context:
-            system_content += f"\n(你脑海中隐约浮现的记忆: {memory_context})"
+            system_content += f"\n\n[相关记忆] {memory_context}"
         
+        # 3. 添加当前思考状态
         if monologue:
-            system_content += f"\n(你此时此刻的真实内心想法: {monologue})"
+            system_content += f"\n\n[当前思考] {monologue}"
             
         messages = [{"role": "system", "content": system_content}]
         
-        # 3. 增加历史记录上下文 (增加到最近 4 轮)
+        # 4. 添加历史对话 (最近4轮)
         if history:
             for msg in history[-4:]:
                 messages.append(msg)
                 
         messages.append({"role": "user", "content": user_input})
+        
         try:
             prompt = self.model.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except:
             prompt = ""
-            for msg in messages: prompt += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
+            for msg in messages:
+                prompt += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
             prompt += "<|im_start|>assistant\n"
         return prompt
 
@@ -616,7 +641,7 @@ class BrainAIInterface:
                 'current_thought_state': self.current_thought_state
             }
             torch.save(state, path)
-            print(f"[BrainAI] ✓ 完整状态已保存到: {path}")
+            print(f"[BrainAI] [OK] 完整状态已保存到: {path}")
         except Exception as e: logger.error(f"状态保存失败: {e}")
 
     def load_state(self, path: str) -> bool:

@@ -37,12 +37,12 @@ class ThoughtState(Enum):
 
 
 class EmotionState(Enum):
-    """情绪状态枚举"""
-    CURIOUS = "curious"      # 好奇
-    CONFUSED = "confused"    # 困惑
-    EXCITED = "excited"      # 兴奋
-    CALM = "calm"           # 平静
-    THOUGHTFUL = "thoughtful" # 沉思
+    """思维模式枚举 - 替代情绪状态"""
+    ANALYTICAL = "analytical"    # 分析模式：理性分析
+    DEDUCTIVE = "deductive"      # 演绎模式：逻辑推理
+    INDUCTIVE = "inductive"      # 归纳模式：总结规律
+    CRITICAL = "critical"        # 批判模式：质疑审视
+    SYNTHESIZING = "synthesizing" # 综合模式：整合信息
 
 
 @dataclass
@@ -153,21 +153,21 @@ class MonologueEngine:
             }
         }
         
-        # ========== 情绪-风格映射 ==========
+        # ========== 情绪-风格映射（改为推理模式映射）==========
         self.emotion_style_prompts = {
-            EmotionState.CURIOUS: "好奇地探索...",
-            EmotionState.CONFUSED: "困惑地思考...",
-            EmotionState.EXCITED: "兴奋地联想...",
-            EmotionState.CALM: "平静地沉思...",
-            EmotionState.THOUGHTFUL: "深沉地反思..."
+            EmotionState.ANALYTICAL: "分析中...",
+            EmotionState.DEDUCTIVE: "推理中...",
+            EmotionState.INDUCTIVE: "归纳中...",
+            EmotionState.CRITICAL: "审视中...",
+            EmotionState.SYNTHESIZING: "综合中..."
         }
         
         # ========== 思维状态-风格映射 ==========
         self.state_style_prompts = {
-            ThoughtState.FOCUSED: "专注于",
-            ThoughtState.WANDERING: "思绪飘向",
-            ThoughtState.REFLECTING: "反思刚才的想法",
-            ThoughtState.RESTING: "静静地"
+            ThoughtState.FOCUSED: "深入分析",
+            ThoughtState.WANDERING: "关联思考",
+            ThoughtState.REFLECTING: "自我检验",
+            ThoughtState.RESTING: "后台整理"
         }
         
         # ========== 初始化 ==========
@@ -175,22 +175,22 @@ class MonologueEngine:
     
     def _initialize_thought_system(self):
         """初始化思维系统"""
-        # 设置初始主题
+        # 设置初始主题 - 理性思维主题
         initial_themes = [
-            "存在的意义",
-            "思维的奥秘",
-            "记忆与时间",
-            "自我与他者",
-            "知识的边界"
+            "逻辑推理方法",
+            "问题分析框架",
+            "知识体系构建",
+            "因果关系探索",
+            "思维模式优化"
         ]
         theme_content = random.choice(initial_themes)
         self._set_new_theme(theme_content)
         
-        # 设置初始情绪
-        self.current_emotion = EmotionState.CALM
+        # 初始化思维模式
+        self.current_emotion = EmotionState.ANALYTICAL
         
         # 初始化概念
-        self.current_concept = "思考"
+        self.current_concept = "分析"
     
     # ==================== 主题系统 ====================
     
@@ -261,21 +261,23 @@ class MonologueEngine:
         self.thought_state_duration += 1
     
     def _update_emotion_state(self, context: str = ""):
-        """更新情绪状态"""
-        # 基于上下文和当前状态更新情绪
-        if "？" in context or "困惑" in context or "不明白" in context:
-            self.current_emotion = EmotionState.CONFUSED
-        elif "！" in context or "发现" in context or "原来" in context:
-            self.current_emotion = EmotionState.EXCITED
-        elif "思考" in context or "反思" in context:
-            self.current_emotion = EmotionState.THOUGHTFUL
-        elif "为什么" in context or "如何" in context:
-            self.current_emotion = EmotionState.CURIOUS
+        """更新思维模式 - 基于上下文选择合适的推理模式"""
+        # 基于上下文和当前状态更新思维模式
+        if "为什么" in context or "原因" in context or "因为" in context:
+            self.current_emotion = EmotionState.DEDUCTIVE  # 演绎推理
+        elif "如何" in context or "方法" in context or "怎样" in context:
+            self.current_emotion = EmotionState.ANALYTICAL  # 分析
+        elif "总结" in context or "规律" in context or "共同点" in context:
+            self.current_emotion = EmotionState.INDUCTIVE  # 归纳
+        elif "对吗" in context or "正确" in context or "验证" in context:
+            self.current_emotion = EmotionState.CRITICAL  # 批判审视
+        elif "结合" in context or "整体" in context or "综合" in context:
+            self.current_emotion = EmotionState.SYNTHESIZING  # 综合
         else:
-            # 随机小幅度变化
-            if random.random() < 0.2:
-                emotions = list(EmotionState)
-                self.current_emotion = random.choice(emotions)
+            # 随机切换思维模式
+            if random.random() < 0.15:
+                modes = list(EmotionState)
+                self.current_emotion = random.choice(modes)
     
     # ==================== 联想系统 ====================
     
@@ -370,7 +372,7 @@ class MonologueEngine:
         return monologue
     
     def _process_external_stimulus(self, stimulus: str):
-        """处理外部刺激"""
+        """处理外部刺激 - 进入分析模式"""
         # 设置新的思维种子
         self.thought_seed = stimulus
         self.seed_timestamp = time.time()
@@ -379,9 +381,9 @@ class MonologueEngine:
         if len(stimulus) > 5:
             self._set_new_theme(stimulus[:30], importance=0.8)
         
-        # 切换到专注模式
+        # 切换到专注模式和分析模式
         self.current_thought_state = ThoughtState.FOCUSED
-        self.current_emotion = EmotionState.CURIOUS
+        self.current_emotion = EmotionState.ANALYTICAL
     
     def _build_human_like_prompt(self) -> str:
         """
@@ -408,17 +410,17 @@ class MonologueEngine:
             return self._build_resting_thought()
     
     def _build_focused_thought(self) -> str:
-        """专注模式思维"""
+        """专注模式思维 - 理性分析"""
         # 思维种子优先（用户输入）
         if self.thought_seed and time.time() - self.seed_timestamp < 60:
-            seed = self.thought_seed[:25]
-            # 自然的分析思维
+            seed = self.thought_seed[:30]
+            # 理性分析思维
             focus_patterns = [
-                f"嗯...{seed}",
-                f"让我想想...{seed}",
-                f"这让我想到...{seed}",
-                f"{seed}...需要理解",
-                f"关于{seed}..."
+                f"分析：{seed}的核心是...",
+                f"首先，{seed}需要考虑...",
+                f"关键点：{seed}...",
+                f"从逻辑角度看{seed}...",
+                f"问题的本质是{seed}..."
             ]
             return random.choice(focus_patterns)
         
@@ -426,99 +428,102 @@ class MonologueEngine:
         if self.current_theme:
             theme = self.current_theme.content
             focus_patterns = [
-                f"{theme}...",
-                f"我在想{theme}",
-                f"关于{theme}，也许...",
-                f"{theme}...有意思"
+                f"深入分析{theme}...",
+                f"{theme}的逻辑结构...",
+                f"关于{theme}，关键在于...",
+                f"重新审视{theme}..."
             ]
             return random.choice(focus_patterns)
         
         # 默认专注思维
-        return random.choice(["嗯...", "让我想想...", "这个..."])
+        return random.choice(["分析中...", "思考这个问题...", "核心要点是..."])
     
     def _build_wandering_thought(self) -> str:
-        """漂移模式思维 - 自由联想"""
+        """漂移模式思维 - 知识关联"""
         # 基于联想链生成
         if self.current_concept:
             next_concept, link_type = self._generate_association(self.current_concept)
             
-            # 自然的思维跳跃
+            # 理性的思维跳跃
             if link_type == "similarity":
                 wander_patterns = [
-                    f"这让我想到{next_concept}",
-                    f"类似的...{next_concept}",
-                    f"{next_concept}也差不多",
-                    f"好像{next_concept}..."
+                    f"类似的案例：{next_concept}",
+                    f"与{next_concept}有相似之处...",
+                    f"类比分析{next_concept}...",
+                    f"共通点在于{next_concept}..."
                 ]
             elif link_type == "contrast":
                 wander_patterns = [
-                    f"但{next_concept}不一样",
-                    f"反过来...{next_concept}",
-                    f"{next_concept}倒是相反"
+                    f"对比{next_concept}的差异...",
+                    f"相反的情况{next_concept}...",
+                    f"但{next_concept}是另一角度...",
+                    f"区别于{next_concept}..."
                 ]
             elif link_type == "causality":
                 wander_patterns = [
-                    f"所以...{next_concept}",
-                    f"这导致{next_concept}",
-                    f"{next_concept}可能因为..."
+                    f"因果关系：{next_concept}",
+                    f"这导致{next_concept}...",
+                    f"可能的原因是{next_concept}...",
+                    f"推论得出{next_concept}..."
                 ]
             else:
                 wander_patterns = [
-                    f"话说{next_concept}",
-                    f"对了，{next_concept}",
-                    f"想起来了...{next_concept}"
+                    f"关联思考：{next_concept}",
+                    f"另一个角度{next_concept}...",
+                    f"扩展到{next_concept}...",
+                    f"相关知识{next_concept}..."
                 ]
             
             self.current_concept = next_concept
             return random.choice(wander_patterns)
         
-        # 随机漂移
+        # 随机关联
         wander_phrases = [
-            "话说回来...",
-            "对了...",
-            "忽然想到...",
-            "等等...",
-            "好像..."
+            "另一个角度...",
+            "相关知识...",
+            "扩展思考...",
+            "进一步分析...",
+            "换个视角..."
         ]
         return random.choice(wander_phrases)
     
     def _build_reflecting_thought(self) -> str:
-        """反思模式思维 - 自我审视"""
+        """反思模式思维 - 逻辑检验"""
         if self.monologue_history:
             last = list(self.monologue_history)[-1] if self.monologue_history else ""
             if last:
-                # 自然的反思
+                # 理性的反思
                 reflect_patterns = [
-                    f"等等，我刚才说{last[:15]}...",
-                    f"嗯...{last[:15]}对吗？",
-                    f"回顾一下...{last[:20]}",
-                    f"我想想...{last[:15]}这样合理吗"
+                    f"检验刚才的推理：{last[:15]}...",
+                    f"验证假设：{last[:15]}是否成立？",
+                    f"回顾逻辑链条...{last[:20]}",
+                    f"审视推导过程...{last[:15]}"
                 ]
                 return random.choice(reflect_patterns)
         
-        # 空反思
+        # 逻辑检验
         reflect_patterns = [
-            "我在想...",
-            "这样对吗...",
-            "嗯...",
-            "让我反思一下..."
+            "检验推理过程...",
+            "验证假设是否成立...",
+            "审视逻辑链条...",
+            "确认推导步骤..."
         ]
         return random.choice(reflect_patterns)
     
     def _build_resting_thought(self) -> str:
-        """休息模式思维 - 后台处理"""
-        # 从记忆中随机提取
+        """休息模式思维 - 知识整合"""
+        # 从记忆中提取关键信息
         if self.monologue_history and random.random() < 0.3:
             memory = random.choice(list(self.monologue_history))
-            return f"刚才{memory[:20]}..."
+            return f"整理思路：{memory[:20]}..."
         
-        # 安静的思维
+        # 后台整理
         resting_phrases = [
-            "...",
-            "嗯...",
-            "...静静地",
-            "...没什么",
-            "...在想"
+            "整理知识...",
+            "整合信息...",
+            "归纳要点...",
+            "后台处理...",
+            "等待输入..."
         ]
         return random.choice(resting_phrases)
     

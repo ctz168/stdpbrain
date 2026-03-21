@@ -63,7 +63,7 @@ class QwenModelWrapper(nn.Module):
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         param_count = sum(p.numel() for p in self.parameters())
-        print(f"✓ Qwen 模型加载完成")
+        print(f"[OK] Qwen 模型加载完成")
         print(f"  - 参数量：{param_count:,} ({param_count/1e6:.2f}M)")
         print(f"  - 设备：{device}")
     
@@ -91,7 +91,7 @@ class QwenModelWrapper(nn.Module):
                         device_map={"": self.device},
                         trust_remote_code=True
                     )
-                    print(f"  ✓ [CUDA] {self.quantization} 量化加载成功")
+                    print(f"  [OK] [CUDA] {self.quantization} 量化加载成功")
                 elif is_mac:
                     # macOS 下使用 FP16
                     model = AutoModelForCausalLM.from_pretrained(
@@ -100,17 +100,17 @@ class QwenModelWrapper(nn.Module):
                         device_map={"": "mps"},
                         trust_remote_code=True
                     )
-                    print("  ✓ [macOS/MPS] 使用 FP16 加载成功")
+                    print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
                 else:
                     # CPU 环境：使用更高兼容性的 FP32 加载
-                    print(f"  ⚠️ [CPU] 已启用优化加载流程...")
+                    print(f"  [!] [CPU] 已启用优化加载流程...")
                     model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
                         torch_dtype=torch.float32,
                         low_cpu_mem_usage=True,
                         trust_remote_code=True
                     ).to("cpu")
-                    print("  ✓ [CPU] FP32 模型加载完成")
+                    print("  [OK] [CPU] FP32 模型加载完成")
                 
             else:  # FP16 或 FP32
                 dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
@@ -121,12 +121,12 @@ class QwenModelWrapper(nn.Module):
                     device_map={"": target_device} if target_device != "cpu" else None,
                     trust_remote_code=True
                 )
-                print(f"  ✓ {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
+                print(f"  [OK] {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
             
             return model
             
         except Exception as e:
-            print(f"⚠️ 模型加载异常：{e}，回退到标准 FP32 加载")
+            print(f"[!] 模型加载异常：{e}，回退到标准 FP32 加载")
             # 最终回退 - 更新设备为 CPU
             self.device = "cpu"
             model = AutoModelForCausalLM.from_pretrained(
@@ -134,7 +134,7 @@ class QwenModelWrapper(nn.Module):
                 torch_dtype=torch.float32,
                 trust_remote_code=True
             )
-            print(f"  ⚠️ 设备已更新为: {self.device}")
+            print(f"  [!] 设备已更新为: {self.device}")
             return model
     
     def _integrate_dual_weights(self):
@@ -185,9 +185,9 @@ class QwenModelWrapper(nn.Module):
                             setattr(module, attr_name, dual_layer)
                             replaced_count += 1
                         except Exception as e:
-                            print(f"  ⚠️ 替换层失败 {name}.{attr_name}: {e}")
+                            print(f"  [!] 替换层失败 {name}.{attr_name}: {e}")
         
-        print(f"✓ 已替换 {replaced_count} 个底层投影为双权重版本")
+        print(f"[OK] 已替换 {replaced_count} 个底层投影为双权重版本")
         
         # ========== 后置优化：如果是 CPU，执行动态量化 ==========
         if self.device == "cpu" and self.quantization == "INT8":
@@ -197,7 +197,7 @@ class QwenModelWrapper(nn.Module):
             self.base_model = torch.quantization.quantize_dynamic(
                 self.base_model, {torch.nn.Linear}, dtype=torch.qint8
             )
-            print("  ✓ [CPU] 后置动态量化完成")
+            print("  [OK] [CPU] 后置动态量化完成")
         
         # ========== 后置优化：如果是 CPU，执行动态量化 ==========
         # 注意：我们只量化非 DualWeight 的部分，或者直接对整个模型尝试
@@ -207,7 +207,7 @@ class QwenModelWrapper(nn.Module):
             self.base_model = torch.quantization.quantize_dynamic(
                 self.base_model, {torch.nn.Linear}, dtype=torch.qint8
             )
-            print("  ✓ [CPU] 后置动态量化完成")
+            print("  [OK] [CPU] 后置动态量化完成")
     
     def set_hippocampus_gate(self, gate_fn):
         """
@@ -219,7 +219,7 @@ class QwenModelWrapper(nn.Module):
         for name, module in self.base_model.named_modules():
             if hasattr(module, 'attn') and hasattr(module.attn, 'set_hippocampus_gate'):
                 module.attn.set_hippocampus_gate(gate_fn)
-        print(f"✓ 已设置海马体门控函数")
+        print(f"[OK] 已设置海马体门控函数")
     
     def forward(
         self,
