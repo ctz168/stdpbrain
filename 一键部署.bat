@@ -33,7 +33,7 @@ echo.
 
 REM ===== 第二步：创建虚拟环境 =====
 echo [2/4] 创建虚拟环境...
-if exist venv (
+if exist venv\Scripts\python.exe (
     echo       [跳过] 虚拟环境已存在
 ) else (
     python -m venv venv
@@ -48,22 +48,23 @@ echo.
 
 REM ===== 第三步：安装依赖 =====
 echo [3/4] 安装依赖包（使用清华镜像源）...
-call venv\Scripts\activate.bat
+echo       这可能需要几分钟，请耐心等待...
+echo.
 
 REM 配置pip镜像源
-python -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple >nul 2>&1
+venv\Scripts\python.exe -m pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 REM 升级pip
-python -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple >nul 2>&1
+echo       [1/2] 升级pip...
+venv\Scripts\python.exe -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 REM 安装依赖
-echo       正在安装核心依赖...
-python -m pip install torch transformers huggingface_hub numpy accelerate -q
-python -m pip install python-telegram-bot aiohttp pydantic python-dotenv loguru modelscope -q
+echo.
+echo       [2/2] 安装依赖包...
+venv\Scripts\python.exe -m pip install torch transformers huggingface_hub numpy accelerate -i https://pypi.tuna.tsinghua.edu.cn/simple
+venv\Scripts\python.exe -m pip install python-telegram-bot aiohttp pydantic python-dotenv loguru modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-if %errorlevel% neq 0 (
-    echo [警告] 部分依赖安装失败，尝试继续...
-)
+echo.
 echo       [OK] 依赖安装完成
 echo.
 
@@ -77,22 +78,25 @@ if exist "models\Qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors" (
     echo       方法1: ModelScope国内镜像...
     
     REM 创建下载脚本
-    echo from modelscope import snapshot_download > _download_temp.py
-    echo import os, shutil >> _download_temp.py
-    echo print("正在从ModelScope下载...") >> _download_temp.py
-    echo result = snapshot_download('Qwen/Qwen3.5-0.8B', cache_dir='models') >> _download_temp.py
-    echo print(f"下载路径: {result}") >> _download_temp.py
-    echo if result and not os.path.exists("models/Qwen3.5-0.8B/model.safetensors-00001-of-00001.safetensors"): >> _download_temp.py
-    echo     if os.path.exists(result): >> _download_temp.py
-    echo         os.makedirs("models/Qwen3.5-0.8B", exist_ok=True) >> _download_temp.py
-    echo         for f in os.listdir(result): >> _download_temp.py
-    echo             src = os.path.join(result, f) >> _download_temp.py
-    echo             dst = os.path.join("models/Qwen3.5-0.8B", f) >> _download_temp.py
-    echo             if os.path.isfile(src): >> _download_temp.py
-    echo                 shutil.copy2(src, dst) >> _download_temp.py
-    echo print("ModelScope下载完成") >> _download_temp.py
+    (
+        echo from modelscope import snapshot_download
+        echo import os, shutil
+        echo print("正在从ModelScope下载..."^)
+        echo result = snapshot_download('Qwen/Qwen3.5-0.8B', cache_dir='models'^)
+        echo print(f"下载路径: {result}"^)
+        echo model_path = "models/Qwen3.5-0.8B/model.safetensors-00001-of-00001.safetensors"
+        echo if result and not os.path.exists(model_path^):
+        echo     if os.path.exists(result^):
+        echo         os.makedirs("models/Qwen3.5-0.8B", exist_ok=True^)
+        echo         for f in os.listdir(result^):
+        echo             src = os.path.join(result, f^)
+        echo             dst = os.path.join("models/Qwen3.5-0.8B", f^)
+        echo             if os.path.isfile(src^):
+        echo                 shutil.copy2(src, dst^)
+        echo print("ModelScope下载完成"^)
+    ^) > _download_temp.py
     
-    python _download_temp.py
+    venv\Scripts\python.exe _download_temp.py
     del _download_temp.py 2>nul
     
     REM 检查ModelScope是否成功
@@ -102,13 +106,15 @@ if exist "models\Qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors" (
         echo       [尝试] 方法2: HuggingFace镜像 (hf-mirror.com)...
         
         REM 创建HF镜像下载脚本
-        echo import os > _download_hf.py
-        echo os.environ["HF_ENDPOINT"] = "https://hf-mirror.com" >> _download_hf.py
-        echo from huggingface_hub import snapshot_download >> _download_hf.py
-        echo snapshot_download("Qwen/Qwen3.5-0.8B", local_dir="models/Qwen3.5-0.8B", local_dir_use_symlinks=False) >> _download_hf.py
-        echo print("HF-Mirror下载完成") >> _download_hf.py
+        (
+            echo import os
+            echo os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+            echo from huggingface_hub import snapshot_download
+            echo snapshot_download("Qwen/Qwen3.5-0.8B", local_dir="models/Qwen3.5-0.8B", local_dir_use_symlinks=False^)
+            echo print("HF-Mirror下载完成"^)
+        ^) > _download_hf.py
         
-        python _download_hf.py
+        venv\Scripts\python.exe _download_hf.py
         del _download_hf.py 2>nul
         
         if exist "models\Qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors" (
@@ -148,24 +154,24 @@ if "%choice%"=="1" (
     echo 启动对话模式...
     echo 输入 'quit' 或 'exit' 退出
     echo.
-    python main.py --mode chat
+    venv\Scripts\python.exe main.py --mode chat
     pause
 ) else if "%choice%"=="2" (
     echo.
     set /p input_text="请输入文本: "
-    python main.py --mode generate --input "%input_text%"
+    venv\Scripts\python.exe main.py --mode generate --input "%input_text%"
     pause
 ) else if "%choice%"=="3" (
     echo.
     echo 启动评估模式...
-    python main.py --mode eval
+    venv\Scripts\python.exe main.py --mode eval
     pause
 ) else (
     echo.
     echo 使用方法：
-    echo   - 对话模式: python main.py --mode chat
-    echo   - 生成模式: python main.py --mode generate --input "你的文本"
-    echo   - 评估模式: python main.py --mode eval
+    echo   - 对话模式: venv\Scripts\python.exe main.py --mode chat
+    echo   - 生成模式: venv\Scripts\python.exe main.py --mode generate --input "你的文本"
+    echo   - 评估模式: venv\Scripts\python.exe main.py --mode eval
     echo.
     echo 或双击运行 对话模式.bat
     echo.
@@ -173,3 +179,4 @@ if "%choice%"=="1" (
 )
 
 popd
+pause
