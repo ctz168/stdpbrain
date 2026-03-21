@@ -569,6 +569,83 @@ class QwenInterface:
 
 
 
+    def generate_stream_sync(
+        self,
+        input_text: str,
+        max_tokens: int = 100,
+        temperature: float = 0.7,
+        **kwargs
+    ):
+        """
+        同步流式生成 (KV-cache + 预分配 input_ids 缓冲区)
+        
+        Yields:
+            str: 每个生成的字符/词
+        """
+        # ========== 1. Tokenize 输入 ==========
+        inputs = self.model.tokenizer(
+            input_text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
+        
+        prompt_ids = inputs.input_ids.to(self.device)
+        prompt_len = prompt_ids.shape[1]
+        
+        # 预分配 input_ids 缓冲区
+        max_total = prompt_len + max_tokens
+        input_ids_buf = torch.full(
+            (1, max_total), self.model.tokenizer.pad_token_id or 0,
+            dtype=torch.long, device=self.device
+        )
+        input_ids_buf[:, :prompt_len] = prompt_ids
+        cur_len = prompt_len
+        
+        attention_mask = inputs.attention_mask.to(self.device)
+        past_key_values = None
+        
+        # 定义停止token
+        eos_token_id = self.model.tokenizer.eos_token_id
+        im_end_token_id = 151645  # <|im_end|>
+        stop_token_ids = {eos_token_id, im_end_token_id}
+        
+        for step in range(max_tokens):
+            # KV-cache 模式: 只传最后一个 token
+            if past_key_values is not None:
+                model_input_ids = input_ids_buf[:, cur_len-1:cur_len]
+            else:
+                model_input_ids = input_ids_buf[:, :cur_len]
+            
+            step_outputs = self.forward_step(
+                input_ids=model_input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+                **kwargs
+            )
+            
+            next_token_id = step_outputs['token_id']
+            past_key_values = step_outputs['past_key_values']
+            
+            # 解码单个token
+            token_text = self.model.tokenizer.decode([next_token_id], skip_special_tokens=True)
+            yield token_text
+            
+            if next_token_id in stop_token_ids:
+                break
+            
+            # 写入缓冲区
+            if cur_len < max_total:
+                input_ids_buf[:, cur_len] = next_token_id
+                cur_len += 1
+            
+            # 更新 attention mask
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones((1, 1), device=self.device, dtype=torch.long)], dim=-1
+            )
+
     async def generate_stream(
         self,
         input_text: str,
@@ -577,7 +654,7 @@ class QwenInterface:
         **kwargs
     ):
         """
-        流式生成 (KV-cache + 预分配 input_ids 缓冲区 + 条件 STDP)
+        异步流式生成 (KV-cache + 预分配 input_ids 缓冲区 + 条件 STDP)
         """
         # ========== 1. Tokenize 输入 ==========
         inputs = self.model.tokenizer(

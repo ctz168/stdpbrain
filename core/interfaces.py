@@ -22,6 +22,7 @@ from hippocampus.hippocampus_system import HippocampusSystem
 from core.stdp_engine import STDPEngine
 from self_loop.self_loop_optimizer import SelfLoopOptimizer
 from core.monologue_engine import MonologueEngine, ThoughtState, EmotionState
+from core.thought_flow import ThoughtFlowEngine
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,19 @@ class BrainAIInterface:
             print("[BrainAI] [OK] 类人脑独白引擎已初始化")
         except Exception as e:
             logger.warning(f"独白引擎初始化失败: {e}，将使用简化版本")
+        
+        # 初始化思维流引擎
+        try:
+            self.thought_flow_engine = ThoughtFlowEngine(
+                model_interface=self.model,
+                refresh_cycle=0.8,
+                chunk_size=3,
+                context_window=5
+            )
+            print("[BrainAI] [OK] 思维流引擎已初始化")
+        except Exception as e:
+            logger.warning(f"思维流引擎初始化失败: {e}")
+            self.thought_flow_engine = None
         
         # 启动海马体 SWR 监控
         try:
@@ -697,3 +711,49 @@ class BrainAIInterface:
         output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=20)
         self._store_with_real_features(f"唤醒事件：{prompt} {output}", hidden_state)
         self.thought_seed = f"我刚在 {wakeup_time_str} 醒来，我记得..."
+    
+    def generate_thought_stream(self, max_chunks: int = 5):
+        """
+        流式思维生成 - 高刷新小数据
+        
+        每次生成2-4个token，模拟人脑的思维流
+        
+        Args:
+            max_chunks: 最大思维片段数
+        
+        Yields:
+            dict: {'type': 'char', 'content': char} 或 {'type': 'chunk_end', 'content': full_chunk}
+        """
+        if self.thought_flow_engine:
+            # 使用思维流引擎
+            for _ in range(max_chunks):
+                chunk_text = ""
+                for char in self.thought_flow_engine.generate_thought_chunk():
+                    chunk_text += char
+                    yield {'type': 'char', 'content': char}
+                
+                # 更新思维流
+                self.thought_flow_engine.update_flow(chunk_text)
+                yield {'type': 'chunk_end', 'content': chunk_text}
+        else:
+            # 回退到简化版本
+            for _ in range(max_chunks):
+                monologue = self._generate_spontaneous_monologue(max_tokens=5, temperature=0.8)
+                for char in monologue:
+                    yield {'type': 'char', 'content': char}
+                yield {'type': 'chunk_end', 'content': monologue}
+    
+    def get_quick_response(self, user_input: str = "") -> str:
+        """获取快速响应填充词"""
+        if self.thought_flow_engine:
+            return self.thought_flow_engine.get_quick_response(user_input)
+        else:
+            # 简化版快速响应
+            fillers = ["嗯...", "让我想想...", "稍等...", "我想想..."]
+            return random.choice(fillers)
+    
+    def get_thought_flow_stats(self) -> dict:
+        """获取思维流统计"""
+        if self.thought_flow_engine:
+            return self.thought_flow_engine.get_stats()
+        return {'status': 'not_initialized'}
