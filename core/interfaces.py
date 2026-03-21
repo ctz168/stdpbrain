@@ -129,11 +129,13 @@ class BrainAIInterface:
         try:
             self.thought_flow_engine = ThoughtFlowEngine(
                 model_interface=self.model,
+                hippocampus_system=self.hippocampus,  # 传入海马体系统
+                stdp_engine=self.stdp_engine,        # 传入STDP引擎
                 refresh_cycle=0.8,
                 chunk_size=3,
                 context_window=5
             )
-            print("[BrainAI] [OK] 思维流引擎已初始化")
+            print("[BrainAI] [OK] 思维流引擎已初始化（集成海马体+STDP）")
         except Exception as e:
             logger.warning(f"思维流引擎初始化失败: {e}")
             self.thought_flow_engine = None
