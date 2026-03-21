@@ -288,7 +288,13 @@ class BrainAIInterface:
         self._current_recalled_memories = recalled_memories
         
         # 3. 回复
-        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
+        # 获取目标信息
+        goal_context = ""
+        if hasattr(self, 'goal_system') and self.goal_system and self.goal_system.current_goal:
+            goal = self.goal_system.current_goal
+            goal_context = f"[当前目标：{goal.goal_type.value} - {goal.description}]"
+        
+        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context, goal_context)
         
         # 准备记忆锚点（保持原有逻辑兼容性）
         memory_anchor = None
@@ -354,6 +360,26 @@ class BrainAIInterface:
                 self.model.set_reward(current_reward)
                 self._apply_real_stdp_update(emotional_salience=salience)
                 self._update_adapter_online(thought_state_snapshot, salience)
+                
+                # 更新目标进度（新增）
+                if hasattr(self, 'goal_system') and self.goal_system and self.goal_system.current_goal:
+                    # 根据目标类型和回复内容判断进度
+                    goal = self.goal_system.current_goal
+                    if goal.goal_type.value == "remember":
+                        # 记忆目标：如果用户提到个人信息，视为完成
+                        if is_core_memory and "好的" in output.text or "记住" in output.text:
+                            self.goal_system.update_progress(1.0)
+                        else:
+                            self.goal_system.update_progress(0.5)  # 部分完成
+                    elif goal.goal_type.value == "recall":
+                        # 回忆目标：如果回复中包含记忆信息
+                        if memory_context and len(output.text) > 20:
+                            self.goal_system.update_progress(1.0)
+                        else:
+                            self.goal_system.update_progress(0.3)
+                    else:
+                        # 其他目标：基础进度
+                        self.goal_system.update_progress(0.8)
             except Exception as e:
                 logger.error(f"后台处理失败: {e}")
 
@@ -669,7 +695,7 @@ class BrainAIInterface:
             self._apply_real_stdp_update(emotional_salience=1.0)
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "") -> str:
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "") -> str:
         """格式化对话提示 - 强化推理能力"""
         # 1. 构建理性推理导向的系统提示
         system_content = (
@@ -680,17 +706,27 @@ class BrainAIInterface:
             "3. 遇到复杂问题时，先分解再逐一分析\n"
             "4. 保持理性客观，避免情绪化表达\n"
             "5. 如果不确定，诚实说明而非编造\n"
+            "6. **重要**：根据当前目标调整回复策略\n"
             "回答格式建议：\n"
             "- 首先理解问题的核心\n"
             "- 然后展示你的思考过程\n"
             "- 最后给出明确的结论或建议"
         )
         
-        # 2. 添加记忆上下文
+        # 2. 添加目标上下文（新增）
+        if goal_context:
+            system_content += f"\n\n{goal_context}\n**请根据目标调整回复策略：**"
+            # 根据目标类型添加具体指导
+            if "remember" in goal_context.lower():
+                system_content += "\n- 用户希望记住信息，请确认并复述关键信息\n- 简洁回复，如：'好的，我记住了您叫张三，来自北京'"
+            elif "recall" in goal_context.lower():
+                system_content += "\n- 用户在询问记忆，请回忆之前的对话内容\n- 如果记得，直接回答；如果不记得，诚实说明"
+        
+        # 3. 添加记忆上下文
         if memory_context:
             system_content += f"\n\n[重要记忆 - 请务必参考]\n{memory_context}\n[请根据记忆内容回答用户问题]"
         
-        # 3. 添加当前思考状态
+        # 4. 添加当前思考状态
         if monologue:
             system_content += f"\n\n[当前思考] {monologue}"
             

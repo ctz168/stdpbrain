@@ -24,6 +24,7 @@ class GoalType(Enum):
     ANSWER = "answer"               # 回答问题
     SOLVE = "solve"                 # 解决问题
     REMEMBER = "remember"           # 记忆信息
+    RECALL = "recall"               # 回忆/查询记忆
     GENERATE = "generate"           # 生成内容
     EXPLORE = "explore"             # 探索/学习
     SELF_REFLECT = "self_reflect"   # 自我反思
@@ -152,10 +153,11 @@ class GoalSystem:
             GoalType.UNDERSTAND: ["什么", "为什么", "如何", "怎么", "解释"],
             GoalType.ANSWER: ["是", "吗", "对不对", "是不是"],
             GoalType.SOLVE: ["解决", "处理", "修复", "完成", "帮我"],
-            GoalType.REMEMBER: ["记住", "我叫", "我喜欢", "我的", "记得"],
+            GoalType.REMEMBER: ["记住", "我叫", "我喜欢", "我的职业", "我的工作", "我住"],
+            GoalType.RECALL: ["还记得", "记得吗", "你还记得", "记得我", "我叫什么"],
             GoalType.GENERATE: ["写", "生成", "创建", "编", "作"],
             GoalType.EXPLORE: ["有趣", "发现", "探索", "学习", "了解更多"],
-            GoalType.SELF_REFLECT: ["你", "自己", "你的想法", "你怎么看"]
+            GoalType.SELF_REFLECT: ["你的想法", "你怎么看", "你觉得"]
         }
     
     def infer_goal(self, user_input: str, hidden_state: Optional[torch.Tensor] = None) -> Goal:
@@ -239,6 +241,7 @@ class GoalSystem:
             GoalType.ANSWER: f"回答用户问题：{user_input[:30]}",
             GoalType.SOLVE: f"解决用户问题：{user_input[:30]}",
             GoalType.REMEMBER: f"记住用户提供的信息：{user_input[:30]}",
+            GoalType.RECALL: f"回忆并回答用户的问题：{user_input[:30]}",
             GoalType.GENERATE: f"生成内容：{user_input[:30]}",
             GoalType.EXPLORE: f"探索话题：{user_input[:30]}",
             GoalType.SELF_REFLECT: f"自我反思：{user_input[:30]}"
