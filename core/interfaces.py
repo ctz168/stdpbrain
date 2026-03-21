@@ -227,6 +227,15 @@ class BrainAIInterface:
         # 1. 消化输入
         self.thought_seed = user_input[:30]
         
+        # 1.5 目标推断（新增）
+        if hasattr(self, 'goal_system') and self.goal_system:
+            try:
+                # 使用当前思维状态推断目标
+                goal = self.goal_system.infer_goal(user_input, self.current_thought_state)
+                logger.debug(f"目标推断: {goal.goal_type.value} - {goal.description}")
+            except Exception as e:
+                logger.warning(f"目标推断失败: {e}")
+        
         # 2. 并行执行：记忆召回 和 潜意识独白生成
         def parallel_recall():
             memory_context = ""
