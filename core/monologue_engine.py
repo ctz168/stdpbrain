@@ -105,7 +105,7 @@ class MonologueEngine:
         
         # ========== 思维状态 ==========
         self.current_thought_state = ThoughtState.RESTING
-        self.current_emotion = EmotionState.CALM
+        self.current_emotion = EmotionState.ANALYTICAL
         self.thought_state_duration = 0  # 当前状态持续时间
         
         # ========== 主题系统 ==========

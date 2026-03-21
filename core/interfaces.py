@@ -84,7 +84,7 @@ class BrainAIInterface:
         
         # 思维状态机状态（用于兼容旧接口）
         self._internal_thought_state = ThoughtState.RESTING
-        self._internal_emotion_state = EmotionState.CALM
+        self._internal_emotion_state = EmotionState.ANALYTICAL
         
         # STDP 学习追踪
         self.total_stdp_updates = 0
