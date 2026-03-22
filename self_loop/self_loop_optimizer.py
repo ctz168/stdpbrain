@@ -465,15 +465,64 @@ class SelfLoopOptimizer:
             return random.choice(response_templates) if response_templates else f"{input_text} [创意回答]"
     
     def _tokenize_input(self, text: str, context: Optional[List[str]] = None) -> torch.Tensor:
-        """Tokenize 输入 (简化版)"""
-        # 实际应使用真实的 tokenizer
-        # 这里返回一个伪 tensor
-        return torch.tensor([1] * 10)  # 占位符
+        """Tokenize 输入 (生产级实现)"""
+        # 尝试从模型获取真实的 tokenizer
+        tokenizer = None
+        
+        if hasattr(self.model, 'tokenizer'):
+            tokenizer = self.model.tokenizer
+        elif hasattr(self.model, 'model') and hasattr(self.model.model, 'tokenizer'):
+            tokenizer = self.model.model.tokenizer
+        
+        if tokenizer is not None:
+            try:
+                # 构建完整输入（包含上下文）
+                full_input = text
+                if context:
+                    # 添加最近的上下文
+                    recent_context = context[-2:]  # 取最近2条
+                    context_str = " | ".join(recent_context)
+                    full_input = f"[上下文] {context_str} [问题] {text}"
+                
+                # Tokenize
+                tokens = tokenizer.encode(full_input, return_tensors="pt")
+                return tokens.to(self.model.device if hasattr(self.model, 'device') else 'cpu')
+            except Exception as e:
+                print(f"[SelfLoopOptimizer] Tokenization 失败: {e}")
+        
+        # 降级回退：创建最小有效输入
+        print(f"[SelfLoopOptimizer] 使用降级 tokenization")
+        return torch.tensor([[1]], device=self.model.device if hasattr(self.model, 'device') else 'cpu')
     
     def _decode_output(self, outputs: torch.Tensor) -> str:
-        """解码输出 (简化版)"""
-        # 实际应使用真实的 tokenizer 解码
-        return "模型生成的回答"
+        """解码输出 (生产级实现)"""
+        # 尝试从模型获取真实的 tokenizer
+        tokenizer = None
+        
+        if hasattr(self.model, 'tokenizer'):
+            tokenizer = self.model.tokenizer
+        elif hasattr(self.model, 'model') and hasattr(self.model.model, 'tokenizer'):
+            tokenizer = self.model.model.tokenizer
+        
+        if tokenizer is not None:
+            try:
+                # 解码输出
+                if outputs.dim() == 2:
+                    # [batch, seq] -> 解码每个序列
+                    decoded_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                    return decoded_texts[0] if decoded_texts else ""
+                elif outputs.dim() == 1:
+                    # [seq] -> 解码单个序列
+                    return tokenizer.decode(outputs, skip_special_tokens=True)
+                else:
+                    # 其他形状，尝试展平
+                    return tokenizer.decode(outputs.flatten(), skip_special_tokens=True)
+            except Exception as e:
+                print(f"[SelfLoopOptimizer] 解码失败: {e}")
+        
+        # 降级回退
+        print(f"[SelfLoopOptimizer] 使用降级解码")
+        return "[解码失败]"
     
     def _get_response_templates(self, input_text: str) -> List[str]:
         """获取响应模板库"""
@@ -548,8 +597,39 @@ class SelfLoopOptimizer:
         return weights
     
     def _semantic_similarity(self, text1: str, text2: str) -> float:
-        """计算语义相似度 (增强版)"""
-        # 词汇重叠
+        """计算语义相似度 (生产级实现)"""
+        # 尝试使用模型 embedding 计算真实相似度
+        try:
+            # 获取 embedding 层
+            embedding_layer = None
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+                embedding_layer = self.model.model.base_model.get_input_embeddings()
+            elif hasattr(self.model, 'get_input_embeddings'):
+                embedding_layer = self.model.get_input_embeddings()
+            
+            if embedding_layer is not None and hasattr(self.model, 'tokenizer'):
+                tokenizer = self.model.tokenizer
+                
+                # Tokenize 两个文本
+                tokens1 = tokenizer.encode(text1, return_tensors="pt")
+                tokens2 = tokenizer.encode(text2, return_tensors="pt")
+                
+                # 获取 embeddings
+                with torch.no_grad():
+                    emb1 = embedding_layer(tokens1.to(self.model.device)).mean(dim=1)  # [1, hidden]
+                    emb2 = embedding_layer(tokens2.to(self.model.device)).mean(dim=1)  # [1, hidden]
+                
+                # 计算余弦相似度
+                emb1_norm = emb1 / emb1.norm(dim=-1, keepdim=True)
+                emb2_norm = emb2 / emb2.norm(dim=-1, keepdim=True)
+                cosine_sim = torch.matmul(emb1_norm, emb2_norm.transpose(-2, -1)).item()
+                
+                return max(0.0, min(1.0, cosine_sim))
+        
+        except Exception as e:
+            print(f"[SelfLoopOptimizer] 语义相似度计算失败: {e}")
+        
+        # 降级回退：词汇重叠 + 长度相似度
         words1 = set(text1.lower().split())
         words2 = set(text2.lower().split())
         
@@ -557,11 +637,8 @@ class SelfLoopOptimizer:
         union = words1 | words2
         
         jaccard = len(intersection) / len(union) if union else 0.0
-        
-        # 句子长度相似度
         len_sim = 1.0 - abs(len(text1) - len(text2)) / max(len(text1), len(text2), 1)
         
-        # 综合相似度
         similarity = 0.6 * jaccard + 0.4 * len_sim
         
         return similarity
