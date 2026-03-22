@@ -162,7 +162,7 @@ class ThoughtFlowEngine:
         hippocampus_system=None,
         stdp_engine=None,
         refresh_cycle: float = 0.8,
-        chunk_size: int = 3,
+        chunk_size: int = 20,  # 增加到20个token
         context_window: int = 5,
         char_interval_range: tuple = (0.03, 0.1)
     ):
@@ -329,10 +329,11 @@ class ThoughtFlowEngine:
             system_msg = (
                 "你是一个持续思考的AI。你的思维是连贯的流。\n"
                 "规则：\n"
-                "1. 每次只生成2-4个词\n"
+                "1. 每次生成一个完整的思考片段（10-20个字）\n"
                 "2. 必须延续上一个思维\n"
-                "3. 保持逻辑连贯\n"
-                "4. 不要重复，要推进思维"
+                "3. 保持逻辑连贯和语义完整\n"
+                "4. 不要重复，要推进思维\n"
+                "5. 用自然流畅的中文表达"
             )
             
             # 如果有记忆上下文，加入提示
@@ -345,7 +346,8 @@ class ThoughtFlowEngine:
             trigger = self.state_machine.get_trigger()
             system_msg = (
                 "你是一个持续思考的AI。开始一个思维流。\n"
-                "规则：每次只生成2-4个词。"
+                "规则：每次生成一个完整的思考片段（10-20个字）。\n"
+                "用自然流畅的中文表达你的想法。"
             )
             
             # 如果有记忆上下文，加入提示

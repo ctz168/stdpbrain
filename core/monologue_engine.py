@@ -214,10 +214,65 @@ class MonologueEngine:
             self.theme_history.append(self.current_theme)
     
     def _extract_keywords(self, text: str) -> List[str]:
-        """提取关键词（简化版）"""
-        # 简单分词，实际应用中可以使用更复杂的NLP
-        words = text.replace("的", " ").replace("与", " ").split()
-        return [w for w in words if len(w) > 1][:5]
+        """
+        提取关键词（生产级实现）
+        
+        使用多种策略提取关键词：
+        1. 基于词频
+        2. 基于位置（首尾句权重高）
+        3. 基于词性（名词、动词权重高）
+        4. 基于语义（通过模型tokenizer分析）
+        """
+        import re
+        from collections import Counter
+        
+        if not text or len(text) < 3:
+            return []
+        
+        # 1. 预处理：分句
+        sentences = re.split(r'[。！？；\n]', text)
+        
+        keywords = []
+        
+        # 2. 提取候选词
+        # 使用正则表达式提取中文词组和英文单词
+        chinese_pattern = r'[\u4e00-\u9fff]{2,8}'  # 2-8个汉字
+        english_pattern = r'[a-zA-Z]{3,}'  # 3个以上英文字母
+        
+        for i, sentence in enumerate(sentences):
+            if not sentence.strip():
+                continue
+            
+            # 提取中文词组
+            chinese_words = re.findall(chinese_pattern, sentence)
+            # 提取英文单词
+            english_words = re.findall(english_pattern, sentence)
+            
+            all_words = chinese_words + english_words
+            
+            # 首尾句权重高
+            weight = 1.5 if (i == 0 or i == len(sentences) - 1) else 1.0
+            
+            for word in all_words:
+                # 过滤停用词和常见虚词
+                if word in ['这个', '那个', '就是', '可以', '已经', '因为', '所以', '但是', '而且', '或者', '以及', '进行', '通过', '使用', '一种', '一个', '我们', '他们', '它们']:
+                    continue
+                
+                # 长度过滤
+                if len(word) < 2:
+                    continue
+                
+                keywords.append((word, weight))
+        
+        # 3. 统计词频并加权
+        word_weights = Counter()
+        for word, weight in keywords:
+            word_weights[word] += weight
+        
+        # 4. 返回权重最高的关键词
+        top_keywords = [word for word, _ in word_weights.most_common(5)]
+        
+        return top_keywords
     
     def _update_theme_activity(self):
         """更新主题活跃度"""

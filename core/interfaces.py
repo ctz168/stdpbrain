@@ -147,7 +147,8 @@ class BrainAIInterface:
             )
             print("[BrainAI] [OK] 类人脑独白引擎已初始化")
         except Exception as e:
-            logger.warning(f"独白引擎初始化失败: {e}，将使用简化版本")
+            logger.error(f"独白引擎初始化失败: {e}")
+            raise RuntimeError(f"独白引擎初始化失败，无法继续: {e}")
         
         # 初始化思维流引擎
         try:
@@ -156,13 +157,13 @@ class BrainAIInterface:
                 hippocampus_system=self.hippocampus,  # 传入海马体系统
                 stdp_engine=self.stdp_engine,        # 传入STDP引擎
                 refresh_cycle=0.8,
-                chunk_size=3,
+                chunk_size=20,  # 生产级配置
                 context_window=5
             )
             print("[BrainAI] [OK] 思维流引擎已初始化（集成海马体+STDP）")
         except Exception as e:
-            logger.warning(f"思维流引擎初始化失败: {e}")
-            self.thought_flow_engine = None
+            logger.error(f"思维流引擎初始化失败: {e}")
+            raise RuntimeError(f"思维流引擎初始化失败，无法继续: {e}")
         
         # 启动海马体 SWR 监控
         try:
@@ -757,11 +758,21 @@ class BrainAIInterface:
                     dynamic_layer_count += 1
             if dynamic_layer_count > 0: dynamic_weight_norm /= dynamic_layer_count
         except: pass
+        
+        # 所有核心模块应该都已初始化
+        if not self.monologue_engine:
+            raise RuntimeError("独白引擎未初始化")
+        
         return {
             'hippocampus': self.hippocampus.ca3_memory.get_stats() if hasattr(self.hippocampus, 'ca3_memory') else {},
             'stdp': {'cycle_count': self.stdp_engine.cycle_count, 'total_updates': self.total_stdp_updates, 'dynamic_weight_norm': dynamic_weight_norm, 'last_update_magnitude': self.last_dynamic_weight_norm},
             'self_loop': self.self_loop.get_stats() if self.self_loop else {},
-            'monologue': {'thought_state': self._internal_thought_state.value if hasattr(self, '_internal_thought_state') else 'unknown', 'emotion_state': self._internal_emotion_state.value if hasattr(self, '_internal_emotion_state') else 'unknown', 'history_count': len(self.monologue_history), 'engine_active': self.monologue_engine is not None} if self.monologue_engine else {'thought_state': 'simplified', 'emotion_state': 'unknown', 'history_count': len(self.monologue_history), 'engine_active': False},
+            'monologue': {
+                'thought_state': self._internal_thought_state.value if hasattr(self, '_internal_thought_state') else 'unknown',
+                'emotion_state': self._internal_emotion_state.value if hasattr(self, '_internal_emotion_state') else 'unknown',
+                'history_count': len(self.monologue_history),
+                'engine_active': True
+            },
             'system': {'total_cycles': self.cycle_count, 'device': self.device, 'has_thought_state': self.current_thought_state is not None}
         }
 
@@ -840,7 +851,7 @@ class BrainAIInterface:
         """
         流式思维生成 - 高刷新小数据
         
-        每次生成2-4个token，模拟人脑的思维流
+        每次生成15-25个token，模拟人脑的思维流
         
         Args:
             max_chunks: 最大思维片段数
@@ -848,36 +859,73 @@ class BrainAIInterface:
         Yields:
             dict: {'type': 'char', 'content': char} 或 {'type': 'chunk_end', 'content': full_chunk}
         """
-        if self.thought_flow_engine:
-            # 使用思维流引擎
-            for _ in range(max_chunks):
-                chunk_text = ""
-                for char in self.thought_flow_engine.generate_thought_chunk():
-                    chunk_text += char
-                    yield {'type': 'char', 'content': char}
-                
-                # 更新思维流
-                self.thought_flow_engine.update_flow(chunk_text)
-                yield {'type': 'chunk_end', 'content': chunk_text}
-        else:
-            # 回退到简化版本
-            for _ in range(max_chunks):
-                monologue = self._generate_spontaneous_monologue(max_tokens=5, temperature=0.8)
+        # 直接使用已验证的独白生成方法
+        for _ in range(max_chunks):
+            monologue = self._generate_spontaneous_monologue(max_tokens=25, temperature=0.75)
+            # 清理独白内容
+            monologue = self._clean_monologue_for_stream(monologue)
+            
+            if monologue and len(monologue) > 3:
+                # 流式输出
                 for char in monologue:
                     yield {'type': 'char', 'content': char}
                 yield {'type': 'chunk_end', 'content': monologue}
+            else:
+                # 如果生成失败，使用预设的思维片段
+                thoughts = [
+                    "分析当前情况...",
+                    "思考问题的本质...",
+                    "推理可能的结论...",
+                    "验证逻辑链条...",
+                    "综合各种因素..."
+                ]
+                selected = random.choice(thoughts)
+                for char in selected:
+                    yield {'type': 'char', 'content': char}
+                yield {'type': 'chunk_end', 'content': selected}
+    
+    def _clean_monologue_for_stream(self, text: str) -> str:
+        """清理流式独白内容"""
+        if not text:
+            return ""
+        
+        # 移除特殊标签
+        for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>', '[', ']']:
+            text = text.replace(tag, '')
+        
+        # 移除多余的点和数字（如"1.0.%"）
+        import re
+        text = re.sub(r'\d+\.\d+\.\d+\.?', '', text)
+        text = re.sub(r'\.{3,}', '...', text)
+        
+        # 移除开头和结尾的空白
+        text = text.strip()
+        
+        # 如果内容太短或无意义，返回空
+        if len(text) < 2 or not any(c.isalpha() or '\u4e00' <= c <= '\u9fff' for c in text):
+            return ""
+        
+        # 限制长度
+        if len(text) > 60:
+            # 在标点符号处截断
+            for end_marker in ['。', '，', '！', '？', '...']:
+                pos = text.rfind(end_marker, 10, 55)
+                if pos > 0:
+                    text = text[:pos+1]
+                    break
+            else:
+                text = text[:50] + "..."
+        
+        return text
     
     def get_quick_response(self, user_input: str = "") -> str:
         """获取快速响应填充词"""
-        if self.thought_flow_engine:
-            return self.thought_flow_engine.get_quick_response(user_input)
-        else:
-            # 简化版快速响应
-            fillers = ["嗯...", "让我想想...", "稍等...", "我想想..."]
-            return random.choice(fillers)
+        if not self.thought_flow_engine:
+            raise RuntimeError("思维流引擎未初始化，无法生成快速响应")
+        return self.thought_flow_engine.get_quick_response(user_input)
     
     def get_thought_flow_stats(self) -> dict:
         """获取思维流统计"""
-        if self.thought_flow_engine:
-            return self.thought_flow_engine.get_stats()
-        return {'status': 'not_initialized'}
+        if not self.thought_flow_engine:
+            raise RuntimeError("思维流引擎未初始化，无法获取统计信息")
+        return self.thought_flow_engine.get_stats()

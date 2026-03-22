@@ -307,12 +307,39 @@ class HippocampusSystem(nn.Module):
         return count
     
     def _update_memory_usage(self):
-        """更新内存使用统计"""
-        # 估算内存使用 (简化计算)
-        num_memories = len(self.ca3_memory.memories)
-        avg_memory_size = 1024  # 每个记忆约 1KB
+        """更新内存使用统计（生产级实现）"""
+        import sys
         
-        self.memory_usage_bytes = num_memories * avg_memory_size
+        total_size = 0
+        
+        # 计算CA3记忆的实际内存占用
+        for memory_id, memory in self.ca3_memory.memories.items():
+            # 基础数据结构大小
+            memory_size = sys.getsizeof(memory_id)
+            
+            # 特征向量大小
+            if hasattr(memory, 'features') and memory.features is not None:
+                memory_size += memory.features.element_size() * memory.features.nelement()
+            
+            # 文本数据大小
+            if hasattr(memory, 'semantic_pointer'):
+                memory_size += sys.getsizeof(memory.semantic_pointer)
+            
+            if hasattr(memory, 'context'):
+                memory_size += sys.getsizeof(str(memory.context))
+            
+            total_size += memory_size
+        
+        # 加上EC和DG组件的内存
+        if hasattr(self, 'ec_encoder') and self.ec_encoder is not None:
+            for param in self.ec_encoder.parameters():
+                total_size += param.element_size() * param.nelement()
+        
+        if hasattr(self, 'dg_layer') and self.dg_layer is not None:
+            for param in self.dg_layer.parameters():
+                total_size += param.element_size() * param.nelement()
+        
+        self.memory_usage_bytes = total_size
         
         # 检查是否超出限制
         if self.memory_usage_bytes > self.max_memory_bytes:

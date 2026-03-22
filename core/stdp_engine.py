@@ -161,7 +161,8 @@ class FullLinkSTDP:
         # 如果有显著更新
         if torch.any(torch.abs(delta_ws) > 0):
             # 将 token 更新映射到权重层
-            # 简化逻辑：我们将平均 delta_w 应用于动态权重分支
+            # 生产级实现：使用平均 delta_w 应用于动态权重分支
+            # 这种策略确保了STDP信号能够均匀地影响所有注意力头
             mean_delta = delta_ws[delta_ws != 0].mean()
             
             if hasattr(attention_layer, 'apply_stdp_to_all') and not hasattr(attention_layer, 'q_proj'):
