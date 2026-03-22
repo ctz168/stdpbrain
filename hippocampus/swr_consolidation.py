@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import time
 import threading
+import math
 from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass
 import random
@@ -185,17 +186,152 @@ class SWRConsolidation:
         self._apply_ripple_oscillation(sequence)
     
     def _apply_ripple_oscillation(self, sequence: ReplaySequence):
-        """施加 ripple 振荡 (150-250Hz 生物节律)"""
-        # 简化实现：对序列中所有记忆施加额外的巩固
-        oscillation_strength = 0.2  # 额外巩固强度
+        """
+        施加 ripple 振荡（生产级实现）
         
-        for memory in sequence.memories:
+        模拟生物海马体的 Sharp Wave Ripple (SWR) 振荡：
+        - 频率：150-250 Hz（模拟生物节律）
+        - 特点：高频、短时、强同步
+        - 作用：记忆序列的时间压缩回放和突触巩固
+        
+        实现原理：
+        1. 相位调制：模拟正弦振荡的相位变化
+        2. 强度渐变：ripple 开始和结束强度较低，中间最高
+        3. 时间压缩：将长时记忆序列压缩到短时高频回放
+        4. 序列同步：相邻记忆之间的相位同步增强
+        """
+        # 生物节律参数
+        base_frequency = 200  # Hz (150-250 Hz 的中值)
+        ripple_duration_ms = 100  # 每次 ripple 持续约 100ms
+        num_cycles = int(base_frequency * ripple_duration_ms / 1000)  # 约 20 个周期
+        
+        # 模拟时间压缩：每个记忆对应一个振荡周期
+        num_memories = len(sequence.memories)
+        if num_memories == 0:
+            return
+        
+        # 记忆间的时间间隔（压缩后的）
+        cycle_duration_ms = ripple_duration_ms / num_memories
+        
+        # 基础巩固强度（来自序列的奖励信号）
+        base_consolidation = self.consolidation_strength * sequence.reward_signal
+        
+        # ========== 1. 相位调制循环 ==========
+        for cycle_idx, memory in enumerate(sequence.memories):
+            # 计算当前周期相位 (0 到 2π)
+            phase = 2 * 3.14159 * cycle_idx / num_cycles
+            
+            # 正弦调制：相位决定当前的"兴奋度"
+            # 在波峰时（phase = π/2, 5π/2, ...）强度最高
+            phase_modulation = 0.5 + 0.5 * math.sin(phase)
+            
+            # ========== 2. 强度渐变 ==========
+            # Ripple 的强度曲线：开始低 -> 中间高 -> 结束低
+            # 使用高斯曲线模拟
+            progress = cycle_idx / max(num_memories - 1, 1)  # 0 到 1
+            envelope = math.exp(-((progress - 0.5) ** 2) / 0.1)  # 高斯包络
+            
+            # 综合强度
+            oscillation_strength = base_consolidation * phase_modulation * envelope
+            
+            # ========== 3. 应用到记忆 ==========
             memory_id = memory.get('memory_id')
+            if memory_id and hasattr(self.hippocampus, 'ca3_memory'):
+                # 基础巩固
+                self.hippocampus.ca3_memory.update_memory_strength(
+                    memory_id, 
+                    oscillation_strength
+                )
+                
+                # ========== 4. 序列同步增强 ==========
+                # 相邻记忆之间的连接加强
+                if cycle_idx > 0:
+                    prev_memory_id = sequence.memories[cycle_idx - 1].get('memory_id')
+                    if prev_memory_id:
+                        # 增强前后记忆的关联（模拟时间序列学习）
+                        self._strengthen_memory_link(
+                            prev_memory_id, 
+                            memory_id, 
+                            oscillation_strength * 0.5
+                        )
+            
+            # ========== 5. 突触增强噪声 ==========
+            # 添加适度的随机性，模拟生物噪声
+            noise = random.gauss(0, 0.02) * oscillation_strength
             if memory_id and hasattr(self.hippocampus, 'ca3_memory'):
                 self.hippocampus.ca3_memory.update_memory_strength(
                     memory_id, 
-                    oscillation_strength * sequence.reward_signal
+                    noise
                 )
+        
+        # ========== 6. Ripple 后的快速抑制 ==========
+        # 模拟生物 SWR 后的短暂抑制期
+        # 这有助于防止过度激活和保持记忆的选择性
+        self._apply_post_ripple_inhibition(sequence)
+    
+    def _strengthen_memory_link(
+        self, 
+        from_memory_id: str, 
+        to_memory_id: str, 
+        strength: float
+    ):
+        """
+        增强两个记忆之间的关联
+        
+        模拟 CA3-CA1 的序列学习：
+        - 前一个记忆的激活促进后一个记忆的激活
+        - 这种时序依赖性是情景记忆的关键
+        """
+        if not hasattr(self, '_memory_links'):
+            self._memory_links = {}  # 存储记忆关联
+        
+        link_key = f"{from_memory_id}->{to_memory_id}"
+        
+        if link_key in self._memory_links:
+            # 累积增强
+            self._memory_links[link_key] += strength
+            # 饱和限制
+            self._memory_links[link_key] = min(1.0, self._memory_links[link_key])
+        else:
+            self._memory_links[link_key] = strength
+        
+        # 如果海马体支持关联更新
+        if hasattr(self.hippocampus, 'ca3_memory') and \
+           hasattr(self.hippocampus.ca3_memory, 'update_link'):
+            self.hippocampus.ca3_memory.update_link(
+                from_memory_id, 
+                to_memory_id, 
+                self._memory_links[link_key]
+            )
+    
+    def _apply_post_ripple_inhibition(self, sequence: ReplaySequence):
+        """
+        Ripple 后的快速抑制
+        
+        生物原理：SWR 后有一个短暂的抑制期，
+        这有助于：
+        1. 防止过度激活
+        2. 保持记忆的选择性
+        3. 为下一轮 SWR 做准备
+        """
+        # 抑制强度随时间衰减
+        inhibition_decay = 0.95
+        
+        # 对序列中的记忆应用轻微抑制
+        # 这实际上是选择性地"修剪"弱记忆
+        for memory in sequence.memories:
+            memory_id = memory.get('memory_id')
+            if memory_id and hasattr(self.hippocampus, 'ca3_memory'):
+                # 获取当前记忆强度
+                current_strength = self.hippocampus.ca3_memory.get_memory_strength(memory_id)
+                
+                # 如果记忆强度过低，应用更强的抑制（修剪弱记忆）
+                if current_strength < 0.2:
+                    inhibition = -0.05  # 更强的抑制
+                else:
+                    inhibition = -0.01 * inhibition_decay  # 轻微抑制
+                
+                self.hippocampus.ca3_memory.update_memory_strength(memory_id, inhibition)
     
     def set_callbacks(
         self,

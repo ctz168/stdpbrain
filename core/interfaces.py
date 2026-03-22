@@ -99,6 +99,8 @@ class BrainAIInterface:
         # 7. 加载全局工作空间 (新增)
         from core.global_workspace import GlobalWorkspace
         self.global_workspace = GlobalWorkspace(hidden_size=self.model_hidden_size, device=self.device)
+        # 设置模型引用，用于获取真实embedding
+        self.global_workspace.set_model(self.model)
         print("[BrainAI] [OK] 全局工作空间已初始化")
         
         # 周期计数
@@ -183,6 +185,8 @@ class BrainAIInterface:
         # 初始化全局工作空间
         try:
             self.global_workspace = create_global_workspace(hidden_size=self.model_hidden_size, device=self.device)
+            # 设置模型引用，用于获取真实embedding
+            self.global_workspace.set_model(self.model)
             print("[BrainAI] [OK] 全局工作空间已初始化")
         except Exception as e:
             logger.warning(f"全局工作空间初始化失败: {e}")
@@ -313,6 +317,24 @@ class BrainAIInterface:
         output = self.model.generate(
             prompt, max_tokens=max_tokens, temperature=0.7, use_self_loop=True, memory_anchor=memory_anchor
         )
+        
+        # 3.5 自闭环优化 - 高复杂度任务进行二次优化
+        mode = self.self_loop.decide_mode(user_input)
+        output_confidence = output.confidence if hasattr(output, 'confidence') else 0.7
+        
+        if mode in ["self_game", "self_eval"] or output_confidence < 0.6:
+            # 高难度任务或低置信度输出，使用自闭环优化
+            try:
+                context_list = [memory_context] if memory_context else None
+                optimized_result = self.self_loop.run(user_input, context=context_list)
+                
+                # 如果优化后的置信度更高，使用优化结果
+                if optimized_result.confidence > output_confidence:
+                    logger.debug(f"自闭环优化: {mode} 置信度 {output_confidence:.2f} -> {optimized_result.confidence:.2f}")
+                    output.text = optimized_result.output_text
+                    output.confidence = optimized_result.confidence
+            except Exception as e:
+                logger.warning(f"自闭环优化失败，使用原始输出: {e}")
         
         # 4. 并行后台处理
         # 计算情感显著性和核心记忆检测

@@ -3,11 +3,7 @@
 """
 
 from .self_loop_optimizer import SelfLoopOptimizer
-from .self_game import SelfGameEngine
-from .self_evaluation import SelfEvaluator
 
 __all__ = [
     'SelfLoopOptimizer',
-    'SelfGameEngine',
-    'SelfEvaluator'
 ]

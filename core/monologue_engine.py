@@ -744,22 +744,207 @@ class MonologueEngine:
             self.current_theme.drift_count += 1
     
     def _update_association_chain(self, monologue: str):
-        """更新联想链"""
-        # 提取概念（简化版）
+        """
+        更新联想链（生产级实现）
+        
+        功能：
+        1. 多类型联想：相似性、因果性、对比性、时序性
+        2. 语义相似度计算：使用模型embedding计算概念相似度
+        3. 动态权重：基于激活频率和语义相关性
+        4. 权重衰减：长时间未激活的联想会逐渐减弱
+        5. 链式激活：支持联想链的传播激活
+        """
+        # 提取概念
         concepts = self._extract_keywords(monologue)
         
-        if concepts and self.current_concept:
-            for concept in concepts:
-                if concept != self.current_concept:
-                    link = AssociationLink(
-                        from_concept=self.current_concept,
-                        to_concept=concept,
-                        link_type="temporal",
-                        strength=0.5,
-                        timestamp=time.time()
-                    )
-                    self.association_chain.append(link)
+        if not concepts:
+            return
+        
+        # 获取当前概念（如果没有，使用第一个提取的概念）
+        if not self.current_concept:
+            self.current_concept = concepts[0]
+            return
+        
+        current_time = time.time()
+        
+        # 1. 对每个新概念，建立与当前概念的联想
+        for concept in concepts:
+            if concept == self.current_concept:
+                continue
+            
+            # 检查是否已存在该联想
+            existing_link = None
+            for link in self.association_chain[-50:]:  # 只检查最近50个
+                if link.from_concept == self.current_concept and link.to_concept == concept:
+                    existing_link = link
                     break
+            
+            if existing_link:
+                # 增强现有联想
+                existing_link.strength = min(1.0, existing_link.strength + 0.1)
+                existing_link.timestamp = current_time
+            else:
+                # 计算联想类型和强度
+                link_type, base_strength = self._compute_association_type(
+                    self.current_concept, concept, monologue
+                )
+                
+                # 创建新联想
+                link = AssociationLink(
+                    from_concept=self.current_concept,
+                    to_concept=concept,
+                    link_type=link_type,
+                    strength=base_strength,
+                    timestamp=current_time
+                )
+                self.association_chain.append(link)
+                
+                # 检查是否需要创建反向联想（双向激活）
+                if link_type == "similarity" and base_strength > 0.6:
+                    reverse_link = AssociationLink(
+                        from_concept=concept,
+                        to_concept=self.current_concept,
+                        link_type=link_type,
+                        strength=base_strength * 0.8,  # 反向略弱
+                        timestamp=current_time
+                    )
+                    self.association_chain.append(reverse_link)
+        
+        # 2. 更新当前概念
+        self.current_concept = concepts[0]
+        
+        # 3. 应用权重衰减（每次调用衰减0.1%）
+        self._apply_association_decay()
+        
+        # 4. 链式激活：检查是否触发联想传播
+        self._propagate_association_activation(concepts)
+        
+        # 5. 限制联想链大小
+        max_chain_size = 500
+        if len(self.association_chain) > max_chain_size:
+            # 移除最弱的联想
+            self.association_chain.sort(key=lambda x: x.strength, reverse=True)
+            self.association_chain = self.association_chain[:max_chain_size]
+    
+    def _compute_association_type(
+        self, 
+        concept1: str, 
+        concept2: str, 
+        context: str
+    ) -> Tuple[str, float]:
+        """
+        计算联想类型和基础强度
+        
+        Returns:
+            (link_type, base_strength)
+        """
+        import re
+        
+        # 1. 相似性检测：语义相关词
+        similarity_pairs = [
+            (r'(问题|疑问|困惑)', r'(解答|答案|解决)'),
+            (r'(思考|分析)', r'(推理|判断)'),
+            (r'(记忆|回忆)', r'(经历|体验)'),
+            (r'(目标|目的)', r'(计划|方案)'),
+            (r'(数据|信息)', r'(知识|理解)'),
+        ]
+        
+        for pattern1, pattern2 in similarity_pairs:
+            if (re.search(pattern1, concept1) and re.search(pattern2, concept2)) or \
+               (re.search(pattern2, concept1) and re.search(pattern1, concept2)):
+                return ("similarity", 0.7)
+        
+        # 2. 因果性检测：因果连接词
+        causality_markers = ['因为', '所以', '导致', '引起', '使得', '因此', '由于']
+        if any(marker in context for marker in causality_markers):
+            return ("causality", 0.8)
+        
+        # 3. 对比性检测：对比连接词
+        contrast_markers = ['但是', '然而', '不过', '相反', '对比', '差异']
+        if any(marker in context for marker in contrast_markers):
+            return ("contrast", 0.6)
+        
+        # 4. 时序性检测：时间词
+        temporal_markers = ['然后', '接着', '之后', '之前', '同时', '首先', '最后']
+        if any(marker in context for marker in temporal_markers):
+            return ("temporal", 0.5)
+        
+        # 5. 默认：基于模型embedding的语义相似度
+        semantic_similarity = self._compute_semantic_similarity(concept1, concept2)
+        if semantic_similarity > 0.5:
+            return ("similarity", semantic_similarity)
+        
+        # 6. 默认类型
+        return ("temporal", 0.4)
+    
+    def _compute_semantic_similarity(self, concept1: str, concept2: str) -> float:
+        """使用模型embedding计算语义相似度"""
+        try:
+            if hasattr(self, 'model_interface') and self.model_interface:
+                # 尝试使用模型的tokenizer和embedding
+                tokenizer = getattr(self.model_interface, 'tokenizer', None)
+                embeddings = getattr(self.model_interface, 'embeddings', None)
+                
+                if tokenizer and embeddings:
+                    # 编码两个概念
+                    ids1 = tokenizer.encode(concept1, return_tensors="pt")
+                    ids2 = tokenizer.encode(concept2, return_tensors="pt")
+                    
+                    device = getattr(self, 'device', 'cpu')
+                    ids1 = ids1.to(device)
+                    ids2 = ids2.to(device)
+                    
+                    with torch.no_grad():
+                        emb1 = embeddings(ids1).mean(dim=1)
+                        emb2 = embeddings(ids2).mean(dim=1)
+                        
+                        # 余弦相似度
+                        similarity = F.cosine_similarity(emb1, emb2, dim=-1)
+                        return similarity.item()
+        except Exception:
+            pass
+        
+        # 回退：基于字符的简单相似度
+        set1 = set(concept1)
+        set2 = set(concept2)
+        if not set1 or not set2:
+            return 0.0
+        return len(set1 & set2) / max(len(set1), len(set2))
+    
+    def _apply_association_decay(self):
+        """应用联想权重衰减"""
+        current_time = time.time()
+        decay_rate = 0.001  # 每次调用衰减0.1%
+        time_threshold = 300  # 5分钟未激活开始衰减
+        
+        for link in self.association_chain:
+            time_inactive = current_time - link.timestamp
+            if time_inactive > time_threshold:
+                # 时间衰减：指数衰减
+                time_decay = np.exp(-time_inactive / 3600)  # 1小时半衰期
+                link.strength *= (1 - decay_rate) * time_decay
+                
+                # 低于阈值的联想标记为待删除
+                if link.strength < 0.1:
+                    link.strength = 0  # 标记为无效
+    
+    def _propagate_association_activation(self, active_concepts: List[str]):
+        """
+        链式激活：激活相关联的概念
+        
+        模拟人脑的联想激活传播机制：
+        当一个概念被激活时，相关联的概念也会被部分激活
+        """
+        activation_threshold = 0.5
+        propagation_rate = 0.6  # 传播时强度衰减
+        
+        # 找到与当前活跃概念直接相连的所有联想
+        for concept in active_concepts:
+            for link in self.association_chain[-100:]:
+                if link.from_concept == concept and link.strength > activation_threshold:
+                    # 传播激活：增强目标概念的关联强度
+                    link.strength = min(1.0, link.strength + 0.05 * propagation_rate)
+                    link.timestamp = time.time()
     
     # ==================== 元认知 ====================
     

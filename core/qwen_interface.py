@@ -376,9 +376,10 @@ class QwenInterface:
     """
     Qwen 模型统一接口
     
-    提供与简化版本相同的接口，便于切换
-    """
+    提供对 Qwen 模型的统一访问接口，包括量化、推理和优化功能。
     
+    """
+
     def __init__(
         self,
        model_path: str,
