@@ -294,40 +294,66 @@ class InnerThoughtEngine:
         if external_stimulus:
             self._set_theme(external_stimulus[:50], importance=0.8)
         
-        # 3. 构建思维提示
-        prompt = self._build_thought_prompt(external_stimulus)
+        # 3. 选择思维模式
+        self._select_thinking_mode(external_stimulus or self.current_focus)
         
-        # 4. 获取记忆上下文
-        memory_context = self._recall_memory(external_stimulus or self.current_focus)
+        # 4. 获取状态风格
+        state_info = self.state_prompts[self.mind_state]
+        mode_triggers = self.mode_prompts[self.thinking_mode]
         
-        # 5. 流式生成
+        # 5. 构建思维内容
         generated_text = ""
-        state_prefix = self.state_prompts[self.mind_state]["prefix"]
         
-        # 先输出状态前缀
-        for char in state_prefix:
-            yield char
-            generated_text += char
-            self.total_output_chars += 1
-            time.sleep(random.uniform(*self.char_interval))
-        
-        # 生成思维内容
         try:
+            # 尝试使用模型生成
             if hasattr(self.model, 'generate_stream_sync'):
-                # 使用流式生成
-                full_prompt = f"{memory_context}\n{prompt}" if memory_context else prompt
+                # 构建完整的思维提示
+                thought_context = self._build_thought_context(external_stimulus)
+                
+                # 流式生成
                 for char in self.model.generate_stream_sync(
-                    full_prompt, 
+                    thought_context, 
                     max_tokens=max_tokens, 
-                    temperature=0.8
+                    temperature=0.9
                 ):
                     generated_text += char
-                    self.total_output_chars += char
+                    self.total_output_chars += 1
                     yield char
                     time.sleep(random.uniform(*self.char_interval))
+            
+            elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
+                # 直接使用模型生成
+                thought_context = self._build_thought_context(external_stimulus)
+                inputs = self.model.tokenizer(thought_context, return_tensors="pt")
+                device = getattr(self.model, 'device', 'cpu')
+                inputs = inputs.to(device)
+                
+                with torch.no_grad():
+                    outputs = self.model.model.generate(
+                        **inputs,
+                        max_new_tokens=max_tokens,
+                        temperature=0.9,
+                        do_sample=True,
+                        top_p=0.9
+                    )
+                
+                # 解码并输出
+                result = self.model.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                # 只取新生成的部分
+                if len(result) > len(thought_context):
+                    new_text = result[len(thought_context):].strip()
+                else:
+                    new_text = result
+                
+                for char in new_text:
+                    generated_text += char
+                    self.total_output_chars += 1
+                    yield char
+                    time.sleep(random.uniform(*self.char_interval))
+            
             else:
                 # 降级：使用预设思维
-                thought = self._get_fallback_thought()
+                thought = self._generate_contextual_thought(external_stimulus)
                 for char in thought:
                     generated_text += char
                     self.total_output_chars += 1
@@ -335,42 +361,108 @@ class InnerThoughtEngine:
                     time.sleep(random.uniform(*self.char_interval))
         
         except Exception as e:
-            # 错误时的优雅降级
-            fallback = "思考中..."
-            for char in fallback:
-                yield char
+            # 错误时的优雅降级 - 使用上下文相关的思维
+            thought = self._generate_contextual_thought(external_stimulus)
+            for char in thought:
                 generated_text += char
+                self.total_output_chars += 1
+                yield char
         
         # 6. 记录思维片段
-        self._record_thought(generated_text)
-        
-        # 7. 更新联想链
-        self._update_association(generated_text)
+        if generated_text:
+            self._record_thought(generated_text)
+            self._update_association(generated_text)
     
-    def _build_thought_prompt(self, external_stimulus: str = "") -> str:
-        """构建思维提示"""
-        # 获取当前状态的触发词
-        triggers = self.state_prompts[self.mind_state]["triggers"]
-        mode_triggers = self.mode_prompts[self.thinking_mode]
+    def _build_thought_context(self, external_stimulus: str = "") -> str:
+        """构建思维上下文"""
+        state_info = self.state_prompts[self.mind_state]
+        mode_trigger = random.choice(self.mode_prompts[self.thinking_mode])
         
-        trigger = random.choice(triggers)
-        mode_trigger = random.choice(mode_triggers)
+        # 基础思维模板
+        templates = {
+            MindState.FOCUSED: [
+                f"当前思维：{self.current_theme.content if self.current_theme else '分析问题'}。深入思考...",
+                f"聚焦于{mode_trigger}，仔细分析当前情况...",
+                f"让我深入思考这个问题..."
+            ],
+            MindState.WANDERING: [
+                f"思绪飘到了...想到了{mode_trigger}",
+                f"这让我联想到一些相关的事物...",
+                f"顺便想到，可能与{self.current_concept or '某些概念'}有关..."
+            ],
+            MindState.REFLECTING: [
+                f"等等，让我回顾一下刚才的思考...",
+                f"这个推理对吗？让我验证一下...",
+                f"重新审视这个观点..."
+            ],
+            MindState.RESTING: [
+                f"整理一下思路...",
+                f"后台处理中，等待新的输入...",
+                f"思维在休息，准备下一次专注..."
+            ]
+        }
         
-        # 构建提示
+        # 选择一个模板
+        thoughts = templates.get(self.mind_state, templates[MindState.RESTING])
+        base_thought = random.choice(thoughts)
+        
+        # 如果有外部刺激，加入上下文
         if external_stimulus:
-            # 有外部刺激时，围绕刺激展开
-            prompt = f"{trigger} {external_stimulus[:30]}... {mode_trigger}"
-        elif self.current_theme:
-            # 有主题时，围绕主题展开
-            prompt = f"{trigger} {self.current_theme.content} {mode_trigger}"
-        elif self.last_thought:
-            # 延续上一个思维
-            prompt = f"延续... {self.last_thought[-20:]} {mode_trigger}"
-        else:
-            # 初始状态
-            prompt = f"{trigger} {mode_trigger}"
+            base_thought = f"关于\"{external_stimulus[:30]}\"，{base_thought}"
         
-        return prompt
+        # 加入记忆上下文
+        memory_context = self._recall_memory(external_stimulus or self.current_focus)
+        if memory_context:
+            base_thought = f"回忆起{memory_context}...{base_thought}"
+        
+        return base_thought
+    
+    def _generate_contextual_thought(self, external_stimulus: str = "") -> str:
+        """生成上下文相关的思维"""
+        thoughts_by_state = {
+            MindState.FOCUSED: [
+                "深入思考这个问题...",
+                "让我仔细分析一下核心要点...",
+                "聚焦于关键信息，梳理逻辑...",
+                "这个问题的本质是什么...",
+            ],
+            MindState.WANDERING: [
+                "这让我联想到其他相关的内容...",
+                "思绪飘到了一个新的角度...",
+                "有点像之前遇到的情况...",
+                "突然想到一个有趣的观点...",
+            ],
+            MindState.REFLECTING: [
+                "等等，让我确认一下刚才的推理...",
+                "这个结论站得住脚吗...",
+                "回顾一下思维过程...",
+                "是否存在遗漏的角度...",
+            ],
+            MindState.RESTING: [
+                "整理一下当前的思路...",
+                "后台正在处理信息...",
+                "等待新的思考方向...",
+                "思维暂时休息一下...",
+            ]
+        }
+        
+        thoughts = thoughts_by_state.get(self.mind_state, thoughts_by_state[MindState.RESTING])
+        
+        # 根据思维模式调整
+        mode_suffix = {
+            ThinkingMode.ANALYTICAL: "从分析的角度来看",
+            ThinkingMode.DEDUCTIVE: "通过逻辑推导",
+            ThinkingMode.INDUCTIVE: "归纳总结一下",
+            ThinkingMode.CRITICAL: "批判性地审视",
+            ThinkingMode.SYNTHESIZING: "综合各方面信息"
+        }
+        
+        base = random.choice(thoughts)
+        suffix = mode_suffix.get(self.thinking_mode, "")
+        
+        if external_stimulus:
+            return f"{base} {suffix}"
+        return f"{base}"
     
     def _recall_memory(self, query: str) -> str:
         """从海马体召回记忆"""
@@ -400,35 +492,7 @@ class InnerThoughtEngine:
             pass
         
         return ""
-    
-    def _get_fallback_thought(self) -> str:
-        """获取降级思维"""
-        thoughts_by_state = {
-            MindState.FOCUSED: [
-                "深入思考这个问题...",
-                "让我仔细分析一下...",
-                "核心要点是什么..."
-            ],
-            MindState.WANDERING: [
-                "这让我联想到...",
-                "顺便想到另一个角度...",
-                "有点像之前遇到的..."
-            ],
-            MindState.REFLECTING: [
-                "等等，让我确认一下...",
-                "这样推理对吗...",
-                "重新审视这个观点..."
-            ],
-            MindState.RESTING: [
-                "整理一下思路...",
-                "后台处理中...",
-                "等待新的输入..."
-            ]
-        }
-        
-        thoughts = thoughts_by_state.get(self.mind_state, ["思考中..."])
-        return random.choice(thoughts)
-    
+
     def _record_thought(self, content: str):
         """记录思维片段"""
         self.last_thought = content
