@@ -117,7 +117,8 @@ class SelfLoopConfig:
         "事实性", "证明", "推导", "算法"
     ])
     high_accuracy_keywords: List[str] = field(default_factory=lambda: [
-        "方案", "决策", "建议", "专业", "准确", "精确"
+        "方案", "决策", "建议", "专业", "准确", "精确",
+        "制定", "计划", "规划", "分析", "评估", "策略"
     ])
 
 
