@@ -246,6 +246,17 @@ class ContinuousThoughtFlowSession:
         print("-" * 40)
         print(f"用户: {user_input}")
         
+        # 判断自闭环模式
+        mode = "self_combine"
+        if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
+            mode = self.ai.self_loop.decide_mode(user_input)
+            mode_names = {
+                "self_combine": "自组合",
+                "self_game": "自博弈",
+                "self_eval": "自评判"
+            }
+            print(f"\n[自闭环模式: {mode_names.get(mode, mode)}]")
+        
         # 快速响应
         quick_response = self._get_quick_response(user_input)
         print(f"\nAI: ", end="", flush=True)
@@ -267,6 +278,11 @@ class ContinuousThoughtFlowSession:
             for char in response:
                 print(char, end="", flush=True)
                 time.sleep(random.uniform(0.01, 0.03))
+            
+            # 显示自闭环优化统计
+            if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
+                sl_stats = self.ai.self_loop.get_stats()
+                print(f"\n\n[自闭环统计] 周期={sl_stats['cycle_count']}, 平均准确率={sl_stats['avg_accuracy']:.2f}")
             
             print("\n" + "-" * 40 + "\n")
             
