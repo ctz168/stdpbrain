@@ -21,8 +21,7 @@ from core.qwen_interface import QwenInterface
 from hippocampus.hippocampus_system import HippocampusSystem
 from core.stdp_engine import STDPEngine
 from self_loop.self_loop_optimizer import SelfLoopOptimizer
-from core.monologue_engine import MonologueEngine, ThoughtState, EmotionState
-from core.thought_flow import ThoughtFlowEngine
+from core.inner_thought_engine import InnerThoughtEngine, MindState, ThinkingMode
 from core.goal_system import GoalSystem, create_goal_system
 from core.global_workspace import GlobalWorkspace, create_global_workspace
 
@@ -76,7 +75,7 @@ class BrainAIInterface:
         self.self_loop = SelfLoopOptimizer(config, model=self.model)
         
         # 5. 加载类人脑独白引擎
-        self.monologue_engine = None  # 延迟初始化，需要等模型加载完成
+        self.inner_thought_engine = None  # 统一的内心思维独白引擎
         
         # 特征维度适配器（模型 hidden_size -> 海马体输入维度）
         # 必须在使用 model_hidden_size 之前定义
@@ -122,8 +121,8 @@ class BrainAIInterface:
         self.thought_seed: str = ""  # 思维种子文本
         
         # 思维状态机状态（用于兼容旧接口）
-        self._internal_thought_state = ThoughtState.RESTING
-        self._internal_emotion_state = EmotionState.ANALYTICAL
+        self._internal_thought_state = MindState.RESTING
+        self._internal_emotion_state = ThinkingMode.ANALYTICAL
         
         # STDP 学习追踪
         self.total_stdp_updates = 0
@@ -139,33 +138,19 @@ class BrainAIInterface:
         # 注入唤醒记忆
         self._inject_wakeup_memory()
         
-        # 初始化独白引擎
+        # 初始化统一的内心思维独白引擎
         try:
-            self.monologue_engine = MonologueEngine(
+            self.inner_thought_engine = InnerThoughtEngine(
                 model_interface=self.model,
                 hippocampus_system=self.hippocampus,
+                self_loop_optimizer=self.self_loop,
                 config=config,
                 device=self.device
             )
-            print("[BrainAI] [OK] 类人脑独白引擎已初始化")
+            print("[BrainAI] [OK] 内心思维独白引擎已初始化")
         except Exception as e:
-            logger.error(f"独白引擎初始化失败: {e}")
-            raise RuntimeError(f"独白引擎初始化失败，无法继续: {e}")
-        
-        # 初始化思维流引擎
-        try:
-            self.thought_flow_engine = ThoughtFlowEngine(
-                model_interface=self.model,
-                hippocampus_system=self.hippocampus,  # 传入海马体系统
-                stdp_engine=self.stdp_engine,        # 传入STDP引擎
-                refresh_cycle=0.8,
-                chunk_size=20,  # 生产级配置
-                context_window=5
-            )
-            print("[BrainAI] [OK] 思维流引擎已初始化（集成海马体+STDP）")
-        except Exception as e:
-            logger.error(f"思维流引擎初始化失败: {e}")
-            raise RuntimeError(f"思维流引擎初始化失败，无法继续: {e}")
+            logger.error(f"内心思维独白引擎初始化失败: {e}")
+            raise RuntimeError(f"内心思维独白引擎初始化失败，无法继续: {e}")
         
         # 启动海马体 SWR 监控
         try:
@@ -196,6 +181,18 @@ class BrainAIInterface:
         self._setup_hippocampus_gate()
         
         print("[BrainAI] [OK] 高级实现模块集成完成\n")
+    
+    # ==================== 兼容性属性 ====================
+    
+    @property
+    def monologue_engine(self):
+        """兼容性属性: 返回统一的内心思维独白引擎"""
+        return self.inner_thought_engine
+    
+    @property
+    def thought_flow_engine(self):
+        """兼容性属性: 返回统一的内心思维独白引擎"""
+        return self.inner_thought_engine
     
     def _setup_hippocampus_gate(self):
         """设置海马体门控，让CA1门控信号影响注意力"""
@@ -782,8 +779,8 @@ class BrainAIInterface:
         except: pass
         
         # 所有核心模块应该都已初始化
-        if not self.monologue_engine:
-            raise RuntimeError("独白引擎未初始化")
+        if not self.inner_thought_engine:
+            raise RuntimeError("内心思维独白引擎未初始化")
         
         return {
             'hippocampus': self.hippocampus.ca3_memory.get_stats() if hasattr(self.hippocampus, 'ca3_memory') else {},
@@ -942,12 +939,12 @@ class BrainAIInterface:
     
     def get_quick_response(self, user_input: str = "") -> str:
         """获取快速响应填充词"""
-        if not self.thought_flow_engine:
-            raise RuntimeError("思维流引擎未初始化，无法生成快速响应")
-        return self.thought_flow_engine.get_quick_response(user_input)
+        if not self.inner_thought_engine:
+            raise RuntimeError("内心思维独白引擎未初始化，无法生成快速响应")
+        return self.inner_thought_engine.get_quick_response(user_input)
     
     def get_thought_flow_stats(self) -> dict:
         """获取思维流统计"""
-        if not self.thought_flow_engine:
-            raise RuntimeError("思维流引擎未初始化，无法获取统计信息")
-        return self.thought_flow_engine.get_stats()
+        if not self.inner_thought_engine:
+            raise RuntimeError("内心思维独白引擎未初始化，无法获取统计信息")
+        return self.inner_thought_engine.get_stats()
