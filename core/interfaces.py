@@ -131,8 +131,16 @@ class BrainAIInterface:
         # 状态文件路径
         self.state_path = "brain_state.pt"
         
-        # 尝试加载现有状态，如果失败则执行创世注入
-        if not self.load_state(self.state_path):
+        # ========== 优化：避免重复加载模型权重 ==========
+        # 检查是否存在已保存的状态文件
+        import os
+        if os.path.exists(self.state_path):
+            # 如果存在，只加载动态权重部分，不重复加载基础模型
+            print(f"[BrainAI] 检测到已保存的意识状态: {self.state_path}")
+            print(f"[BrainAI] 跳过重复加载基础模型，仅恢复学习成果...")
+            self._load_dynamic_weights_only(self.state_path)
+        else:
+            # 如果不存在，执行创世注入
             self._seed_genesis_memory()
         
         # 注入唤醒记忆
@@ -810,10 +818,17 @@ class BrainAIInterface:
         }
 
     def save_state(self, path: str):
-        print(f"[BrainAI] 正在固化记忆与意识状态...")
+        """保存状态 - 优化版本：只保存动态权重，不重复保存基础模型"""
+        print(f"[BrainAI] 正在固化记忆与学习成果...")
         try:
+            # 只保存动态权重部分
+            dynamic_weights = {}
+            for name, param in self.model.model.named_parameters():
+                if 'dynamic_weight' in name:
+                    dynamic_weights[name] = param.data.clone()
+            
             state = {
-                'model_state_dict': self.model.model.state_dict(),
+                'dynamic_weights': dynamic_weights,  # 只保存动态权重
                 'adapter_state_dict': self.feature_adapter.state_dict(),
                 'adapter_optimizer_state_dict': self.adapter_optimizer.state_dict(),
                 'hippocampus_state': self.hippocampus.get_state(),
@@ -823,8 +838,77 @@ class BrainAIInterface:
                 'current_thought_state': self.current_thought_state
             }
             torch.save(state, path)
-            print(f"[BrainAI] [OK] 完整状态已保存到: {path}")
-        except Exception as e: logger.error(f"状态保存失败: {e}")
+            
+            # 计算保存的大小
+            import os
+            file_size_mb = os.path.getsize(path) / (1024 * 1024)
+            print(f"[BrainAI] [OK] 学习成果已保存到: {path}")
+            print(f"[BrainAI] [INFO] 文件大小: {file_size_mb:.2f} MB (仅动态权重)")
+        except Exception as e:
+            logger.error(f"状态保存失败: {e}")
+
+    def _load_dynamic_weights_only(self, path: str) -> bool:
+        """只加载动态权重部分，避免重复加载基础模型权重"""
+        try:
+            import os
+            if not os.path.exists(path):
+                return False
+            
+            print(f"[BrainAI] 正在从 {path} 恢复学习成果...")
+            state = torch.load(path, map_location=self.device, weights_only=False)
+            
+            # 新格式：dynamic_weights 字典
+            if 'dynamic_weights' in state:
+                dynamic_weights = state['dynamic_weights']
+                restored_count = 0
+                
+                for name, param in self.model.model.named_parameters():
+                    if name in dynamic_weights:
+                        param.data.copy_(dynamic_weights[name])
+                        restored_count += 1
+                
+                print(f"[BrainAI] [OK] 已恢复 {restored_count} 个动态权重层")
+            
+            # 兼容旧格式：model_state_dict
+            elif 'model_state_dict' in state:
+                model_state = state['model_state_dict']
+                
+                # 只加载动态权重层（避免覆盖静态权重）
+                restored_count = 0
+                for name, param in self.model.model.named_parameters():
+                    if 'dynamic_weight' in name and name in model_state:
+                        param.data.copy_(model_state[name])
+                        restored_count += 1
+                
+                print(f"[BrainAI] [OK] 已恢复 {restored_count} 个动态权重层（兼容模式）")
+            
+            # 恢复其他状态
+            if 'adapter_state_dict' in state:
+                self.feature_adapter.load_state_dict(state['adapter_state_dict'])
+            if 'adapter_optimizer_state_dict' in state:
+                self.adapter_optimizer.load_state_dict(state['adapter_optimizer_state_dict'])
+            
+            # 重置推理引擎内部缓存组件
+            for name, module in self.model.model.base_model.named_modules():
+                if hasattr(module, '_cache_valid'):
+                    module._cache_valid = False
+            
+            if 'hippocampus_state' in state:
+                self.hippocampus.set_state(state['hippocampus_state'])
+            if 'monologue_history' in state:
+                self.monologue_history = state['monologue_history']
+            if 'cycle_count' in state:
+                self.cycle_count = state['cycle_count']
+            if 'total_stdp_updates' in state:
+                self.total_stdp_updates = state['total_stdp_updates']
+            if 'current_thought_state' in state:
+                self.current_thought_state = state['current_thought_state']
+            
+            print(f"[BrainAI] [OK] 学习成果恢复完成")
+            return True
+        except Exception as e:
+            logger.error(f"动态权重加载失败: {e}。将重新初始化。")
+            return False
 
     def load_state(self, path: str) -> bool:
         try:
