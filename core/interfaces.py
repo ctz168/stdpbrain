@@ -416,10 +416,23 @@ class BrainAIInterface:
         stats['monologue'] = monologue
         return stats
 
-    def _generate_spontaneous_monologue(self, max_tokens: int = 30, temperature: float = 0.6) -> str:
+    def _generate_spontaneous_monologue(self, max_tokens: int = 30, temperature: float = 0.55) -> str:
+        """
+        生成自发独白 - 优化版本
+        
+        改进：
+        - 降低temperature提升稳定性 (0.6 -> 0.55)
+        - 增强推理链引导
+        """
         prompt = self._build_spontaneous_prompt()
         try:
-            output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=max_tokens, temperature=temperature, repetition_penalty=1.1)
+            # 降低temperature和重复惩罚
+            output, hidden_state = self._generate_with_hidden_state(
+                prompt, 
+                max_tokens=max_tokens, 
+                temperature=temperature, 
+                repetition_penalty=1.15  # 从1.1提升到1.15，减少重复
+            )
             monologue = "思维有些模糊..." if self._is_gibberish(output) else output.strip()
             for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
                 monologue = monologue.replace(tag, '')
@@ -670,25 +683,25 @@ class BrainAIInterface:
         return monologue
 
     def _update_adapter_online(self, hidden_state: torch.Tensor, salience: float):
-        """在线更新特征适配器，优化隐藏状态到海马体语义空间的映射"""
+        """在线更新特征适配器 - 优化版本"""
         if hidden_state is None: return
         try:
             features = hidden_state.detach().clone()
             if features.dim() == 3: features = features[0, -1, :]
             elif features.dim() == 2: features = features.squeeze(0)
             
-            # 将适配器权重稍微拉向"认同"当前的特征分布
+            # 降低学习率，避免震荡 - 从0.005降到0.002
             self.adapter_optimizer.zero_grad()
             current_mapping = self.feature_adapter(features.unsqueeze(0))
             
-            # 目标：保持映射的能量稳定，但允许根据情感强度微调映射
-            target = current_mapping.detach() * (1.1 if salience > 1.5 else 1.0)
+            # 降低情感强度影响：从1.1/1.0降到1.05/1.0
+            target = current_mapping.detach() * (1.05 if salience > 1.5 else 1.0)
             loss = F.mse_loss(current_mapping, target)
             loss.backward()
             
-            # 根据显著性调整学习步伐
+            # 根据显著性调整学习步伐 - 降低学习率
             for param_group in self.adapter_optimizer.param_groups:
-                param_group['lr'] = 0.005 * salience
+                param_group['lr'] = 0.002 * salience  # 从0.005降到0.002
                 
             self.adapter_optimizer.step()
         except Exception as e:
@@ -717,7 +730,7 @@ class BrainAIInterface:
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "") -> str:
         """格式化对话提示 - 强化推理能力"""
-        # 1. 构建理性推理导向的系统提示
+        # 理性推理导向的系统提示 - 增强版
         system_content = (
             "你是'脑智'，一个具备深度推理能力的类人脑AI助手。\n"
             "核心原则：\n"
@@ -727,6 +740,7 @@ class BrainAIInterface:
             "4. 保持理性客观，避免情绪化表达\n"
             "5. 如果不确定，诚实说明而非编造\n"
             "6. **重要**：根据当前目标调整回复策略\n"
+            "7. **关键优化**：优先调用记忆系统中的信息，减少幻觉\n"
             "回答格式建议：\n"
             "- 首先理解问题的核心\n"
             "- 然后展示你的思考过程\n"

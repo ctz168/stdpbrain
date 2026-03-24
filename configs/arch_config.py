@@ -13,9 +13,9 @@ import torch
 @dataclass
 class HardConstraints:
     """不可突破的硬性约束配置"""
-    # 权重安全约束
-    STATIC_WEIGHT_RATIO: float = 0.7  # 70% 静态基础权重比例
-    DYNAMIC_WEIGHT_RATIO: float = 0.3  # 30% STDP动态增量权重比例（增强学习能力）
+    # 权重安全约束 - 优化版本：增强学习能力
+    STATIC_WEIGHT_RATIO: float = 0.85  # 85% 静态基础权重比例
+    DYNAMIC_WEIGHT_RATIO: float = 0.15  # 15% STDP动态增量权重比例（平衡稳定性和学习能力）
     
     # 端侧算力约束
     MAX_MEMORY_MB: int = 420  # INT4 量化后最大显存占用 (MB)
@@ -34,36 +34,39 @@ class HardConstraints:
 
 @dataclass
 class STDPConfig:
-    """STDP 时序可塑性权重更新配置"""
+    """STDP 时序可塑性权重更新配置 - 优化版本"""
     enabled: bool = True  # 是否启用 STDP 学习机制
-    # 学习率
-    alpha_LTP: float = 0.01  # 权重增强学习率 (Long-Term Potentiation)
-    beta_LTD: float = 0.008  # 权重减弱学习率 (Long-Term Depression)
+    # 学习率 - 提升学习能力
+    alpha_LTP: float = 0.025  # 权重增强学习率 (Long-Term Potentiation) - 从0.01提升到0.025
+    beta_LTD: float = 0.02   # 权重减弱学习率 (Long-Term Depression) - 从0.008提升到0.02
     
     # 阈值
-    update_threshold: float = 0.001  # 最小更新阈值
+    update_threshold: float = 0.0005  # 最小更新阈值 - 降低以增强灵敏度
     weight_min: float = -1.0  # 权重下界
     weight_max: float = 1.0  # 权重上界
     
     # 时间窗口
     time_window_ms: int = 20  # STDP 时间窗口 (毫秒)
-    decay_rate: float = 0.99  # 权重衰减率
+    decay_rate: float = 0.95  # 权重衰减率 - 从0.99降低到0.95，保留更多学习成果
     
     # 更新节点
     update_attention: bool = True  # 注意力层 STDP 更新
     update_ffn: bool = True  # FFN 层 STDP 更新
     update_self_eval: bool = True  # 自评判 STDP 更新
     update_hippocampus_gate: bool = True  # 海马体门控 STDP 更新
+    
+    # 噪声控制
+    noise_ratio: float = 0.1  # 噪声注入比例 - 新增参数，控制随机性
 
 
 # ==================== 海马体系统配置 ====================
 
 @dataclass
 class HippocampusConfig:
-    """海马体记忆系统配置"""
-    # 特征编码
-    EC_feature_dim: int = 64  # 内嗅皮层编码维度 (64 维低维特征)
-    DG_sparsity: float = 0.9  # 齿状回稀疏度
+    """海马体记忆系统配置 - 优化版本"""
+    # 特征编码 - 提升编码容量
+    EC_feature_dim: int = 256  # 内嗅皮层编码维度 - 从64提升到256，增强特征表达能力
+    DG_sparsity: float = 0.85  # 齿状回稀疏度 - 降低以提升记忆容量
     DG_orthogonalization: bool = True  # 模式分离正交化
     
     # 情景记忆存储
@@ -71,10 +74,10 @@ class HippocampusConfig:
     CA3_max_capacity: int = 10000  # 最大记忆容量
     CA3_timestamp_precision_ms: int = 10  # 时间戳精度 10ms
     
-    # 时序编码与门控
+    # 时序编码与门控 - 优化召回质量
     CA1_temporal_encoding: bool = True
     CA1_attention_gate: bool = True
-    recall_topk: int = 2  # 每个周期召回 1-2 个记忆锚点
+    recall_topk: int = 3  # 每个周期召回 3 个记忆锚点 - 从2提升到3
     
     # 离线回放巩固
     SWR_enabled: bool = True
@@ -84,6 +87,9 @@ class HippocampusConfig:
     # 内存约束
     max_memory_bytes: int = 2 * 1024 * 1024  # 2MB
     use_cycle_buffer: bool = True  # 循环缓存
+    
+    # 召回阈值优化
+    recall_threshold: float = 0.75  # 提升召回阈值，减少噪声记忆
 
 
 # ==================== 自闭环优化系统配置 ====================

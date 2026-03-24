@@ -194,21 +194,34 @@ class HippocampusSystem(nn.Module):
         if query_features.dim() == 1:
             query_features = query_features.unsqueeze(0)
         
-        # ========== 2. EC 编码 (复用编码路径) ==========
+        # ========== 1. EC 编码 (复用编码路径) ==========
         ec_code = self.ec_encoder.encode_single(query_features.squeeze(0))
         
-        # ========== 3. DG 分离 ==========
+        # ========== 2. DG 分离 ==========
         dg_features = self.dg_separator.forward(ec_code)
         
-        # ========== 4. CA3 模式补全召回 ==========
+        # ========== 3. CA3 模式补全召回 ==========
+        # 优化召回策略：提升召回质量
+        recall_threshold = getattr(self.config.hippocampus, 'recall_threshold', 0.75)
+        
         memories = self.ca3_memory.complete_pattern(
             partial_cue={
                 'features': dg_features,
                 'semantic': query_semantic,
                 'timestamp': query_timestamp
             },
-            topk=topk * 2  # 多召回一些，后续排序
+            topk=topk * 3  # 多召回一些，后续过滤
         )
+        
+        # ========== 4. 过滤低质量记忆 ==========
+        if hasattr(self.config.hippocampus, 'recall_threshold'):
+            filtered_memories = []
+            for mem in memories:
+                # 计算相似度（如果有存储）
+                if hasattr(mem, 'activation_strength') and mem.activation_strength < recall_threshold:
+                    continue
+                filtered_memories.append(mem)
+            memories = filtered_memories[:topk * 2]  # 保留前topk*2个
         
         # ========== 5. CA1 时序排序 ==========
         current_timestamp = int(time.time() * 1000)

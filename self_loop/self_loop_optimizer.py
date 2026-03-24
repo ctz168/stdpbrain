@@ -792,17 +792,17 @@ class SelfLoopOptimizer:
         return detailed_scores
     
     def _evaluate_fact_accuracy(self, candidate: str, input_text: str) -> float:
-        """评估事实准确性 (0-10)"""
+        """评估事实准确性 (0-10) - 增强版"""
         score = 7.0  # 基础分
         
         # 检查明显的错误标记
-        error_indicators = ['错误', '不对', 'incorrect', 'wrong']
+        error_indicators = ['错误', '不对', 'incorrect', 'wrong', '失误', '失败']
         for indicator in error_indicators:
             if indicator in candidate.lower():
                 score -= 2.0
         
         # 检查不确定性表达
-        uncertainty_indicators = ['可能', '也许', 'maybe', 'perhaps']
+        uncertainty_indicators = ['可能', '也许', 'maybe', 'perhaps', '大概', '或许']
         uncertainty_count = sum(candidate.count(ind) for ind in uncertainty_indicators)
         score -= min(uncertainty_count * 0.3, 1.5)  # 最多扣 1.5 分
         
@@ -812,19 +812,29 @@ class SelfLoopOptimizer:
         if len(numbers) > 0:
             score += 0.5  # 有数据支持加分
         
+        # 新增：检查是否有引用来源
+        citation_patterns = ['根据', '依据', '参考', '来源', 'according to', 'based on']
+        has_citation = any(pattern in candidate for pattern in citation_patterns)
+        if has_citation:
+            score += 1.0  # 有引用来源加分
+        
+        # 新增：检查逻辑一致性
+        if '因为' in candidate and '所以' in candidate:
+            score += 0.5  # 有完整因果关系
+        
         return max(0.0, min(10.0, score))
     
     def _evaluate_logic_completeness(self, candidate: str) -> float:
-        """评估逻辑完整性 (0-10)"""
+        """评估逻辑完整性 (0-10) - 增强版"""
         score = 7.0
         
         # 检查逻辑连接词
-        logic_connectors = ['因为', '所以', '因此', '由于', 'because', 'therefore', 'thus']
+        logic_connectors = ['因为', '所以', '因此', '由于', 'because', 'therefore', 'thus', '首先', '其次', '最后', '然后', '接着']
         connector_count = sum(candidate.count(c) for c in logic_connectors)
         score += min(connector_count * 0.3, 1.5)
         
         # 检查是否有明确的结论
-        conclusion_indicators = ['总之', '综上所述', '结论', 'in conclusion', 'therefore']
+        conclusion_indicators = ['总之', '综上所述', '结论', 'in conclusion', 'therefore', '总结', '归纳']
         has_conclusion = any(ind in candidate.lower() for ind in conclusion_indicators)
         if has_conclusion:
             score += 0.5
@@ -832,6 +842,15 @@ class SelfLoopOptimizer:
         # 检查段落结构
         if len(candidate) > 100 and '\n' in candidate:
             score += 0.5  # 有结构化分段
+        
+        # 新增：检查推理步骤数量
+        reasoning_steps = ['首先', '其次', '第三', '最后', '第一步', '第二步', 'step 1', 'step 2']
+        step_count = sum(1 for step in reasoning_steps if step in candidate)
+        score += min(step_count * 0.3, 1.0)  # 每个推理步骤加分
+        
+        # 新增：检查是否有条件推理
+        if '如果' in candidate and '那么' in candidate:
+            score += 0.5  # 完整的条件推理
         
         return max(0.0, min(10.0, score))
     
