@@ -439,9 +439,13 @@ class QwenInterface:
     
 
     def set_reward(self, reward: float):
-        """设置反馈奖励 (来自优化器) - 使用 stderr 避免干扰 stdout 流式输出"""
+        """设置反馈奖励 (来自优化器) - 写入日志文件，避免干扰终端输出"""
         self._last_reward = max(0.1, min(2.0, reward))
-        sys.stderr.write(f"\n[QwenInterface] 接收新奖励反馈: {self._last_reward:.2f}\n")
+        try:
+            with open("brain_debug.log", "a", encoding="utf-8") as f:
+                f.write(f"[STDP] 接收新奖励反馈: {self._last_reward:.2f}\n")
+        except:
+            pass
         sys.stderr.flush()
 
     def forward_step(

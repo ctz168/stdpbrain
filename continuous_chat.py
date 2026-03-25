@@ -127,12 +127,21 @@ class ContinuousThoughtFlowSession:
             print("\n[内心思维] ", end="", flush=True)
             
             # 使用流式生成
+            generated_any = False
             for char in self.ai.inner_thought_engine.generate_inner_thought(max_tokens=30):
                 if self._pause_event.is_set():
                     break
+                # 简单的噪音过滤：不显示孤立的特殊符号
+                if not generated_any and char in [" ", "|", "<", ">", "-", " "]:
+                    continue
+                
                 print(char, end="", flush=True)
+                generated_any = True
                 self.total_chars += 1
                 time.sleep(random.uniform(*self.char_interval))
+            
+            if not generated_any:
+                print("...", end="", flush=True)
             print()
             
         except Exception as e:

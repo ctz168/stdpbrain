@@ -345,6 +345,15 @@ class InnerThoughtEngine:
         
         elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
             # 直接使用模型生成
+            # 获取当前的 lead_in 以便后续净化
+            leads = {
+                MindState.FOCUSED: "如果从深层逻辑来看，我发现",
+                MindState.WANDERING: "说起来，我刚才突然想到",
+                MindState.REFLECTING: "但我刚才思考的角度真的对吗？我得重新审视一下：",
+                MindState.RESTING: "……其实，我现在的感觉是"
+            }
+            lead_in = leads.get(self.mind_state, "我现在的想法是：")
+            
             thought_context = self._build_thought_context(external_stimulus)
             inputs = self.model.tokenizer(thought_context, return_tensors="pt")
             device = getattr(self.model, 'device', 'cpu')
@@ -354,10 +363,10 @@ class InnerThoughtEngine:
                 outputs = self.model.model.generate(
                     **inputs,
                     max_new_tokens=max_tokens,
-                    temperature=0.9,
+                    temperature=0.8,         # 稍微降低一点随机度
                     do_sample=True,
                     top_p=0.9,
-                    repetition_penalty=1.3  # 防止重复
+                    repetition_penalty=1.5  # 增加重复惩罚
                 )
             
             # 解码并输出
@@ -368,8 +377,15 @@ class InnerThoughtEngine:
             else:
                 new_text = result
             
-            # 净化：过滤掉 <think>...</think> 块、编号列表、以及常见的循环噪音符号 (如 -, *, .)
-            new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.DOTALL)
+            # 净化：过滤各种 hallucinated tags (如 |inner_monologue|, |output|, <Think>等)
+            new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.IGNORECASE | re.DOTALL)
+            new_text = re.sub(r'\|.*?\|', '', new_text) 
+            new_text = re.sub(r'<\|.*?\|>', '', new_text)
+            
+            # 过滤掉回显的 lead_in (防止模型只是重复了 prompt 的最后一句)
+            if new_text.startswith(lead_in):
+                new_text = new_text[len(lead_in):].strip()
+            
             # 过滤各种列表/引导符：1. 1、 - * 等
             new_text = re.sub(r'^\s*[\d\-\*\u2022]+\.?[\u3001,]?\s*', '', new_text.strip())
             new_text = new_text.strip('.- \n\t') # 去掉首尾多余的点、横杠和空白
@@ -438,7 +454,7 @@ class InnerThoughtEngine:
         }
         lead_in = leads.get(self.mind_state, "我现在的想法是：")
         
-        full_context = "\n".join(context_parts) + "\n\n<|inner_monologue|>\n" + lead_in
+        full_context = "\n".join(context_parts) + "\n\n【我的内心独白】：\n" + lead_in
         return full_context
 
     
