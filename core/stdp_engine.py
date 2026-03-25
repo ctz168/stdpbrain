@@ -142,7 +142,7 @@ class FullLinkSTDP:
         is_tool_call: bool = False
     ):
         """注意力层 STDP 更新 (支持奖励和工具调用强化)"""
-        if not self.config.stdp.update_attention:
+        if not self.config.stdp.update_attention or attention_layer is None:
             return
             
         current_token_tensor = torch.tensor([current_token], device=self.device)
@@ -195,7 +195,7 @@ class FullLinkSTDP:
         对当前任务、当前会话的高频特征、专属术语、
         用户习惯表达，自动增强对应 FFN 层的动态权重
         """
-        if not self.config.stdp.update_ffn:
+        if not self.config.stdp.update_ffn or ffn_layer is None:
             return
         
         # 记录激活时间

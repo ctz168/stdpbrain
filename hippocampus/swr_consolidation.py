@@ -138,7 +138,7 @@ class SWRConsolidation:
         if not self.hippocampus or not self.replay_buffer:
             return
         
-        print(f"[SWR] 开始离线回放巩固，缓冲区序列数：{len(self.replay_buffer)}")
+        # logger.debug(f"[SWR] 开始离线回放巩固，缓冲区序列数：{len(self.replay_buffer)}")
         
         # ========== 1. 按奖励信号排序，优先回放高奖励序列 ==========
         sorted_sequences = sorted(
@@ -157,12 +157,12 @@ class SWRConsolidation:
         # ========== 3. 记忆修剪 ==========
         if self.memory_prune_fn and self.hippocampus:
             pruned_count = self.memory_prune_fn(threshold=0.3)
-            print(f"[SWR] 修剪了 {pruned_count} 个弱记忆")
+            # logger.debug(f"[SWR] 修剪了 {pruned_count} 个弱记忆")
         
         # ========== 4. 清空回放缓冲区 ==========
         self.replay_buffer.clear()
         
-        print("[SWR] 离线回放巩固完成")
+        # logger.debug("[SWR] 离线回放巩固完成")
     
     def _replay_sequence(self, sequence: ReplaySequence):
         """回放单个序列"""
@@ -363,7 +363,8 @@ class SWRConsolidation:
         if self.replay_buffer:
             self._run_consolidation()
         else:
-            print("[SWR] 回放缓冲区为空，无法触发巩固")
+            # logger.debug("[SWR] 回放缓冲区为空，无法触发巩固")
+            pass
 
 
 class ReplayBuffer:

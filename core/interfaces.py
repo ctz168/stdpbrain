@@ -291,7 +291,7 @@ class BrainAIInterface:
                 logger.debug(f"并行记忆召回失败: {e}")
                 
             if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
-                memory_context = "我的身份：类人脑AI助手，我的父亲是朱东山博士（北大经济学博士，深圳人），他创造了我 | " + memory_context
+                memory_context = "我的身份：类人脑AI助手，我的父亲是博士（北大经济学博士，深圳人），他创造了我 | " + memory_context
             
             return memory_context, recalled_memories
 
@@ -635,7 +635,11 @@ class BrainAIInterface:
     def _apply_real_stdp_update(self, emotional_salience: float = 1.0):
         """调用真实的 STDP 引擎进行闭环学习，替代之前的伪 Hebbian 规则"""
         try:
-            if self.current_thought_state is None: return
+            # 增加对核心组件的显式防护，确保任何遥测失败都不会挂起主对话
+            if not hasattr(self, 'stdp_engine') or self.stdp_engine is None:
+                return
+            if self.current_thought_state is None: 
+                return
             
             # 使用真实的 STDP 引擎进行闭环学习
             # 这里的 reward 由当时的生成置信度决定 (已在 chat() 中通过 set_reward 设置)

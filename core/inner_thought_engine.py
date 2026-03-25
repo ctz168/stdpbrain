@@ -345,14 +345,22 @@ class InnerThoughtEngine:
         
         elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
             # 直接使用模型生成
-            # 获取当前的 lead_in 以便后续净化
+            # 改进：多样化引导词池，彻底斩断前置词引起的复读循环
             leads = {
-                MindState.FOCUSED: "如果从深层逻辑来看，我发现",
-                MindState.WANDERING: "说起来，我刚才突然想到",
-                MindState.REFLECTING: "但我刚才思考的角度真的对吗？我得重新审视一下：",
-                MindState.RESTING: "……其实，我现在的感觉是"
+                MindState.FOCUSED: ["如果从深层逻辑来看，我发现", "仔细推导的话，我认为", "这种逻辑结构让我意识到"],
+                MindState.WANDERING: ["说起来，我刚才突然想到", "也许...", "或者说...", "换个角度看...", "我感觉我刚才在想"],
+                MindState.REFLECTING: ["但我刚才思考的角度真的对吗？我得重新审视一下：", "我刚才是不是陷入了某种思维惯性？", "重新评估目前的状况："],
+                MindState.RESTING: ["……其实，我现在的感觉是", "大脑稍微放松了一点，感觉", "完全静下来的时候，我发现", "刚才那一瞬间，我仿佛"]
             }
-            lead_in = leads.get(self.mind_state, "我现在的想法是：")
+            lead_in_list = leads.get(self.mind_state, ["我现在的想法是："])
+            lead_in = random.choice(lead_in_list)
+            
+            # 改进：如果检测到循环并进入了发散模式，大幅提升惩罚系数以强制变轨 (High-Entropy Recovery)
+            current_temp = 0.8
+            current_penalty = 1.5
+            if self.mind_state == MindState.WANDERING:
+                current_temp = 1.2
+                current_penalty = 2.0 # 极高惩罚强制破坏复读链路
             
             thought_context = self._build_thought_context(external_stimulus)
             inputs = self.model.tokenizer(thought_context, return_tensors="pt")
@@ -363,10 +371,10 @@ class InnerThoughtEngine:
                 outputs = self.model.model.generate(
                     **inputs,
                     max_new_tokens=max_tokens,
-                    temperature=0.8,         # 稍微降低一点随机度
+                    temperature=current_temp,
                     do_sample=True,
                     top_p=0.9,
-                    repetition_penalty=1.5  # 增加重复惩罚
+                    repetition_penalty=current_penalty
                 )
             
             # 解码并输出
@@ -400,27 +408,30 @@ class InnerThoughtEngine:
 
                 is_repetition = False
                 if self.last_thought and len(self.last_thought) > 5 and len(new_text) > 5:
-                    # 1. 直接包含检测 (需有一定长度，防止误杀短句)
-                    if (new_text in self.last_thought or self.last_thought in new_text) and len(new_text) > 10:
-                        is_repetition = True
-                    # 2. 字符重合率检测
-                    elif get_overlap_ratio(new_text, self.last_thought) > 0.85:
-                        is_repetition = True
-                    # 3. 内部自我重复检测 (n-gram) - 收紧检测长度与频次
-                    elif len(new_text) > 15:
-                        # 增加片段长度从 8 到 12，但只要出现 > 1 次即触发 (捕获双重循环)
-                        for i in range(len(new_text) - 13):
-                            fragment = new_text[i:i+12]
-                            if new_text.count(fragment) > 1:
-                                is_repetition = True
-                                break
-                        # 额外捕获短片段的高频循环 (如 "那么如果...")
-                        if not is_repetition:
-                            for i in range(len(new_text) - 7):
-                                fragment = new_text[i:i+6]
-                                if new_text.count(fragment) > 3: # 极短片段允许一定频次，但超限即断
+                    # 核心净化：移除标点符号、换行符、Markdown 符号 (针对 **存在一种更深层的矛盾**)
+                    clean_new = re.sub(r'[^\w\u4e00-\u9fa5]', '', new_text)
+                    clean_last = re.sub(r'[^\w\u4e00-\u9fa5]', '', self.last_thought)
+                    
+                    if len(clean_new) > 5:
+                        # 1. 直接包含检测 (需有一定长度，防止误杀短句)
+                        if (clean_new in clean_last or clean_last in clean_new) and len(clean_new) > 10:
+                            is_repetition = True
+                        # 2. 字符重合率检测
+                        elif get_overlap_ratio(clean_new, clean_last) > 0.85:
+                            is_repetition = True
+                        # 3. 内部自我重复检测 (n-gram) - 在清洗后的文本中捕捉结构化重复
+                        elif len(clean_new) > 15:
+                            for i in range(len(clean_new) - 13):
+                                fragment = clean_new[i:i+12]
+                                if clean_new.count(fragment) > 1:
                                     is_repetition = True
                                     break
+                            if not is_repetition:
+                                for i in range(len(clean_new) - 7):
+                                    fragment = clean_new[i:i+6]
+                                    if clean_new.count(fragment) > 3:
+                                        is_repetition = True
+                                        break
 
                 if is_repetition:
                     # 触发状态强制偏移

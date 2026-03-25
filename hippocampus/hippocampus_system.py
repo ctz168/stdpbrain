@@ -382,6 +382,11 @@ class HippocampusSystem(nn.Module):
         """停止 SWR 监控"""
         self.swr_consolidation.stop_monitoring()
     
+    def trigger_swr_consolidation(self):
+        """手动触发海马体 SWR 记忆巩固"""
+        if hasattr(self, 'swr_consolidation'):
+            self.swr_consolidation.trigger_manual_consolidation()
+
     def record_activity(self):
         """记录用户活动 (重置空闲计时器)"""
         self.swr_consolidation.record_activity()
