@@ -1052,20 +1052,19 @@ class BrainAIInterface:
                 title, text = parts[0].strip(), parts[1].strip()
                 if not text: continue
                 
-                # 为每个块生成一个思考片段，增强记忆深度
-                prompt = f"关于'{title}'的定义：{text[:50]}"
-                # 使用更高的惩罚防止重复
-                output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=35, repetition_penalty=1.6)
+                # 优化：在 CPU 环境下，创世注入时不进行实时生成思考，避免加载卡死
+                # 直接将原文注入海马体
+                self._store_with_real_features(
+                    f"{title}: {text}", 
+                    None, 
+                    is_core=True, 
+                    semantic_pointer=f"知识:{title}"
+                )
                 
-                # 存储原文
-                self._store_with_real_features(f"{title}: {text}", hidden_state, is_core=True, semantic_pointer=f"知识:{title}")
-                # 存储基于原文的自我思考
-                if output and len(output) > 5:
-                    self._store_with_real_features(f"我对{title}的理解: {output}", hidden_state, is_core=True, semantic_pointer=f"认知:{title}")
-                
-                if hidden_state is not None: 
-                    self.current_thought_state = hidden_state
                 count += 1
+                # 打印进度，避免用户以为卡死
+                if count % 2 == 0:
+                    print(f"[BrainAI] 注入进度: {count}/{len(blocks)-1}...")
             
             print(f"[BrainAI] [OK] 创世记忆注入完成，共注入 {count} 个知识块")
         except Exception as e: 

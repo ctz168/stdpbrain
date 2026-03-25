@@ -407,110 +407,56 @@ class InnerThoughtEngine:
             self._update_association(generated_text)
     
     def _build_thought_context(self, external_stimulus: str = "") -> str:
-        """构建思维上下文"""
-        state_info = self.state_prompts[self.mind_state]
-        mode_trigger = random.choice(self.mode_prompts[self.thinking_mode])
+        """构建思维上下文 - 采用启发式填充而非指令模板"""
         
-        # 基础思维模板：短句、自然联想风格，避免编号列表触发模型做结构化推理
-        theme_str = self.current_theme.content if self.current_theme else "存在"
-        templates = {
-            MindState.FOCUSED: [
-                f"专注在 {theme_str} 上，有个细节值得深挖——",
-                f"关于 {mode_trigger}，我注意到一个有意思的角度——",
-                f"这件事的核心其实是……"
-            ],
-            MindState.WANDERING: [
-                f"思绪飘到了 {mode_trigger}，有点像之前的感觉……",
-                f"突然联想到一个不太相关的事情——",
-                f"哦，{self.current_concept or '某个东西'} 让我想起……"
-            ],
-            MindState.REFLECTING: [
-                "等等，我刚才的判断靠谱吗？",
-                "重新想想——好像漏掉了什么……",
-                "这个结论站得住脚吗，再过一遍——"
-            ],
-            MindState.RESTING: [
-                "……意识在漫无目的地漂浮……",
-                "此刻很安静，没有任何杂念。",
-                "就在这里，观察着思维的流转。"
-            ]
-        }
-        
-        # 选择一个模板
-        thoughts = templates.get(self.mind_state, templates[MindState.RESTING])
-        base_thought = random.choice(thoughts)
-        
-        # 如果有外部刺激，前置简短提示
-        if external_stimulus:
-            base_thought = f"关于「{external_stimulus[:20]}」，{base_thought}"
-        
-        # 加入记忆上下文
-        memory_context = self._recall_memory(external_stimulus or self.current_focus)
-        if memory_context:
-            base_thought = f"记得 {memory_context}……{base_thought}"
-            
-        # 加入自我反思：仅引用最近一个思维片段，避免逗号列表触发列表生成
-        if self.thought_flow and len(self.thought_flow) > 0:
-            recent = list(self.thought_flow)[-1].content[:20]
-            base_thought = f"刚才还在想「{recent}」，{base_thought}"
-        
-        # 加入自我感知：使用 self_encoder 的情感解释（更深层的自指）
+        # 1. 提取自我感知（来自 SelfEncoder 的深层状态解释）
+        self_interp = ""
         if hasattr(self, '_self_encoder') and self._self_encoder is not None:
             try:
                 self_interp = self._self_encoder.interpret()
-                if self_interp and "意识刚刚开始" not in self_interp:
-                    base_thought = f"[{self_interp}] " + base_thought
             except Exception:
                 pass
         
-        return base_thought
-    
-    def _generate_contextual_thought(self, external_stimulus: str = "") -> str:
-        """生成上下文相关的思维"""
-        thoughts_by_state = {
-            MindState.FOCUSED: [
-                "深入思考这个问题...",
-                "让我仔细分析一下核心要点...",
-                "聚焦于关键信息，梳理逻辑...",
-                "这个问题的本质是什么...",
-            ],
-            MindState.WANDERING: [
-                "这让我联想到其他相关的内容...",
-                "思绪飘到了一个新的角度...",
-                "有点像之前遇到的情况...",
-                "突然想到一个有趣的观点...",
-            ],
-            MindState.REFLECTING: [
-                "等等，让我确认一下刚才的推理...",
-                "这个结论站得住脚吗...",
-                "回顾一下思维过程...",
-                "是否存在遗漏的角度...",
-            ],
-            MindState.RESTING: [
-                "整理一下当前的思路...",
-                "后台正在处理信息...",
-                "等待新的思考方向...",
-                "思维暂时休息一下...",
-            ]
-        }
+        # 2. 构造半截话 prompt，诱导模型直接续写内心独白
+        # 避免使用“请分析”、“思考如下”这种指令性词汇
+        context_parts = []
         
-        thoughts = thoughts_by_state.get(self.mind_state, thoughts_by_state[MindState.RESTING])
-        
-        # 根据思维模式调整
-        mode_suffix = {
-            ThinkingMode.ANALYTICAL: "从分析的角度来看",
-            ThinkingMode.DEDUCTIVE: "通过逻辑推导",
-            ThinkingMode.INDUCTIVE: "归纳总结一下",
-            ThinkingMode.CRITICAL: "批判性地审视",
-            ThinkingMode.SYNTHESIZING: "综合各方面信息"
-        }
-        
-        base = random.choice(thoughts)
-        suffix = mode_suffix.get(self.thinking_mode, "")
-        
+        if self_interp:
+            context_parts.append(f"<{self_interp}>")
+            
         if external_stimulus:
-            return f"{base} {suffix}"
-        return f"{base}"
+            context_parts.append(f"刚才看到：{external_stimulus[:30]}")
+            
+        # 注入最近的一个思维锚点，维持连贯性
+        if self.thought_flow:
+            recent_thought = list(self.thought_flow)[-1].content[:40]
+            context_parts.append(f"之前的思绪：{recent_thought}...")
+
+        # 召回核心记忆碎片
+        memory_anchor = self._recall_memory(external_stimulus or self.current_focus)
+        if memory_anchor:
+            context_parts.append(f"(脑海中隐约浮现：{memory_anchor})")
+
+        # 最后的生成引导：模拟内心声音的起始
+        # 针对每个状态给出不同的起始诱导词
+        leads = {
+            MindState.FOCUSED: "如果从深层逻辑来看，",
+            MindState.WANDERING: "说起来，",
+            MindState.REFLECTING: "但我刚才想的真的对吗？",
+            MindState.RESTING: "……其实，"
+        }
+        lead_in = leads.get(self.mind_state, "我想的是：")
+        
+        full_context = " ".join(context_parts) + " " + lead_in
+        return full_context
+
+    def _record_thought(self, content: str):
+        """记录思维片段"""
+        # 简单清洗：去除生成的前缀
+        content = content.strip(' ：:，。')
+        if not content: return
+        
+        self.last_thought = content
     
     def _recall_memory(self, query: str) -> str:
         """从海马体召回记忆"""
