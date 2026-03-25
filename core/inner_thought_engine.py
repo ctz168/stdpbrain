@@ -294,8 +294,14 @@ class InnerThoughtEngine:
         if external_stimulus:
             self._set_theme(external_stimulus[:50], importance=0.8)
         
-        # 3. 选择思维模式
-        self._select_thinking_mode(external_stimulus or self.current_focus)
+        # 3. 选择思维模式 (针对数学计算强制进入专注推导模式)
+        stimulus = external_stimulus or self.current_focus
+        is_math = bool(re.search(r'\d+\s*[+\-*/=]\s*\d+', stimulus))
+        if is_math:
+            self.mind_state = MindState.FOCUSED
+            self.thinking_mode = ThinkingMode.DEDUCTIVE
+        else:
+            self._select_thinking_mode(stimulus)
         
         # 4. 获取状态风格
         state_info = self.state_prompts[self.mind_state]
@@ -357,10 +363,10 @@ class InnerThoughtEngine:
             
             # 改进：如果检测到循环并进入了发散模式，大幅提升惩罚系数以强制变轨 (High-Entropy Recovery)
             current_temp = 0.8
-            current_penalty = 1.5
+            current_penalty = 1.2
             if self.mind_state == MindState.WANDERING:
                 current_temp = 1.2
-                current_penalty = 2.0 # 极高惩罚强制破坏复读链路
+                current_penalty = 1.8 # 极高惩罚强制破坏复读链路
             
             thought_context = self._build_thought_context(external_stimulus)
             inputs = self.model.tokenizer(thought_context, return_tensors="pt")
@@ -388,6 +394,7 @@ class InnerThoughtEngine:
             # 净化：过滤各种 hallucinated tags (如 |inner_monologue|, |output|, <Think>等)
             new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.IGNORECASE | re.DOTALL)
             new_text = re.sub(r'\|.*?\|', '', new_text) 
+            new_text = re.sub(r'【.*?】', '', new_text) # 过滤 【任务目标】这类方括号标签
             new_text = re.sub(r'<\|.*?\|>', '', new_text)
             
             # 过滤掉回显的 lead_in (强化正则过滤，处理空格或标点差异)
@@ -429,7 +436,7 @@ class InnerThoughtEngine:
                             if not is_repetition:
                                 for i in range(len(clean_new) - 7):
                                     fragment = clean_new[i:i+6]
-                                    if clean_new.count(fragment) > 3:
+                                    if clean_new.count(fragment) >= 3:
                                         is_repetition = True
                                         break
 

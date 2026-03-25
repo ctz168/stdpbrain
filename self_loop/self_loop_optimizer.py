@@ -98,7 +98,10 @@ class SelfLoopOptimizer:
         complexity_score = self._compute_complexity(input_text)
         
         # ========== 增强的决策逻辑 ==========
-        if has_difficulty_keyword or complexity_score > 0.7:
+        import re
+        is_math = bool(re.search(r'\d+\s*[+\-*/=]\s*\d+', input_lower))
+        
+        if is_math or has_difficulty_keyword or complexity_score > 0.7:
             # 数学、逻辑、代码等高难度任务或复杂问题 → 自博弈
             return "self_game"
         

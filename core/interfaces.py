@@ -269,7 +269,9 @@ class BrainAIInterface:
             memory_context = ""
             recalled_memories = []
             identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
-            is_identity_question = any(keyword in user_input for keyword in identity_keywords)
+            # 强化检查：如果包含数学符号或非常短，跳过身份偏差
+            is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
+            is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
             
             try:
                 input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
@@ -405,6 +407,8 @@ class BrainAIInterface:
                     logger.debug(f"自闭环优化: {mode} 置信度 {output_confidence:.2f} -> {optimized_result.confidence:.2f}")
                     output.text = optimized_result.output_text
                     output.confidence = optimized_result.confidence
+                    # 同步更新奖励给 STDP 引擎，实现高质量反馈的闭环
+                    self.model.set_reward(output.confidence)
             except Exception as e:
                 logger.warning(f"自闭环优化失败，使用原始输出: {e}")
         
@@ -553,7 +557,10 @@ class BrainAIInterface:
         ]
         mode_name, mode_desc = random.choice(reasoning_modes)
         
-        if self.thought_seed:
+        is_math = any(op in trigger for op in ['+', '-', '*', '/', '='])
+        if is_math:
+            system_msg = "你正在进行逻辑计算。用最直接的方式分析这个计算过程，不要发散。保持纯粹的理性。"
+        elif self.thought_seed:
             trigger = self.thought_seed
             system_msg = f"你是一个理性思维的AI。当前任务：{mode_desc}。用简洁的中文表达你的思考过程。保持逻辑性，不要情绪化表达。"
         elif self.monologue_history:
@@ -575,7 +582,7 @@ class BrainAIInterface:
             prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{trigger}<|im_end|>\n<|im_start|>assistant\n"
         return prompt
 
-    def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, repetition_penalty: float = 1.5) -> tuple:
+    def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, repetition_penalty: float = 1.2) -> tuple:
         try:
             # 使用 tokenizer 得到完整的 inputs（包含 attention_mask）
             inputs = self.model.tokenizer(prompt, return_tensors="pt").to(self.device)
