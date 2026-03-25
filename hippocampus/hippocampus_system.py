@@ -241,10 +241,17 @@ class HippocampusSystem(nn.Module):
         for mem_dict in sorted_memories:
             mem_id = mem_dict.get('memory_id', '')
             if mem_id in memory_features:
-                mem_dict['dg_features'] = memory_features[mem_id].cpu()
+                # 安全转换tensor到list，避免序列化问题
+                try:
+                    mem_dict['dg_features'] = memory_features[mem_id].detach().cpu().numpy().tolist()
+                except:
+                    mem_dict['dg_features'] = None
             else:
                 # 如果没有找到，使用查询的dg_features作为回退
-                mem_dict['dg_features'] = dg_features.cpu()
+                try:
+                    mem_dict['dg_features'] = dg_features.detach().cpu().numpy().tolist()
+                except:
+                    mem_dict['dg_features'] = None
             
             # 确保包含 content 和 is_core 字段
             if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:

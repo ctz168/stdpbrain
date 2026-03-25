@@ -255,17 +255,52 @@ class CA3EpisodicMemory(nn.Module):
         return unique_candidates[:topk]
     
     def get_state(self) -> dict:
-        """获取 CA3 模块的完整状态"""
+        """获取 CA3 模块的完整状态 - 修复版：安全序列化"""
+        # 将所有EpisodicMemory对象转换为字典
+        memories_dict = {}
+        for mem_id, memory in self.memories.items():
+            memories_dict[mem_id] = memory.to_dict()  # 使用to_dict()方法安全转换
+        
         return {
-            'memories': self.memories,
+            'memories': memories_dict,
             'time_index': self.time_index,
             'semantic_index': self.semantic_index,
             'current_timestamp': self.current_timestamp
         }
     
     def set_state(self, state: dict):
-        """从状态字典恢复 CA3 模块"""
-        self.memories = state.get('memories', OrderedDict())
+        """从状态字典恢复 CA3 模块 - 修复版：正确处理字典数据"""
+        memories_dict = state.get('memories', {})
+        
+        # 将字典转换回EpisodicMemory对象
+        self.memories = OrderedDict()
+        for mem_id, mem_dict in memories_dict.items():
+            # 处理dg_features字段
+            dg_features = None
+            if 'dg_features' in mem_dict and mem_dict['dg_features'] is not None:
+                try:
+                    # 如果是list，转换为tensor
+                    if isinstance(mem_dict['dg_features'], list):
+                        dg_features = torch.tensor(mem_dict['dg_features'], dtype=torch.float32)
+                    elif isinstance(mem_dict['dg_features'], torch.Tensor):
+                        dg_features = mem_dict['dg_features']
+                except:
+                    dg_features = None
+            
+            # 创建EpisodicMemory对象
+            memory = EpisodicMemory(
+                memory_id=mem_dict.get('memory_id', mem_id),
+                timestamp=mem_dict.get('timestamp', 0),
+                temporal_skeleton=mem_dict.get('temporal_skeleton', ''),
+                semantic_pointer=mem_dict.get('semantic_pointer', ''),
+                causal_links=mem_dict.get('causal_links', []),
+                activation_strength=mem_dict.get('activation_strength', 1.0),
+                is_core=mem_dict.get('is_core', False),
+                content=mem_dict.get('content', ''),
+                dg_features=dg_features
+            )
+            self.memories[mem_id] = memory
+        
         self.time_index = state.get('time_index', {})
         self.semantic_index = state.get('semantic_index', {})
         self.current_timestamp = state.get('current_timestamp', 0)
