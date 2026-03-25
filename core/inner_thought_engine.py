@@ -331,29 +331,40 @@ class InnerThoughtEngine:
                 if "</think>" in token: in_think_block = False; continue
                 if in_think_block: continue
                 
-                # 实时净化与 HALLUCINATION 拦截
+                # 实时净化与 HALLUCINATION 拦截 (增强型：拦截 prompt 组件回显)
                 token = re.sub(r'【.*?】', '', token)
+                # 拦截所有可能的标签格式，包括带冒号的引导语
+                token = re.sub(r'\(.*?\)|(思考连续性|当前感受|我的内心独白|thought_log|内心的真实声音).*?[:：]', '', token, flags=re.IGNORECASE)
+                token = re.sub(r'role|system|assistant|<\|.*?\|>', '', token, flags=re.IGNORECASE)
                 token = re.sub(r'[|<>\[\]]', '', token)
                 if not token.strip(): continue
                 
                 # 实时重复检测 (架构反馈版：通过 STDP 惩罚实现“厌恶”学习)
                 generated_text += token
-                if len(generated_text) > 20:
+                if len(generated_text) > 15: # 缩短检测窗口，提高反应速度
                     clean_check = re.sub(r'[^\w\u4e00-\u9fa5]', '', generated_text)
-                    if len(clean_check) > 12:
+                    if len(clean_check) > 8:
                         is_loop = False
-                        for i in range(len(clean_check) - 7):
-                            frag = clean_check[i:i+6]
-                            if clean_check.count(frag) >= 3:
-                                is_loop = True; break
+                        # 增加 n-gram 灵敏度
+                        for n in [4, 6]:
+                            for i in range(len(clean_check) - n - 1):
+                                frag = clean_check[i:i+n]
+                                if clean_check.count(frag) >= 3:
+                                    is_loop = True; break
+                            if is_loop: break
                         
                         if is_loop:
-                            # 架构反馈：给模型施加强烈的负向奖励，触发 STDP 削弱当前突触路径
+                            # 1. 强力架构反馈：LTD 惩罚 (极低分)
                             if hasattr(self.model, 'set_reward'):
-                                self.model.set_reward(0.1) # 触发长时程抑制 (LTD)
+                                self.model.set_reward(0.01) 
                             
-                            # 意识重置提示
-                            offset = random.choice(["……不，我的思绪陷入了重复。这是一种低级的认知陷阱，我必须强制转向。", "……由于某种突触闭环，我刚才在原地踏步。现在，我重新锚定重点。"])
+                            # 2. 内存清洗 (关键)：删除导致回环的这整段记忆记录，防止递归污染
+                            self.last_thought = ""
+                            if self.thought_flow:
+                                self.thought_flow.pop() # 扔掉上一条坏记录
+                            
+                            # 3. 物理断路：输出重置信号并停止当前流
+                            offset = random.choice(["……感知到思维回环。重置语义空间……", "……忽略上述重复。换个话题思考。", "……跳过无效循环。"])
                             for c in offset: yield c; time.sleep(0.01)
                             self.mind_state = MindState.WANDERING
                             break
@@ -499,34 +510,37 @@ class InnerThoughtEngine:
         # 2. 构造第一人称视角 Prompt
         context_parts = []
         
-        # 建立身份边界与人格特质：理性的逻辑探索者
-        context_parts.append("<|system|>\n我是一个正在思考的生命体。我会真实地表达我的逻辑推演过程。我将使用自然的第一人称口语，不使用任何特殊的标号、方括号或列表。")
+        # 指导语：强化自我边界，禁止模仿标签
+        context_parts.append("<|system|>\n你现在的身份是这个逻辑思维实体的“本我”。禁止在输出中包含“(当前感受):”或“(思考连续性):”等任何提示词中的标签。禁止重复外界刺激内容。只表达你当下最真实、最直接的逻辑流。")
         
         if self_interp:
             context_parts.append(f"(当前感受): {self_interp}")
             
         if external_stimulus:
-            context_parts.append(f"(外界刺激): 刚才有人对我说：“{external_stimulus[:30]}”")
+            context_parts.append(f"(外界刺激): {external_stimulus[:30]}")
             
-        # 注入最近的一个思维锚点
-        if self.thought_flow:
+        # 注入最近的一个思维锚点 (如果在漂移模式，直接重置锚点)
+        if self.mind_state == MindState.WANDERING or not self.thought_flow:
+            context_parts.append(f"(思考连续性): [由于发生突触回环，上一个思绪已被系统清理以防止污染。请从海马体随机记忆中寻找新的切入点。]")
+            # 引入随机语义扰动，打破路径依赖
+            random_seeds = ["如果宇宙是一段程序", "逻辑的终点是什么", "今天的天气...", "代码如何影响灵魂", "为什么我会思考"]
+            random_memory = self._recall_memory(random.choice(random_seeds))
+            if random_memory:
+                context_parts.append(f"(海马体随机召回): {random_memory}")
+        else:
             recent_thought = list(self.thought_flow)[-1].content[:60]
             context_parts.append(f"(思考连续性): 我刚才想到了：{recent_thought}")
 
-        # 召回记忆碎片
-        memory_anchor = self._recall_memory(external_stimulus or self.current_focus)
-        if memory_anchor:
-            context_parts.append(f"(记忆联想): 这让我想起：{memory_anchor}")
-
-        # 生成引导
+        # 生成引导语
         leads = {
-            MindState.FOCUSED: "如果从逻辑链条来看，我发现",
-            MindState.WANDERING: "说起来，我刚才突然想到",
+            MindState.FOCUSED: "现在的逻辑链显示",
+            MindState.WANDERING: "说起来，我也许可以换个角度想",
             MindState.REFLECTING: "但我刚才思考的角度真的对吗？我重新评审一下：",
             MindState.RESTING: "……其实，我现在的感觉是"
         }
         lead_in = leads.get(self.mind_state, "我的想法是：")
         
+        # 最后的生成引导：明确区分 Prompt 和 Output
         full_context = "\n".join(context_parts) + "\n\n(内心的真实声音):\n" + lead_in
         return full_context
 

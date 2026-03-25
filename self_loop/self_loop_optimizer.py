@@ -676,10 +676,19 @@ class SelfLoopOptimizer:
         issues = []
         corrections = []
         
-        # ========== 1. 逻辑一致性检查 ==========
+        # ========== 1. 逻辑一致性检查 (增强) ==========
         if '如果' in proposal and '那么' not in proposal:
             issues.append("条件句缺少结论部分")
             corrections.append("补充'那么'引导的结论")
+        
+        # 矛盾律检查：同一回答内是否存在对同一主体的直接否定
+        subject_match = re.search(r'([\u4e00-\u9fa5]{2,6})(是|属于|等于|具有)', proposal)
+        if subject_match:
+            subject = subject_match.group(1)
+            verb = subject_match.group(2)
+            if f"{subject}不{verb}" in proposal:
+                issues.append(f"检测到逻辑自相矛盾：关于 '{subject}' 的判断前后不一致")
+                corrections.append(f"统一关于 '{subject}' 的逻辑论点，消除语义矛盾")
         
         # ========== 2. 事实核查 ==========
         # 简单的矛盾检测
@@ -704,10 +713,32 @@ class SelfLoopOptimizer:
             issues.append("回答过于简短")
             corrections.append("提供更详细的解释")
         
-        # ========== 5. 计算置信度 ==========
+        # ========== 5. 数学与常识硬核查 (逻辑哨兵) ==========
+        math_match = re.search(r'(\d+)[\s\+\-\*\/]+(\d+)[\s]*[=]', proposal)
+        if not math_match:
+            # 尝试匹配结果式
+            math_match = re.search(r'(\d+)\s*([\+\-\*\/])\s*(\d+)', proposal)
+            
+        if math_match:
+            try:
+                # 提取算式
+                expr = math_match.group(0).replace('=', '').strip()
+                if any(op in expr for op in ['+', '-', '*', '/']):
+                    # 安全评估算式 (仅限数字和操作符)
+                    cleaned_expr = "".join(c for c in expr if c.isdigit() or c in '+-*/().')
+                    expected_val = eval(cleaned_expr, {"__builtins__": {}})
+                    
+                    # 检查回答中是否存在正确数值
+                    if str(int(expected_val)) not in proposal:
+                        issues.append(f"计算逻辑错误：{expr} 的正确结果应当是 {int(expected_val)}")
+                        corrections.append(f"更正计算结果为 {int(expected_val)}，不要将其误认为其他运算")
+            except:
+                pass
+
+        # ========== 6. 计算置信度 ==========
         base_confidence = 0.8
-        penalty = len(issues) * 0.1
-        confidence = max(0.1, base_confidence - penalty)
+        penalty = len(issues) * 0.15 # 逻辑错误惩罚更重
+        confidence = max(0.05, base_confidence - penalty)
         
         is_valid = len(issues) == 0 or (len(corrections) > 0 and confidence > 0.6)
         

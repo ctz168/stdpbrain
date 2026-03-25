@@ -274,7 +274,9 @@ class BrainAIInterface:
             is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
             
             try:
-                input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
+                # 使用线程安全的 tokenize_safe
+                inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
+                input_ids = inputs.input_ids
                 with torch.no_grad():
                     embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
                 query_features = embeddings.mean(dim=1).squeeze(0)
@@ -526,7 +528,7 @@ class BrainAIInterface:
         seed = random.choice(thought_seeds)
         self.thought_seed = seed
         try:
-            input_ids = self.model.tokenizer.encode(seed, return_tensors="pt").to(self.device)
+            input_ids = self.model.tokenize_safe(seed, return_tensors="pt").input_ids.to(self.device)
             with torch.no_grad():
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             self.current_thought_state = embeddings.mean(dim=1)
@@ -577,19 +579,21 @@ class BrainAIInterface:
             {"role": "user", "content": f"思考对象: {trigger}"}
         ]
         try:
-            prompt = self.model.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)
         except:
             prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{trigger}<|im_end|>\n<|im_start|>assistant\n"
         return prompt
 
     def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, repetition_penalty: float = 1.2) -> tuple:
         try:
-            # 使用 tokenizer 得到完整的 inputs（包含 attention_mask）
-            inputs = self.model.tokenizer(prompt, return_tensors="pt").to(self.device)
+            # 使用 tokenize_safe 得到完整的 inputs（包含 attention_mask）
+            inputs = self.model.tokenize_safe(prompt, return_tensors="pt").to(self.device)
             input_ids = inputs.input_ids
             attention_mask = inputs.attention_mask
             
-            stop_token_ids = [self.model.tokenizer.eos_token_id, 151645]
+            with self.model._tokenizer_lock:
+                eos_id = self.model.tokenizer.eos_token_id
+            stop_token_ids = [eos_id, 151645]
             with torch.no_grad():
                 outputs = self.model.model.base_model.generate(
                     input_ids, 

@@ -31,6 +31,8 @@ class QwenModelWrapper(nn.Module):
         quantization: str = "INT4"
     ):
         super().__init__()
+        import threading
+        self._tokenizer_lock = threading.Lock() # 线程锁，防止 Already borrowed
         self.model_path = model_path
         self.config = config
         self.device = device
@@ -137,6 +139,21 @@ class QwenModelWrapper(nn.Module):
             )
             print(f"  [!] 设备已更新为: {self.device}")
             return model
+
+    def tokenize_safe(self, text, **kwargs):
+        """线程安全的 Tokenization 封装"""
+        with self._tokenizer_lock:
+            return self.tokenizer(text, **kwargs)
+
+    def decode_safe(self, token_ids, **kwargs):
+        """线程安全的 Decoding 封装"""
+        with self._tokenizer_lock:
+            return self.tokenizer.decode(token_ids, **kwargs)
+
+    def apply_chat_template_safe(self, messages, **kwargs):
+        """线程安全的 Chat Template 应用"""
+        with self._tokenizer_lock:
+            return self.tokenizer.apply_chat_template(messages, **kwargs)
     
     def _integrate_dual_weights(self):
         """
@@ -426,6 +443,11 @@ class QwenInterface:
         self.total_tokens_generated = 0
     
     @property
+    def _tokenizer_lock(self):
+        """将内部锁暴露给外部接口 (如 InnerThoughtEngine)"""
+        return self.model._tokenizer_lock
+
+    @property
     def tokenizer(self):
         return self.model.tokenizer
         
@@ -436,6 +458,18 @@ class QwenInterface:
     def apply_stdp_to_all(self, grad_dict: Dict[str, torch.Tensor], lr: float = 0.01):
         """统一 STDP 更新接口"""
         self.model.apply_stdp_to_all(grad_dict, lr)
+
+    def tokenize_safe(self, text, **kwargs):
+        """传递调用到模型包装器"""
+        return self.model.tokenize_safe(text, **kwargs)
+
+    def decode_safe(self, token_ids, **kwargs):
+        """传递调用到模型包装器"""
+        return self.model.decode_safe(token_ids, **kwargs)
+
+    def apply_chat_template_safe(self, messages, **kwargs):
+        """传递调用到模型包装器"""
+        return self.model.apply_chat_template_safe(messages, **kwargs)
     
 
     def set_reward(self, reward: float):
@@ -589,22 +623,27 @@ class QwenInterface:
         Yields:
             str: 每个生成的字符/词
         """
-        # ========== 1. Tokenize 输入 ==========
-        inputs = self.model.tokenizer(
-            input_text,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512
-        )
+        # ========== 1. Tokenize 输入 (线程安全) ==========
+        with self._tokenizer_lock:
+            inputs = self.model.tokenizer(
+                input_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512
+            )
         
         prompt_ids = inputs.input_ids.to(self.device)
         prompt_len = prompt_ids.shape[1]
         
         # 预分配 input_ids 缓冲区
         max_total = prompt_len + max_tokens
+        with self._tokenizer_lock:
+            pad_id = self.model.tokenizer.pad_token_id or 0
+            eos_id = self.model.tokenizer.eos_token_id
+            
         input_ids_buf = torch.full(
-            (1, max_total), self.model.tokenizer.pad_token_id or 0,
+            (1, max_total), pad_id,
             dtype=torch.long, device=self.device
         )
         input_ids_buf[:, :prompt_len] = prompt_ids

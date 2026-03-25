@@ -68,6 +68,11 @@ class ContinuousThoughtFlowSession:
         monologue_thread.daemon = True
         monologue_thread.start()
         
+        # 启动后台自动保存线程 (每1小时自动保存一次状态)
+        auto_save_thread = threading.Thread(target=self._auto_save_loop)
+        auto_save_thread.daemon = True
+        auto_save_thread.start()
+        
         # 主线程处理用户输入 (阻塞式)
         try:
             while self.is_running:
@@ -81,7 +86,9 @@ class ContinuousThoughtFlowSession:
                     user_input = input()
                     
                     if user_input.strip().lower() in ["quit", "exit"]:
-                        print("\n[退出] 正在停止会话...")
+                        print("\n[退出] 正在保存最终状态并停止会话...")
+                        if hasattr(self.ai, 'save_state'):
+                            self.ai.save_state()
                         self.stop()
                         break
                     
@@ -98,6 +105,21 @@ class ContinuousThoughtFlowSession:
         finally:
             self._stop_event.set()
             monologue_thread.join(timeout=1)
+
+    def _auto_save_loop(self):
+        """每小时自动保存一次大脑状态"""
+        while not self._stop_event.is_set():
+            # 间隔 1 小时 (3600秒)
+            for _ in range(3600):
+                if self._stop_event.wait(1.0):
+                    return
+            
+            # 悄悄保存状态
+            try:
+                if hasattr(self.ai, 'save_state'):
+                    self.ai.save_state()
+            except Exception:
+                pass
             self._print_session_summary()
     
     def _monologue_loop(self):
@@ -205,7 +227,23 @@ class ContinuousThoughtFlowSession:
         self._display_monologue(random.choice(thoughts))
     
     def _handle_user_input(self, user_input: str):
-        """处理用户输入"""
+        """处理用户输入 (含净化机制)"""
+        # --- 保护机制：检测错误粘贴的独白 ---
+        clean_input = user_input.strip()
+        noise_labels = ["[内心思维]", "[自闭环模式]", "AI:", "[系统]", "【自闭环任务】", "(思考连续性):", "(当前感受):"]
+        found_noise = False
+        for label in noise_labels:
+            if label in clean_input:
+                clean_input = clean_input.replace(label, "").strip()
+                found_noise = True
+        
+        if found_noise:
+            with self._terminal_lock:
+                print(f"\n\033[93m[系统提示] 检测到输入包含内部标签，已自动净化。实际输入：{clean_input[:30]}...\033[0m")
+        
+        if not clean_input:
+            return
+
         # 暂停独白
         self._pause_event.set()
         self.cycle_count += 1
@@ -215,7 +253,7 @@ class ContinuousThoughtFlowSession:
                 print("\n" + "-" * 40)
                 print("[用户输入]")
                 print("-" * 40)
-                print(f"用户: {user_input}")
+                print(f"用户: {clean_input}")
                 
                 # 判断自闭环模式
                 mode = "self_combine"
