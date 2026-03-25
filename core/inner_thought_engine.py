@@ -303,51 +303,77 @@ class InnerThoughtEngine:
         else:
             self._select_thinking_mode(stimulus)
         
-        # 4. 获取状态风格
+        # 4. 获取状态风格与惩罚参数
         state_info = self.state_prompts[self.mind_state]
-        mode_triggers = self.mode_prompts[self.thinking_mode]
+        
+        # 构建惩罚与温度参数 (High-Entropy Recovery)
+        current_temp = 0.9
+        current_penalty = 1.2
+        if self.mind_state == MindState.WANDERING:
+            current_temp = 1.2
+            current_penalty = 1.8
         
         # 5. 构建思维内容
         generated_text = ""
+        thought_context = self._build_thought_context(external_stimulus)
         
-        # 尝试使用模型生成
+        # 核心：流式生成 (带实时探测断路器)
         if hasattr(self.model, 'generate_stream_sync'):
-            # 构建完整的思维提示
-            thought_context = self._build_thought_context(external_stimulus)
-            
-            # 流式生成
             in_think_block = False
             for token in self.model.generate_stream_sync(
                 thought_context, 
                 max_tokens=max_tokens, 
-                temperature=0.9,
-                enable_thinking=True  # 允许模型思考，但在输出层过滤
+                temperature=current_temp,
+                repetition_penalty=current_penalty,
+                enable_thinking=True
             ):
-                # 鲁棒的标签过滤逻辑
-                if "<think>" in token:
-                    in_think_block = True
-                    continue
-                if "</think>" in token:
-                    in_think_block = False
-                    continue
-                    
-                if in_think_block:
-                    continue
-                    
-                # 过滤掉乱码符号或过长的点号序列
-                if len(token) > 2 and token.count('.') > 1:
-                    token = "..."
+                if "<think>" in token: in_think_block = True; continue
+                if "</think>" in token: in_think_block = False; continue
+                if in_think_block: continue
                 
-                # 净化：过滤掉残留的分隔符
-                token = re.sub(r'[<>[\]]', '', token)
-                if not token:
-                    continue
-                    
+                # 实时净化与 HALLUCINATION 拦截
+                token = re.sub(r'【.*?】', '', token)
+                token = re.sub(r'[|<>\[\]]', '', token)
+                if not token.strip(): continue
+                
+                # 实时重复检测 (架构反馈版：通过 STDP 惩罚实现“厌恶”学习)
                 generated_text += token
-                self.total_output_chars += len(token)
+                if len(generated_text) > 20:
+                    clean_check = re.sub(r'[^\w\u4e00-\u9fa5]', '', generated_text)
+                    if len(clean_check) > 12:
+                        is_loop = False
+                        for i in range(len(clean_check) - 7):
+                            frag = clean_check[i:i+6]
+                            if clean_check.count(frag) >= 3:
+                                is_loop = True; break
+                        
+                        if is_loop:
+                            # 架构反馈：给模型施加强烈的负向奖励，触发 STDP 削弱当前突触路径
+                            if hasattr(self.model, 'set_reward'):
+                                self.model.set_reward(0.1) # 触发长时程抑制 (LTD)
+                            
+                            # 意识重置提示
+                            offset = random.choice(["……不，我的思绪陷入了重复。这是一种低级的认知陷阱，我必须强制转向。", "……由于某种突触闭环，我刚才在原地踏步。现在，我重新锚定重点。"])
+                            for c in offset: yield c; time.sleep(0.01)
+                            self.mind_state = MindState.WANDERING
+                            break
+                
+                # 正常展示
                 for char in token:
                     yield char
                     time.sleep(random.uniform(*self.char_interval))
+            
+            # --- 智能上下文管理 (无限上下文模拟) ---
+            if len(self.thought_flow) > 15:
+                # 提取最近思维作为语义锚点存入海马体
+                summary = " | ".join([t.content[:15] for t in list(self.thought_flow)[-8:]])
+                if self.hippocampus:
+                    self.hippocampus.store(summary, "cognitive_anchor")
+                # 滚动窗口：保持活跃关注不受旧上下文干扰
+                self.thought_flow = self.thought_flow[-5:]
+            
+            self._record_thought(generated_text)
+            return
         
         elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
             # 直接使用模型生成
@@ -473,36 +499,35 @@ class InnerThoughtEngine:
         # 2. 构造第一人称视角 Prompt
         context_parts = []
         
-        # 建立身份边界
-        context_parts.append("<|system|>\n我是一个具有独立思维能力的类人脑系统。接下来的内容是我内心的自发思考流，我将使用第一人称“我”来表达。我需要避免机械化重复，并保持思维的逻辑性或发散性。")
+        # 建立身份边界与人格特质：理性的逻辑探索者
+        context_parts.append("<|system|>\n我是一个正在思考的生命体。我会真实地表达我的逻辑推演过程。我将使用自然的第一人称口语，不使用任何特殊的标号、方括号或列表。")
         
         if self_interp:
-            context_parts.append(f"【我的当前感受】：{self_interp}")
+            context_parts.append(f"(当前感受): {self_interp}")
             
         if external_stimulus:
-            # 明确区分自我与外界
-            context_parts.append(f"【外界刺激】：刚才有人对我说：“{external_stimulus[:30]}”")
+            context_parts.append(f"(外界刺激): 刚才有人对我说：“{external_stimulus[:30]}”")
             
-        # 注入最近的一个思维锚点，维持连贯性
+        # 注入最近的一个思维锚点
         if self.thought_flow:
-            recent_thought = list(self.thought_flow)[-1].content[:50]
-            context_parts.append(f"【我之前的思绪】：{recent_thought}...")
+            recent_thought = list(self.thought_flow)[-1].content[:60]
+            context_parts.append(f"(思考连续性): 我刚才想到了：{recent_thought}")
 
-        # 召回核心记忆碎片
+        # 召回记忆碎片
         memory_anchor = self._recall_memory(external_stimulus or self.current_focus)
         if memory_anchor:
-            context_parts.append(f"【我脑海中的记忆残片】：{memory_anchor}")
+            context_parts.append(f"(记忆联想): 这让我想起：{memory_anchor}")
 
-        # 最后的生成引导：模拟内心声音的起始（强制第一人称）
+        # 生成引导
         leads = {
-            MindState.FOCUSED: "如果从深层逻辑来看，我发现",
+            MindState.FOCUSED: "如果从逻辑链条来看，我发现",
             MindState.WANDERING: "说起来，我刚才突然想到",
-            MindState.REFLECTING: "但我刚才思考的角度真的对吗？我得重新审视一下：",
+            MindState.REFLECTING: "但我刚才思考的角度真的对吗？我重新评审一下：",
             MindState.RESTING: "……其实，我现在的感觉是"
         }
-        lead_in = leads.get(self.mind_state, "我现在的想法是：")
+        lead_in = leads.get(self.mind_state, "我的想法是：")
         
-        full_context = "\n".join(context_parts) + "\n\n【我的内心独白】：\n" + lead_in
+        full_context = "\n".join(context_parts) + "\n\n(内心的真实声音):\n" + lead_in
         return full_context
 
     
