@@ -284,9 +284,6 @@ class InnerThoughtEngine:
         Args:
             external_stimulus: 外部刺激（如用户输入）
             max_tokens: 最大token数
-        
-        Yields:
-            char: 字符级流式输出
         """
         self.cycle_count += 1
         
@@ -307,99 +304,82 @@ class InnerThoughtEngine:
         # 5. 构建思维内容
         generated_text = ""
         
-        try:
-            # 尝试使用模型生成
-            if hasattr(self.model, 'generate_stream_sync'):
-                # 构建完整的思维提示
-                thought_context = self._build_thought_context(external_stimulus)
+        # 尝试使用模型生成
+        if hasattr(self.model, 'generate_stream_sync'):
+            # 构建完整的思维提示
+            thought_context = self._build_thought_context(external_stimulus)
+            
+            # 流式生成
+            in_think_block = False
+            for token in self.model.generate_stream_sync(
+                thought_context, 
+                max_tokens=max_tokens, 
+                temperature=0.9,
+                enable_thinking=True  # 允许模型思考，但在输出层过滤
+            ):
+                # 鲁棒的标签过滤逻辑
+                if "<think>" in token:
+                    in_think_block = True
+                    continue
+                if "</think>" in token:
+                    in_think_block = False
+                    continue
+                    
+                if in_think_block:
+                    continue
+                    
+                # 过滤掉乱码符号或过长的点号序列
+                if len(token) > 2 and token.count('.') > 1:
+                    token = "..."
                 
-                # 流式生成
-                in_think_block = False
-                for token in self.model.generate_stream_sync(
-                    thought_context, 
-                    max_tokens=max_tokens, 
+                # 净化：过滤掉残留的分隔符
+                token = re.sub(r'[<>[\]]', '', token)
+                if not token:
+                    continue
+                    
+                generated_text += token
+                self.total_output_chars += len(token)
+                for char in token:
+                    yield char
+                    time.sleep(random.uniform(*self.char_interval))
+        
+        elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
+            # 直接使用模型生成
+            thought_context = self._build_thought_context(external_stimulus)
+            inputs = self.model.tokenizer(thought_context, return_tensors="pt")
+            device = getattr(self.model, 'device', 'cpu')
+            inputs = inputs.to(device)
+            
+            with torch.no_grad():
+                outputs = self.model.model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
                     temperature=0.9,
-                    enable_thinking=True  # 允许模型思考，但在输出层过滤
-                ):
-                    # 鲁棒的标签过滤逻辑
-                    if "<think>" in token:
-                        in_think_block = True
-                        continue
-                    if "</think>" in token:
-                        in_think_block = False
-                        continue
-                        
-                    if in_think_block:
-                        continue
-                        
-                    # 过滤掉乱码符号或过长的点号序列
-                    if len(token) > 2 and token.count('.') > 1:
-                        token = "..."
-                        
-                    if char in ('<', '>', '[', ']'):
-                        continue  # 过滤掉残留的分隔符
-                        
-                    generated_text += token
-                    self.total_output_chars += len(token)
-                    for char in token:
-                        yield char
-                        time.sleep(random.uniform(*self.char_interval))
+                    do_sample=True,
+                    top_p=0.9,
+                    repetition_penalty=1.3  # 防止重复
+                )
             
-            elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
-                # 直接使用模型生成
-                thought_context = self._build_thought_context(external_stimulus)
-                inputs = self.model.tokenizer(thought_context, return_tensors="pt")
-                device = getattr(self.model, 'device', 'cpu')
-                inputs = inputs.to(device)
-                
-                with torch.no_grad():
-                    outputs = self.model.model.generate(
-                        **inputs,
-                        max_new_tokens=max_tokens,
-                        temperature=0.9,
-                        do_sample=True,
-                        top_p=0.9,
-                        repetition_penalty=1.3  # 防止重复
-                    )
-                
-                # 解码并输出
-                result = self.model.tokenizer.decode(outputs[0], skip_special_tokens=True)
-                # 只取新生成的部分
-                if len(result) > len(thought_context):
-                    new_text = result[len(thought_context):].strip()
-                else:
-                    new_text = result
-                
-                # 净化：过滤掉 <think>...</think> 块、编号列表、以及常见的循环噪音符号 (如 -, *, .)
-                import re
-                new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.DOTALL)
-                # 过滤各种列表/引导符：1. 1、 - * 等
-                new_text = re.sub(r'^\s*[\d\-\*\u2022]+\.?[\u3001,]?\s*', '', new_text.strip())
-                new_text = new_text.strip('.- \n\t') # 去掉首尾多余的点、横杠和空白
-                
-                if new_text:
-                    for char in new_text:
-                        generated_text += char
-                        self.total_output_chars += 1
-                        yield char
-                        time.sleep(random.uniform(*self.char_interval))
-            
+            # 解码并输出
+            result = self.model.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # 只取新生成的部分
+            if len(result) > len(thought_context):
+                new_text = result[len(thought_context):].strip()
             else:
-                # 降级：使用预设思维
-                thought = self._generate_contextual_thought(external_stimulus)
-                for char in thought:
+                new_text = result
+            
+            # 净化：过滤掉 <think>...</think> 块、编号列表、以及常见的循环噪音符号 (如 -, *, .)
+            new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.DOTALL)
+            # 过滤各种列表/引导符：1. 1、 - * 等
+            new_text = re.sub(r'^\s*[\d\-\*\u2022]+\.?[\u3001,]?\s*', '', new_text.strip())
+            new_text = new_text.strip('.- \n\t') # 去掉首尾多余的点、横杠和空白
+            
+            if new_text:
+                for char in new_text:
                     generated_text += char
                     self.total_output_chars += 1
                     yield char
                     time.sleep(random.uniform(*self.char_interval))
-        
-        except Exception as e:
-            # 错误时的优雅降级 - 使用上下文相关的思维
-            thought = self._generate_contextual_thought(external_stimulus)
-            for char in thought:
-                generated_text += char
-                self.total_output_chars += 1
-                yield char
         
         # 6. 记录思维片段
         if generated_text:
@@ -450,13 +430,6 @@ class InnerThoughtEngine:
         full_context = " ".join(context_parts) + " " + lead_in
         return full_context
 
-    def _record_thought(self, content: str):
-        """记录思维片段"""
-        # 简单清洗：去除生成的前缀
-        content = content.strip(' ：:，。')
-        if not content: return
-        
-        self.last_thought = content
     
     def _recall_memory(self, query: str) -> str:
         """从海马体召回记忆"""
