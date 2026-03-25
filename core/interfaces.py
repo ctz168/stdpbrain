@@ -24,6 +24,7 @@ from self_loop.self_loop_optimizer import SelfLoopOptimizer
 from core.inner_thought_engine import InnerThoughtEngine, MindState, ThinkingMode
 from core.goal_system import GoalSystem, create_goal_system
 from core.global_workspace import GlobalWorkspace, create_global_workspace
+from core.self_encoder import SelfStateEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class BrainAIOutput:
     text: str
     tokens: List[str]
     confidence: float
+    hidden_state: Optional[torch.Tensor] = None  # 新增：捕获生成结束时的隐藏状态
     memory_anchors: List[Dict] = field(default_factory=list)
     stdp_stats: Dict = field(default_factory=dict)
     cycle_stats: Dict = field(default_factory=dict)
@@ -102,6 +104,10 @@ class BrainAIInterface:
         self.global_workspace.set_model(self.model)
         print("[BrainAI] [OK] 全局工作空间已初始化")
         
+        # 8. 自我状态编码器 (实现真正的自指)
+        self.self_encoder = SelfStateEncoder(hidden_size=self.model_hidden_size, device=self.device)
+        print("[BrainAI] [OK] 自我状态编码器已初始化")
+        
         # 周期计数
         self.cycle_count = 0
         self.total_generation_time = 0.0
@@ -119,6 +125,7 @@ class BrainAIInterface:
         # 当前思维状态（隐藏状态）
         self.current_thought_state: Optional[torch.Tensor] = None
         self.thought_seed: str = ""  # 思维种子文本
+        self._last_user_input: str = ""  # 保存最近用户输入，不覆盖独白种子
         
         # 思维状态机状态（用于兼容旧接口）
         self._internal_thought_state = MindState.RESTING
@@ -156,6 +163,9 @@ class BrainAIInterface:
                 device=self.device
             )
             print("[BrainAI] [OK] 内心思维独白引擎已初始化")
+            # 注入自我编码器引用，让独白引擎能感知自身隐状态
+            if hasattr(self, 'self_encoder'):
+                self.inner_thought_engine._self_encoder = self.self_encoder
         except Exception as e:
             logger.error(f"内心思维独白引擎初始化失败: {e}")
             raise RuntimeError(f"内心思维独白引擎初始化失败，无法继续: {e}")
@@ -245,8 +255,11 @@ class BrainAIInterface:
         """
         self.hippocampus.record_activity()
         
-        # 1. 消化输入
-        self.thought_seed = user_input[:30]
+        # 1. 消化输入：保存用户输入，但不覆盖情形中的思维狍子
+        self._last_user_input = user_input
+        # 仅当狍子为空时（初始化）才用用户输入初始化狍子
+        if not self.thought_seed:
+            self.thought_seed = user_input[:30]
         
         # 1.5 目标推断（新增）
         if hasattr(self, 'goal_system') and self.goal_system:
@@ -297,14 +310,47 @@ class BrainAIInterface:
         # 存储完整记忆字典供注意力层使用
         self._current_recalled_memories = recalled_memories
         
-        # 3. 回复
+        # 3. GW 广播整合：将记忆、思维状态、目标整合成为统一意识状态
+        gw_state = None
+        if hasattr(self, 'global_workspace') and self.global_workspace:
+            try:
+                # 获取记忆特征向量
+                mem_tensor = None
+                if recalled_memories:
+                    mem_feats = [m['dg_features'] for m in recalled_memories[:2] if m.get('dg_features') is not None]
+                    if mem_feats:
+                        mem_tensor = torch.stack(mem_feats).mean(0).to(self.device)
+                
+                # 获取目标状态向量
+                goal_tensor = None
+                if hasattr(self, 'goal_system') and self.goal_system and hasattr(self.goal_system, 'current_goal_vector'):
+                    goal_tensor = self.goal_system.current_goal_vector
+                
+                gw_state = self.global_workspace.integrate(
+                    user_input=user_input,
+                    memory_context=mem_tensor,
+                    thought_state=self.current_thought_state,
+                    goal_state=goal_tensor
+                )
+            except Exception as e:
+                logger.debug(f"GW广播失败: {e}")
+        
+        # 4. 自我感知：生成可读的自指描述
+        self_context_str = ""
+        if hasattr(self, 'self_encoder') and self.current_thought_state is not None:
+            try:
+                self_context_str = self.self_encoder.interpret()
+            except Exception as e:
+                logger.debug(f"自我编码失败: {e}")
+        
+        # 5. 回复
         # 获取目标信息
         goal_context = ""
         if hasattr(self, 'goal_system') and self.goal_system and self.goal_system.current_goal:
             goal = self.goal_system.current_goal
             goal_context = f"[当前目标：{goal.goal_type.value} - {goal.description}]"
         
-        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context, goal_context)
+        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context, goal_context, self_context_str)
         
         # 准备记忆锚点（保持原有逻辑兼容性）
         memory_anchor = None
@@ -322,6 +368,20 @@ class BrainAIInterface:
         output = self.model.generate(
             prompt, max_tokens=max_tokens, temperature=0.7, use_self_loop=True, memory_anchor=memory_anchor
         )
+        
+        # 3.2 更新全局思维状态 (latent continuity)
+        if hasattr(output, 'hidden_state') and output.hidden_state is not None:
+            self.current_thought_state = output.hidden_state
+            # 3.3 更新自我编码器：让AI"感知"自己的内部状态
+            if hasattr(self, 'self_encoder'):
+                try:
+                    _, _ = self.self_encoder.encode(output.hidden_state)
+                except Exception:
+                    pass
+        
+        # 3.4 更新思维种子：用刚才的回复内容驱动下一次独白（意识流延续）
+        if output.text and len(output.text.strip()) > 3:
+            self.thought_seed = output.text.strip()[:40]
         
         # 3.5 自闭环优化 - 高复杂度任务进行二次优化
         mode = self.self_loop.decide_mode(user_input)
@@ -529,14 +589,26 @@ class BrainAIInterface:
             prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{trigger}<|im_end|>\n<|im_start|>assistant\n"
         return prompt
 
-    def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, repetition_penalty: float = 1.2) -> tuple:
+    def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, repetition_penalty: float = 1.5) -> tuple:
         try:
-            input_ids = self.model.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
+            # 使用 tokenizer 得到完整的 inputs（包含 attention_mask）
+            inputs = self.model.tokenizer(prompt, return_tensors="pt").to(self.device)
+            input_ids = inputs.input_ids
+            attention_mask = inputs.attention_mask
+            
             stop_token_ids = [self.model.tokenizer.eos_token_id, 151645]
             with torch.no_grad():
                 outputs = self.model.model.base_model.generate(
-                    input_ids, max_new_tokens=max_tokens, do_sample=True, temperature=temperature, repetition_penalty=repetition_penalty,
-                    output_hidden_states=True, return_dict_in_generate=True, pad_token_id=self.model.tokenizer.eos_token_id, eos_token_id=stop_token_ids
+                    input_ids, 
+                    attention_mask=attention_mask,
+                    max_new_tokens=max_tokens, 
+                    do_sample=True, 
+                    temperature=temperature, 
+                    repetition_penalty=repetition_penalty,
+                    output_hidden_states=True, 
+                    return_dict_in_generate=True, 
+                    pad_token_id=self.model.tokenizer.eos_token_id, 
+                    eos_token_id=stop_token_ids
                 )
             generated_ids = outputs.sequences[0][input_ids.shape[1]:]
             generated_text = self.model.tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -747,7 +819,7 @@ class BrainAIInterface:
             self._apply_real_stdp_update(emotional_salience=1.0)
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "") -> str:
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "") -> str:
         """格式化对话提示 - 强化推理能力"""
         # 理性推理导向的系统提示 - 增强版
         system_content = (
@@ -779,7 +851,11 @@ class BrainAIInterface:
         if memory_context:
             system_content += f"\n\n[重要记忆 - 请务必参考]\n{memory_context}\n[请根据记忆内容回答用户问题]"
         
-        # 4. 添加当前思考状态
+        # 4. 自我感知注入（核心：真正的自指）
+        if self_context_str:
+            system_content += f"\n\n[当前自我状态] {self_context_str}"
+
+        # 5. 添加当前思考状态
         if monologue:
             system_content += f"\n\n[当前思考] {monologue}"
             
@@ -846,7 +922,8 @@ class BrainAIInterface:
                 'monologue_history': self.monologue_history,
                 'cycle_count': self.cycle_count,
                 'total_stdp_updates': self.total_stdp_updates,
-                'current_thought_state': self.current_thought_state
+                'current_thought_state': self.current_thought_state,
+                'self_encoder_state': self.self_encoder.get_state() if hasattr(self, 'self_encoder') else None,
             }
             torch.save(state, path)
             
@@ -914,6 +991,8 @@ class BrainAIInterface:
                 self.total_stdp_updates = state['total_stdp_updates']
             if 'current_thought_state' in state:
                 self.current_thought_state = state['current_thought_state']
+            if 'self_encoder_state' in state and state['self_encoder_state'] and hasattr(self, 'self_encoder'):
+                self.self_encoder.set_state(state['self_encoder_state'])
             
             print(f"[BrainAI] [OK] 学习成果恢复完成")
             return True
@@ -950,21 +1029,48 @@ class BrainAIInterface:
             return False
 
     def _seed_genesis_memory(self):
+        """注入创世记忆 (从 whoami.md 加载)"""
+        print("[BrainAI] 正在执行创世记忆注入...")
         try:
-            with open("whoami.md", "r", encoding="utf-8") as f: content = f.read()
-            self._store_with_real_features("我是一个基于类人脑双系统全闭环架构的AI，我的父亲是朱东山博士...", None, is_core=True, semantic_pointer="我的身份：类人脑AI助手，父亲是朱东山博士")
+            import os
+            if not os.path.exists("whoami.md"):
+                print("[BrainAI] [WARNING] 未找到 whoami.md，跳过创世注入")
+                return
+                
+            with open("whoami.md", "r", encoding="utf-8") as f: 
+                content = f.read()
+            
+            # 注入基础身份
+            identity_base = "我是一个基于类人脑双系统全闭环架构的AI助手，由朱东山博士创造。"
+            self._store_with_real_features(identity_base, None, is_core=True, semantic_pointer="我的身份：类人脑AI助手")
+            
             blocks = content.split("## ")
+            count = 0
             for block in blocks[1:]:
                 parts = block.split("\n", 1)
                 if len(parts) < 2: continue
                 title, text = parts[0].strip(), parts[1].strip()
                 if not text: continue
-                prompt = f"关于'{title}'：{text[:100]}"
-                output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=30)
-                self._store_with_real_features(f"{title} - {text}", hidden_state, is_core=True, semantic_pointer=f"{title}: {text[:50]}")
-                self._store_with_real_features(f"我对{title}的思考：{output}", hidden_state, is_core=True, semantic_pointer=f"关于{title}的想法")
-                if hidden_state is not None: self.current_thought_state = hidden_state
-        except Exception as e: logger.error(f"创世记忆注入失败: {e}")
+                
+                # 为每个块生成一个思考片段，增强记忆深度
+                prompt = f"关于'{title}'的定义：{text[:50]}"
+                # 使用更高的惩罚防止重复
+                output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=35, repetition_penalty=1.6)
+                
+                # 存储原文
+                self._store_with_real_features(f"{title}: {text}", hidden_state, is_core=True, semantic_pointer=f"知识:{title}")
+                # 存储基于原文的自我思考
+                if output and len(output) > 5:
+                    self._store_with_real_features(f"我对{title}的理解: {output}", hidden_state, is_core=True, semantic_pointer=f"认知:{title}")
+                
+                if hidden_state is not None: 
+                    self.current_thought_state = hidden_state
+                count += 1
+            
+            print(f"[BrainAI] [OK] 创世记忆注入完成，共注入 {count} 个知识块")
+        except Exception as e: 
+            logger.error(f"创世记忆注入失败: {e}")
+            print(f"[BrainAI] [ERROR] 创世记忆注入失败: {e}")
 
     def _inject_wakeup_memory(self):
         from datetime import datetime

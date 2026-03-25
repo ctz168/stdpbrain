@@ -323,13 +323,11 @@ class HippocampusSystem(nn.Module):
             pruned_count: 修剪的记忆数量
         """
         count = self.ca3_memory.prune_weak_memories(threshold)
-        self._update_memory_usage()
         return count
     
-    def _update_memory_usage(self):
-        """更新内存使用统计（生产级实现）"""
+    def _calculate_current_usage(self) -> int:
+        """计算当前内存使用的辅助方法"""
         import sys
-        
         total_size = 0
         
         # 计算CA3记忆的实际内存占用
@@ -355,18 +353,26 @@ class HippocampusSystem(nn.Module):
             for param in self.ec_encoder.parameters():
                 total_size += param.element_size() * param.nelement()
         
-        if hasattr(self, 'dg_layer') and self.dg_layer is not None:
-            for param in self.dg_layer.parameters():
+        if hasattr(self, 'dg_separator') and self.dg_separator is not None:
+            for param in self.dg_separator.parameters():
                 total_size += param.element_size() * param.nelement()
         
-        self.memory_usage_bytes = total_size
+        return total_size
+
+    def _update_memory_usage(self):
+        """更新内存使用统计，并执行修剪（避免递归）"""
+        self.memory_usage_bytes = self._calculate_current_usage()
         
         # 检查是否超出限制
         if self.memory_usage_bytes > self.max_memory_bytes:
             # 自动修剪
             excess_ratio = 1 - (self.max_memory_bytes / self.memory_usage_bytes)
             threshold = 0.3 + excess_ratio * 0.5
+            # 调用修剪，但 prune_weak_memories 不再反向调用 _update_memory_usage
             self.prune_weak_memories(threshold)
+            
+            # 修剪后再更新一次统计信息，确保 self.memory_usage_bytes 是最新的
+            self.memory_usage_bytes = self._calculate_current_usage()
     
     def start_swr_monitoring(self):
         """启动 SWR 离线回放监控"""

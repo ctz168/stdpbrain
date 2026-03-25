@@ -121,6 +121,9 @@ class InnerThoughtEngine:
         self.cycle_count = 0
         self.total_output_chars = 0
         
+        # ========== 自我编码器接口（由 BrainAIInterface 注入）==========
+        self._self_encoder = None  # 注入后提供真实的自我感知
+        
         # ========== 状态转换矩阵 ==========
         self.state_transitions = {
             MindState.FOCUSED: {
@@ -414,6 +417,21 @@ class InnerThoughtEngine:
         memory_context = self._recall_memory(external_stimulus or self.current_focus)
         if memory_context:
             base_thought = f"回忆起{memory_context}...{base_thought}"
+            
+        # 加入自我反思：引用最近的思维片段 (核心：自指)
+        if self.thought_flow and len(self.thought_flow) > 0:
+            recent_thoughts = [t.content[:20] for t in list(self.thought_flow)[-3:]]
+            reflection_prefix = f"刚才我在想：{', '.join(recent_thoughts)}。"
+            base_thought = reflection_prefix + base_thought
+        
+        # 加入自我感知：使用 self_encoder 的情感/唤醒度解释（更深层的自指）
+        if hasattr(self, '_self_encoder') and self._self_encoder is not None:
+            try:
+                self_interp = self._self_encoder.interpret()
+                if self_interp and "意识刚刚开始" not in self_interp:
+                    base_thought = f"[自我感知: {self_interp}] " + base_thought
+            except Exception:
+                pass
         
         return base_thought
     

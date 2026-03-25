@@ -492,7 +492,7 @@ class QwenInterface:
             next_token_logits = output_tensors.logits[:, -1, :].clone()
             
             # 向量化重复惩罚 (scatter-based)
-            repetition_penalty = kwargs.get('repetition_penalty', 1.1)
+            repetition_penalty = kwargs.get('repetition_penalty', 1.2) # 从 1.1 提升到 1.2
             if repetition_penalty != 1.0 and input_ids is not None:
                 # 获取每个 batch item 的不重复 token
                 # 注意：在当前 batch_size=1 的情况下，这等同于 unique()
@@ -782,7 +782,8 @@ class QwenInterface:
             # 更新 input_ids 和 attention_mask
             next_token_tensor = torch.tensor([[next_token_id]], device=self.device)
             input_ids = torch.cat([input_ids, next_token_tensor], dim=-1)
-            attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=self.device)], dim=-1)
+            # 确保类型一致 (long)
+            attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=self.device, dtype=torch.long)], dim=-1)
             
             # 每 10 步应用一次 STDP 更新 (优化)
             if self.total_tokens_generated % 10 == 0:
@@ -802,10 +803,17 @@ class QwenInterface:
         # ========== 5. 构建返回结果 ==========
         from core.interfaces import BrainAIOutput
         
+        # 获取最后一个 token 的隐藏状态 (核心：维持意识连续性)
+        last_hidden_state = step_outputs.get('hidden_states')
+        if last_hidden_state is not None:
+            # 取最后一层，最后一个 token
+            last_hidden_state = last_hidden_state[-1][:, -1, :].clone()
+
         return BrainAIOutput(
             text=output_text,
             tokens=generated_tokens,
             confidence=min(0.95, 0.7 + len(output_text) / 200.0),
+            hidden_state=last_hidden_state,
             memory_anchors=[],  # 由海马体模块填充
             stdp_stats={},  # 由 STDP 模块填充
             cycle_stats={
