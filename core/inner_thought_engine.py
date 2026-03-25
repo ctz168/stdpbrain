@@ -382,22 +382,44 @@ class InnerThoughtEngine:
             new_text = re.sub(r'\|.*?\|', '', new_text) 
             new_text = re.sub(r'<\|.*?\|>', '', new_text)
             
-            # 过滤掉回显的 lead_in (防止模型只是重复了 prompt 的最后一句)
-            if new_text.startswith(lead_in):
-                new_text = new_text[len(lead_in):].strip()
+            # 过滤掉回显的 lead_in (强化正则过滤，处理空格或标点差异)
+            lead_in_pattern = re.escape(lead_in).replace(r'\ ', r'\s*')
+            new_text = re.sub(f'^{lead_in_pattern}', '', new_text).strip()
             
             # 过滤各种列表/引导符：1. 1、 - * 等
             new_text = re.sub(r'^\s*[\d\-\*\u2022]+\.?[\u3001,]?\s*', '', new_text.strip())
             new_text = new_text.strip('.- \n\t') # 去掉首尾多余的点、横杠和空白
             
             if new_text:
-                # 7. 重复检测与断路 (Loop Breaker)
-                if self.last_thought and (new_text in self.last_thought or self.last_thought in new_text):
+                # 7. 重复检测与断路 (Loop Breaker) - 增强版
+                def get_overlap_ratio(s1, s2):
+                    if not s1 or not s2: return 0
+                    set1, set2 = set(s1), set(s2)
+                    intersection = len(set1.intersection(set2))
+                    return intersection / max(len(set1), len(set2))
+
+                is_repetition = False
+                if self.last_thought and len(self.last_thought) > 5 and len(new_text) > 5:
+                    # 1. 直接包含检测 (需有一定长度，防止误杀短句)
+                    if (new_text in self.last_thought or self.last_thought in new_text) and len(new_text) > 10:
+                        is_repetition = True
+                    # 2. 字符重合率检测
+                    elif get_overlap_ratio(new_text, self.last_thought) > 0.85:
+                        is_repetition = True
+                    # 3. 内部自我重复检测 (n-gram)
+                    elif len(new_text) > 20:
+                        for i in range(len(new_text) - 15):
+                            fragment = new_text[i:i+8]
+                            if new_text.count(fragment) > 2:
+                                is_repetition = True
+                                break
+
+                if is_repetition:
                     # 触发状态强制偏移
                     self.mind_state = MindState.WANDERING
                     self.current_focus = ""
                     # 返回一个偏移引导
-                    offset_thoughts = ["……不，换个角度想，", "……突然觉得有点累了，", "……说到这里，我想起了"]
+                    offset_thoughts = ["……不，换个角度想，", "……突然觉得当前的想法有些卷，", "……此时此刻，我的思绪飘到了别处"]
                     new_text = random.choice(offset_thoughts)
 
                 for char in new_text:

@@ -39,6 +39,7 @@ class ContinuousThoughtFlowSession:
         self._pause_event = threading.Event()
         self._current_monologue = ""
         self._monologue_lock = threading.Lock()
+        self._terminal_lock = threading.Lock() # 新增：终端 I/IO 互斥锁
         
         # 思维流参数
         self.char_interval = (0.02, 0.05)
@@ -53,13 +54,14 @@ class ContinuousThoughtFlowSession:
         self._stop_event.clear()
         self._pause_event.clear()
         
-        print("\n" + "=" * 60)
-        print("       类人脑AI - 持续思维流观察模式")
-        print("=" * 60)
-        print("  流式思维显示 - 打字机效果")
-        print("  随时输入打断思维流")
-        print("  输入 quit 或 exit 退出")
-        print("=" * 60 + "\n")
+        with self._terminal_lock:
+            print("\n" + "=" * 60)
+            print("       类人脑AI - 持续思维流观察模式")
+            print("=" * 60)
+            print("  流式思维显示 - 打字机效果")
+            print("  随时输入打断思维流")
+            print("  输入 quit 或 exit 退出")
+            print("=" * 60 + "\n")
         
         # 启动后台独白线程
         monologue_thread = threading.Thread(target=self._monologue_loop)
@@ -71,6 +73,11 @@ class ContinuousThoughtFlowSession:
             while self.is_running:
                 try:
                     # 阻塞等待用户输入
+                    # 提示符显示需持锁
+                    with self._terminal_lock:
+                        print("\r\033[92m你：\033[0m", end="", flush=True)
+                    
+                    # 阻塞等待用户输入 (input 期间不持锁，允许后台线程尝试获取锁并打印)
                     user_input = input()
                     
                     if user_input.strip().lower() in ["quit", "exit"]:
@@ -124,25 +131,29 @@ class ContinuousThoughtFlowSession:
     def _display_inner_thought(self):
         """显示内心思维独白"""
         try:
-            print("\n[内心思维] ", end="", flush=True)
+            with self._terminal_lock:
+                print("\n[内心思维] ", end="", flush=True)
             
             # 使用流式生成
             generated_any = False
-            for char in self.ai.inner_thought_engine.generate_inner_thought(max_tokens=30):
-                if self._pause_event.is_set():
+            # 增加 max_tokens 从 30 到 60
+            for char in self.ai.inner_thought_engine.generate_inner_thought(max_tokens=60):
+                if self._pause_event.is_set() or self._stop_event.is_set():
                     break
-                # 简单的噪音过滤：不显示孤立的特殊符号
-                if not generated_any and char in [" ", "|", "<", ">", "-", " "]:
+                # 简单的噪音过滤
+                if not generated_any and char in [" ", "|", "<", ">", "-", " ", "\n"]:
                     continue
                 
-                print(char, end="", flush=True)
+                with self._terminal_lock:
+                    print(char, end="", flush=True)
                 generated_any = True
                 self.total_chars += 1
                 time.sleep(random.uniform(*self.char_interval))
             
-            if not generated_any:
-                print("...", end="", flush=True)
-            print()
+            with self._terminal_lock:
+                if not generated_any:
+                    print("...", end="", flush=True)
+                print()
             
         except Exception as e:
             print(f"\n[内心思维生成错误: {e}]")
@@ -200,34 +211,35 @@ class ContinuousThoughtFlowSession:
         self.cycle_count += 1
         
         try:
-            print("\n" + "-" * 40)
-            print("[用户输入]")
-            print("-" * 40)
-            print(f"用户: {user_input}")
-            
-            # 判断自闭环模式
-            mode = "self_combine"
-            mode_names = {
-                "self_combine": "自组合",
-                "self_game": "自博弈",
-                "self_eval": "自评判"
-            }
-            
-            if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
-                try:
-                    mode = self.ai.self_loop.decide_mode(user_input)
-                    print(f"\n[自闭环模式: {mode_names.get(mode, mode)}]")
-                except Exception as e:
-                    print(f"\n[自闭环模式检测失败: {e}]")
-            
-            # 显示思考中
-            print(f"\nAI: ", end="", flush=True)
-            thinking_chars = "思考中..."
-            for char in thinking_chars:
-                print(char, end="", flush=True)
-                time.sleep(0.05)
-            print("\r" + " " * 20 + "\r", end="", flush=True)  # 清除
-            print(f"AI: ", end="", flush=True)
+            with self._terminal_lock:
+                print("\n" + "-" * 40)
+                print("[用户输入]")
+                print("-" * 40)
+                print(f"用户: {user_input}")
+                
+                # 判断自闭环模式
+                mode = "self_combine"
+                mode_names = {
+                    "self_combine": "自组合",
+                    "self_game": "自博弈",
+                    "self_eval": "自评判"
+                }
+                
+                if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
+                    try:
+                        mode = self.ai.self_loop.decide_mode(user_input)
+                        print(f"\n[自闭环模式: {mode_names.get(mode, mode)}]")
+                    except Exception as e:
+                        print(f"\n[自闭环模式检测失败: {e}]")
+                
+                # 显示思考中
+                print(f"\nAI: ", end="", flush=True)
+                thinking_chars = "思考中..."
+                for char in thinking_chars:
+                    print(char, end="", flush=True)
+                    time.sleep(0.05)
+                print("\r" + " " * 30 + "\r", end="", flush=True)  # 清除充分一点
+                print(f"AI: ", end="", flush=True)
             
             # 生成回答
             try:

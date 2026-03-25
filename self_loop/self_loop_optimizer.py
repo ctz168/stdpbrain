@@ -81,6 +81,7 @@ class SelfLoopOptimizer:
         Returns:
             mode: "self_combine" | "self_game" | "self_eval"
         """
+        self.cycle_count += 1
         input_lower = input_text.lower()
         
         # ========== 检查高难度关键词 ==========

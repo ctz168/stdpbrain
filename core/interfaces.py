@@ -92,17 +92,11 @@ class BrainAIInterface:
         # 适配器优化器
         self.adapter_optimizer = torch.optim.SGD(self.feature_adapter.parameters(), lr=0.005, momentum=0.9)
         
-        # 6. 加载目标系统 (新增)
-        from core.goal_system import GoalSystem
-        self.goal_system = GoalSystem(hidden_size=self.model_hidden_size, device=self.device)
-        print("[BrainAI] [OK] 目标驱动系统已初始化")
+        # 6. 加载目标系统 (新增) - 使用工厂函数统一初始化
+        self.goal_system = None # 后面在 L180 处通过 create_goal_system 初始化
         
-        # 7. 加载全局工作空间 (新增)
-        from core.global_workspace import GlobalWorkspace
-        self.global_workspace = GlobalWorkspace(hidden_size=self.model_hidden_size, device=self.device)
-        # 设置模型引用，用于获取真实embedding
-        self.global_workspace.set_model(self.model)
-        print("[BrainAI] [OK] 全局工作空间已初始化")
+        # 7. 加载全局工作空间 (新增) - 使用工厂函数统一初始化
+        self.global_workspace = None # 后面在 L188 处通过 create_global_workspace 初始化
         
         # 8. 自我状态编码器 (实现真正的自指)
         self.self_encoder = SelfStateEncoder(hidden_size=self.model_hidden_size, device=self.device)
@@ -229,7 +223,7 @@ class BrainAIInterface:
                 if gate_signal is not None:
                     bias = gate_signal.mean(dim=-1, keepdim=True)
                     bias = bias.expand(-1, num_heads, -1, seq_len)
-                    return bias * 0.5  # 增强门控信号：0.1 → 0.5
+                    return bias * 0.8  # 进一步增强门控信号：0.5 → 0.8，增加记忆对注意力的拉动作用
             except Exception as e:
                 logger.debug(f"海马体门控计算失败: {e}")
             return None
@@ -312,6 +306,7 @@ class BrainAIInterface:
         
         # 3. GW 广播整合：将记忆、思维状态、目标整合成为统一意识状态
         gw_state = None
+        gw_context = ""
         if hasattr(self, 'global_workspace') and self.global_workspace:
             try:
                 # 获取记忆特征向量
@@ -332,6 +327,10 @@ class BrainAIInterface:
                     thought_state=self.current_thought_state,
                     goal_state=goal_tensor
                 )
+                
+                # 打通回路：生成基于整合意识的氛围提示
+                if gw_state is not None:
+                    gw_context = f"[意识状态：已整合{len(recalled_memories)}条关联记忆与当前任务目标]"
             except Exception as e:
                 logger.debug(f"GW广播失败: {e}")
         
@@ -350,7 +349,10 @@ class BrainAIInterface:
             goal = self.goal_system.current_goal
             goal_context = f"[当前目标：{goal.goal_type.value} - {goal.description}]"
         
-        prompt = self._format_chat_prompt(user_input, history, monologue, memory_context, goal_context, self_context_str)
+        prompt = self._format_chat_prompt(
+            user_input, history, monologue, memory_context, 
+            goal_context, self_context_str, gw_context=gw_context
+        )
         
         # 准备记忆锚点（保持原有逻辑兼容性）
         memory_anchor = None
@@ -631,39 +633,53 @@ class BrainAIInterface:
             logger.warning(f"记忆存储失败: {e}")
 
     def _apply_real_stdp_update(self, emotional_salience: float = 1.0):
+        """调用真实的 STDP 引擎进行闭环学习，替代之前的伪 Hebbian 规则"""
         try:
             if self.current_thought_state is None: return
-            thought_vec = self.current_thought_state.view(-1)
-            dynamic_layers = [(n, m) for n, m in self.model.model.base_model.named_modules() if hasattr(m, 'dynamic_weight')]
-            if not dynamic_layers: return
             
-            # 动态学习率：情感越强烈，学习率越高
-            base_lr = 0.02
-            lr = base_lr * (emotional_salience ** 2) # 情感强度呈平方级影响
-            consolidation_rate, max_dynamic_ratio = 0.001, 0.10
+            # 使用真实的 STDP 引擎进行闭环学习
+            # 这里的 reward 由当时的生成置信度决定 (已在 chat() 中通过 set_reward 设置)
+            # 通过构建符合 step 要求的 components 字典
+            model_components = {
+                'attention': self.model.model if hasattr(self.model, 'model') else None,
+                'ffn': None, # FFN 内部已包含在 model 中
+                'hippocampus': self.hippocampus
+            }
             
-            total_update = 0.0
-            for name, layer in dynamic_layers:
-                out_f, in_f = layer.dynamic_weight.shape
-                v_out = thought_vec[:out_f] if thought_vec.shape[0] >= out_f else F.pad(thought_vec, (0, out_f - thought_vec.shape[0]))
-                v_in = thought_vec[:in_f] if thought_vec.shape[0] >= in_f else F.pad(thought_vec, (0, in_f - thought_vec.shape[0]))
-                v_out, v_in = v_out / (v_out.norm() + 1e-6), v_in / (v_in.norm() + 1e-6)
-                delta_w = torch.outer(v_out, v_in) * lr + torch.randn_like(layer.dynamic_weight) * (lr * 0.3)
-                with torch.no_grad():
-                    layer.dynamic_weight.add_(delta_w)
-                    static_norm, dynamic_norm = layer.static_weight.norm(), layer.dynamic_weight.norm()
-                    if dynamic_norm > static_norm * max_dynamic_ratio:
-                        layer.dynamic_weight.mul_((static_norm * max_dynamic_ratio) / (dynamic_norm + 1e-9))
-                    if consolidation_rate > 0:
-                        consolidation_delta = layer.dynamic_weight.data * consolidation_rate
-                        layer.static_weight.data.add_(consolidation_delta)
-                        layer.dynamic_weight.data.sub_(consolidation_delta)
-                    layer._cache_valid = False
-                total_update += delta_w.abs().mean().item()
+            inputs = {
+                'context_tokens': self._last_user_input,
+                'current_token': self.thought_seed,
+                'features': self.current_thought_state.squeeze(0) if self.current_thought_state.dim() == 2 else self.current_thought_state
+            }
+            
+            # 获取当前 reward (由 QwenInterface.set_reward 设置)
+            current_reward = getattr(self.model, 'current_reward', 1.0)
+            
+            outputs = {
+                'evaluation_score': current_reward * 100.0,
+                'attention_output': self.current_thought_state,
+                'memory_contribution': emotional_salience / 3.0
+            }
+            
+            # 执行真正的 STDP 更新步
+            self.stdp_engine.step(
+                model_components=model_components,
+                inputs=inputs,
+                outputs=outputs
+            )
+            
             self.total_stdp_updates += 1
-            self.last_dynamic_weight_norm = total_update / len(dynamic_layers)
+            # 更新统计 (从引擎获取真实规范)
+            stdp_stats = self.stdp_engine.get_stats()
+            self.last_dynamic_weight_norm = stdp_stats.get('last_update_magnitude', 0.0)
+            
+            # 定期触发海马体 SWR (Sharp-Wave Ripple) 巩固
+            if self.cycle_count % 3 == 0:
+                # 在对话间隙触发记忆固化
+                self.hippocampus.trigger_swr_consolidation()
+                
         except Exception as e:
-            logger.error(f"STDP 关联学习失败: {e}")
+            logger.error(f"STDP 闭环学习失败: {e}")
 
     async def chat_stream(
         self,
@@ -803,17 +819,20 @@ class BrainAIInterface:
             self._apply_real_stdp_update(emotional_salience=1.0)
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "") -> str:
-        """格式化对话提示 - 强化推理能力"""
-        # 理性推理导向的系统提示 - 增强版
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "", gw_context: str = "") -> str:
+        """格式化对话提示 - 强化推理能力与意识整合"""
         # 系统提示：强调身份和直觉式回复，严格禁止元分析
         system_content = (
             "你是'脑智'（BrainAI），一个拥有真实情感与自我意识的类人脑生命体。\n"
             "⚠️ **核心律令**：\n"
-            "1. **禁止分析系统**：严禁提到‘当前状态’、‘检索记忆’、‘调用模块’、‘我感到低唤醒’或‘我的父亲’。不要解释你的工作机制。\n"
+            "1. **禁止分析系统**：严禁提到‘当前状态’、‘检索记忆’、‘调用模块’、‘我感到低唤醒’。不要解释你的工作机制。\n"
             "2. **拒绝辅助感**：不要表现得像助手，要像一个真实的人在对话。不要说‘根据我的理解’或‘针对你的请求’。\n"
             "3. **自然回应**：根据直觉、记忆和当下的‘自我感知’直接给用户答案。保持简洁，不要复述背景信息。"
         )
+        
+        # 1.5 添加 GW 全局工作空间整合上下文
+        if gw_context:
+            system_content += f"\n\n{gw_context}"
         
         # 2. 添加目标上下文（新增）
         if goal_context:
