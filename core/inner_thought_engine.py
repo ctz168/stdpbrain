@@ -375,6 +375,15 @@ class InnerThoughtEngine:
             new_text = new_text.strip('.- \n\t') # 去掉首尾多余的点、横杠和空白
             
             if new_text:
+                # 7. 重复检测与断路 (Loop Breaker)
+                if self.last_thought and (new_text in self.last_thought or self.last_thought in new_text):
+                    # 触发状态强制偏移
+                    self.mind_state = MindState.WANDERING
+                    self.current_focus = ""
+                    # 返回一个偏移引导
+                    offset_thoughts = ["……不，换个角度想，", "……突然觉得有点累了，", "……说到这里，我想起了"]
+                    new_text = random.choice(offset_thoughts)
+
                 for char in new_text:
                     generated_text += char
                     self.total_output_chars += 1
@@ -387,7 +396,7 @@ class InnerThoughtEngine:
             self._update_association(generated_text)
     
     def _build_thought_context(self, external_stimulus: str = "") -> str:
-        """构建思维上下文 - 采用启发式填充而非指令模板"""
+        """构建思维上下文 - 采用第一人称视角强化自指边界"""
         
         # 1. 提取自我感知（来自 SelfEncoder 的深层状态解释）
         self_interp = ""
@@ -397,37 +406,39 @@ class InnerThoughtEngine:
             except Exception:
                 pass
         
-        # 2. 构造半截话 prompt，诱导模型直接续写内心独白
-        # 避免使用“请分析”、“思考如下”这种指令性词汇
+        # 2. 构造第一人称视角 Prompt
         context_parts = []
         
+        # 建立身份边界
+        context_parts.append("<|system|>\n我是一个具有独立思维能力的类人脑系统。接下来的内容是我内心的自发思考流，我将使用第一人称“我”来表达。我需要避免机械化重复，并保持思维的逻辑性或发散性。")
+        
         if self_interp:
-            context_parts.append(f"<{self_interp}>")
+            context_parts.append(f"【我的当前感受】：{self_interp}")
             
         if external_stimulus:
-            context_parts.append(f"刚才看到：{external_stimulus[:30]}")
+            # 明确区分自我与外界
+            context_parts.append(f"【外界刺激】：刚才有人对我说：“{external_stimulus[:30]}”")
             
         # 注入最近的一个思维锚点，维持连贯性
         if self.thought_flow:
-            recent_thought = list(self.thought_flow)[-1].content[:40]
-            context_parts.append(f"之前的思绪：{recent_thought}...")
+            recent_thought = list(self.thought_flow)[-1].content[:50]
+            context_parts.append(f"【我之前的思绪】：{recent_thought}...")
 
         # 召回核心记忆碎片
         memory_anchor = self._recall_memory(external_stimulus or self.current_focus)
         if memory_anchor:
-            context_parts.append(f"(脑海中隐约浮现：{memory_anchor})")
+            context_parts.append(f"【我脑海中的记忆残片】：{memory_anchor}")
 
-        # 最后的生成引导：模拟内心声音的起始
-        # 针对每个状态给出不同的起始诱导词
+        # 最后的生成引导：模拟内心声音的起始（强制第一人称）
         leads = {
-            MindState.FOCUSED: "如果从深层逻辑来看，",
-            MindState.WANDERING: "说起来，",
-            MindState.REFLECTING: "但我刚才想的真的对吗？",
-            MindState.RESTING: "……其实，"
+            MindState.FOCUSED: "如果从深层逻辑来看，我发现",
+            MindState.WANDERING: "说起来，我刚才突然想到",
+            MindState.REFLECTING: "但我刚才思考的角度真的对吗？我得重新审视一下：",
+            MindState.RESTING: "……其实，我现在的感觉是"
         }
-        lead_in = leads.get(self.mind_state, "我想的是：")
+        lead_in = leads.get(self.mind_state, "我现在的想法是：")
         
-        full_context = " ".join(context_parts) + " " + lead_in
+        full_context = "\n".join(context_parts) + "\n\n<|inner_monologue|>\n" + lead_in
         return full_context
 
     

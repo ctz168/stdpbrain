@@ -491,42 +491,21 @@ class BrainAIInterface:
 
     def _generate_spontaneous_monologue(self, max_tokens: int = 30, temperature: float = 0.55) -> str:
         """
-        生成自发独白 - 优化版本
-        
-        改进：
-        - 降低temperature提升稳定性 (0.6 -> 0.55)
-        - 增强推理链引导
+        生成自发独白 - 统一委托给 InnerThoughtEngine
         """
-        prompt = self._build_spontaneous_prompt()
-        try:
-            # 降低temperature和重复惩罚
-            output, hidden_state = self._generate_with_hidden_state(
-                prompt, 
-                max_tokens=max_tokens, 
-                temperature=temperature, 
-                repetition_penalty=1.15  # 从1.1提升到1.15，减少重复
-            )
-            monologue = "思维有些模糊..." if self._is_gibberish(output) else output.strip()
-            for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>']:
-                monologue = monologue.replace(tag, '')
-            monologue = monologue.strip()
-            if self._is_gibberish(monologue) or len(monologue) < 2:
-                monologue = "思考中..."
-            if len(monologue) > 50:
-                monologue = monologue[:50] + "..."
-            if hidden_state is not None:
-                self.current_thought_state = hidden_state
-        except Exception as e:
-            logger.error(f"独白生成失败: {e}")
-            monologue = "思考中..."
-        if monologue and len(monologue) > 3:
-            semantic_pointer = f"思考: {monologue[:30]}"
-            self._store_with_real_features(monologue, hidden_state if 'hidden_state' in locals() else None, semantic_pointer=semantic_pointer)
-            self.monologue_history.append(monologue)
-            if len(self.monologue_history) > self.max_monologue_history:
-                self.monologue_history.pop(0)
-        self._apply_real_stdp_update(emotional_salience=1.0)
-        return monologue
+        if not self.inner_thought_engine:
+            return "思考中..."
+            
+        # 注意：inner_thought_engine.generate_inner_thought 是生成器
+        monologue = ""
+        # 暂时同步收集（BrainAIInterface 内部许多地方是同步调用）
+        for char in self.inner_thought_engine.generate_inner_thought(
+            external_stimulus=self._last_user_input, 
+            max_tokens=max_tokens
+        ):
+            monologue += char
+            
+        return monologue.strip()
 
     def _is_gibberish(self, text: str) -> bool:
         if not text: return True

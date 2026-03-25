@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import time
 import asyncio
+import sys
 
 
 class QwenModelWrapper(nn.Module):
@@ -438,9 +439,10 @@ class QwenInterface:
     
 
     def set_reward(self, reward: float):
-        """设置反馈奖励 (来自优化器)"""
+        """设置反馈奖励 (来自优化器) - 使用 stderr 避免干扰 stdout 流式输出"""
         self._last_reward = max(0.1, min(2.0, reward))
-        print(f"[QwenInterface] 已接收新奖励反馈: {self._last_reward:.2f}")
+        sys.stderr.write(f"\n[QwenInterface] 接收新奖励反馈: {self._last_reward:.2f}\n")
+        sys.stderr.flush()
 
     def forward_step(
         self,
