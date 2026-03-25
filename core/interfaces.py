@@ -547,19 +547,30 @@ class BrainAIInterface:
             return "...", None
 
     def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None):
+        """存储记忆到海马体 - 修复版"""
         try:
             if hidden_state is not None:
                 features = hidden_state[0, -1, :] if hidden_state.dim() == 3 else hidden_state.squeeze(0) if hidden_state.dim() == 2 else hidden_state
             else:
+                # 修复：添加attention_mask避免警告
                 input_ids = self.model.tokenizer.encode(monologue[:20], return_tensors="pt").to(self.device)
+                attention_mask = torch.ones_like(input_ids)  # 添加attention_mask
+                
                 with torch.no_grad():
                     emb = self.model.model.base_model.get_input_embeddings()(input_ids)
                     features = emb.mean(dim=1).squeeze(0)
+            
             if features.shape[0] == self.model_hidden_size:
                 with torch.no_grad():
                     features = self.feature_adapter(features.unsqueeze(0)).squeeze(0)
+            
             semantic_pointer = semantic_pointer or (monologue[:30] if len(monologue) > 30 else monologue)
-            self.hippocampus.encode(features=features, token_id=hash(monologue) % 100000, timestamp=int(time.time() * 1000), context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}])
+            self.hippocampus.encode(
+                features=features, 
+                token_id=hash(monologue) % 100000, 
+                timestamp=int(time.time() * 1000), 
+                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}]
+            )
         except Exception as e:
             logger.warning(f"记忆存储失败: {e}")
 

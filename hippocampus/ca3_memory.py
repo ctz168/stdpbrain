@@ -31,7 +31,8 @@ class EpisodicMemory:
     dg_features: Optional[torch.Tensor] = None  # DG 分离后的特征
     
     def to_dict(self) -> dict:
-        return {
+        """转换为字典 - 避免序列化torch.Tensor"""
+        result = {
             'memory_id': self.memory_id,
             'timestamp': self.timestamp,
             'temporal_skeleton': self.temporal_skeleton,
@@ -41,6 +42,15 @@ class EpisodicMemory:
             'is_core': self.is_core,
             'content': self.content
         }
+        
+        # 安全序列化tensor：detach并转为numpy
+        if self.dg_features is not None:
+            try:
+                result['dg_features'] = self.dg_features.detach().cpu().numpy().tolist()
+            except:
+                result['dg_features'] = None
+        
+        return result
 
 
 class CA3EpisodicMemory(nn.Module):
