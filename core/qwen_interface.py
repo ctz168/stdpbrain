@@ -463,8 +463,8 @@ class QwenInterface:
                  is_tool_call = True
         
         # 记录推理进度 (仅针对 CPU 缓慢环境)
-        if self.device == "cpu":
-             print(".", end="", flush=True)
+        # if self.device == "cpu":
+        #      print(".", end="", flush=True)
         # 优化2: eval() 已在 __init__ 中调用，不再每步重复
         outputs = {}
         start_time = time.time()

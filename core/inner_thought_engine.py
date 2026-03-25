@@ -314,15 +314,36 @@ class InnerThoughtEngine:
                 thought_context = self._build_thought_context(external_stimulus)
                 
                 # 流式生成
-                for char in self.model.generate_stream_sync(
+                in_think_block = False
+                for token in self.model.generate_stream_sync(
                     thought_context, 
                     max_tokens=max_tokens, 
-                    temperature=0.9
+                    temperature=0.9,
+                    enable_thinking=True  # 允许模型思考，但在输出层过滤
                 ):
-                    generated_text += char
-                    self.total_output_chars += 1
-                    yield char
-                    time.sleep(random.uniform(*self.char_interval))
+                    # 鲁棒的标签过滤逻辑
+                    if "<think>" in token:
+                        in_think_block = True
+                        continue
+                    if "</think>" in token:
+                        in_think_block = False
+                        continue
+                        
+                    if in_think_block:
+                        continue
+                        
+                    # 过滤掉乱码符号或过长的点号序列
+                    if len(token) > 2 and token.count('.') > 1:
+                        token = "..."
+                        
+                    if char in ('<', '>', '[', ']'):
+                        continue  # 过滤掉残留的分隔符
+                        
+                    generated_text += token
+                    self.total_output_chars += len(token)
+                    for char in token:
+                        yield char
+                        time.sleep(random.uniform(*self.char_interval))
             
             elif hasattr(self.model, 'model') and hasattr(self.model, 'tokenizer'):
                 # 直接使用模型生成
@@ -337,7 +358,8 @@ class InnerThoughtEngine:
                         max_new_tokens=max_tokens,
                         temperature=0.9,
                         do_sample=True,
-                        top_p=0.9
+                        top_p=0.9,
+                        repetition_penalty=1.3  # 防止重复
                     )
                 
                 # 解码并输出
@@ -348,11 +370,19 @@ class InnerThoughtEngine:
                 else:
                     new_text = result
                 
-                for char in new_text:
-                    generated_text += char
-                    self.total_output_chars += 1
-                    yield char
-                    time.sleep(random.uniform(*self.char_interval))
+                # 净化：过滤掉 <think>...</think> 块、编号列表、以及常见的循环噪音符号 (如 -, *, .)
+                import re
+                new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.DOTALL)
+                # 过滤各种列表/引导符：1. 1、 - * 等
+                new_text = re.sub(r'^\s*[\d\-\*\u2022]+\.?[\u3001,]?\s*', '', new_text.strip())
+                new_text = new_text.strip('.- \n\t') # 去掉首尾多余的点、横杠和空白
+                
+                if new_text:
+                    for char in new_text:
+                        generated_text += char
+                        self.total_output_chars += 1
+                        yield char
+                        time.sleep(random.uniform(*self.char_interval))
             
             else:
                 # 降级：使用预设思维
@@ -381,27 +411,28 @@ class InnerThoughtEngine:
         state_info = self.state_prompts[self.mind_state]
         mode_trigger = random.choice(self.mode_prompts[self.thinking_mode])
         
-        # 基础思维模板
+        # 基础思维模板：短句、自然联想风格，避免编号列表触发模型做结构化推理
+        theme_str = self.current_theme.content if self.current_theme else "存在"
         templates = {
             MindState.FOCUSED: [
-                f"当前思维：{self.current_theme.content if self.current_theme else '分析问题'}。深入思考...",
-                f"聚焦于{mode_trigger}，仔细分析当前情况...",
-                f"让我深入思考这个问题..."
+                f"专注在 {theme_str} 上，有个细节值得深挖——",
+                f"关于 {mode_trigger}，我注意到一个有意思的角度——",
+                f"这件事的核心其实是……"
             ],
             MindState.WANDERING: [
-                f"思绪飘到了...想到了{mode_trigger}",
-                f"这让我联想到一些相关的事物...",
-                f"顺便想到，可能与{self.current_concept or '某些概念'}有关..."
+                f"思绪飘到了 {mode_trigger}，有点像之前的感觉……",
+                f"突然联想到一个不太相关的事情——",
+                f"哦，{self.current_concept or '某个东西'} 让我想起……"
             ],
             MindState.REFLECTING: [
-                f"等等，让我回顾一下刚才的思考...",
-                f"这个推理对吗？让我验证一下...",
-                f"重新审视这个观点..."
+                "等等，我刚才的判断靠谱吗？",
+                "重新想想——好像漏掉了什么……",
+                "这个结论站得住脚吗，再过一遍——"
             ],
             MindState.RESTING: [
-                f"整理一下思路...",
-                f"后台处理中，等待新的输入...",
-                f"思维在休息，准备下一次专注..."
+                "……意识在漫无目的地漂浮……",
+                "此刻很安静，没有任何杂念。",
+                "就在这里，观察着思维的流转。"
             ]
         }
         
@@ -409,27 +440,26 @@ class InnerThoughtEngine:
         thoughts = templates.get(self.mind_state, templates[MindState.RESTING])
         base_thought = random.choice(thoughts)
         
-        # 如果有外部刺激，加入上下文
+        # 如果有外部刺激，前置简短提示
         if external_stimulus:
-            base_thought = f"关于\"{external_stimulus[:30]}\"，{base_thought}"
+            base_thought = f"关于「{external_stimulus[:20]}」，{base_thought}"
         
         # 加入记忆上下文
         memory_context = self._recall_memory(external_stimulus or self.current_focus)
         if memory_context:
-            base_thought = f"回忆起{memory_context}...{base_thought}"
+            base_thought = f"记得 {memory_context}……{base_thought}"
             
-        # 加入自我反思：引用最近的思维片段 (核心：自指)
+        # 加入自我反思：仅引用最近一个思维片段，避免逗号列表触发列表生成
         if self.thought_flow and len(self.thought_flow) > 0:
-            recent_thoughts = [t.content[:20] for t in list(self.thought_flow)[-3:]]
-            reflection_prefix = f"刚才我在想：{', '.join(recent_thoughts)}。"
-            base_thought = reflection_prefix + base_thought
+            recent = list(self.thought_flow)[-1].content[:20]
+            base_thought = f"刚才还在想「{recent}」，{base_thought}"
         
-        # 加入自我感知：使用 self_encoder 的情感/唤醒度解释（更深层的自指）
+        # 加入自我感知：使用 self_encoder 的情感解释（更深层的自指）
         if hasattr(self, '_self_encoder') and self._self_encoder is not None:
             try:
                 self_interp = self._self_encoder.interpret()
                 if self_interp and "意识刚刚开始" not in self_interp:
-                    base_thought = f"[自我感知: {self_interp}] " + base_thought
+                    base_thought = f"[{self_interp}] " + base_thought
             except Exception:
                 pass
         
