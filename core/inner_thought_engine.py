@@ -406,13 +406,21 @@ class InnerThoughtEngine:
                     # 2. 字符重合率检测
                     elif get_overlap_ratio(new_text, self.last_thought) > 0.85:
                         is_repetition = True
-                    # 3. 内部自我重复检测 (n-gram)
-                    elif len(new_text) > 20:
-                        for i in range(len(new_text) - 15):
-                            fragment = new_text[i:i+8]
-                            if new_text.count(fragment) > 2:
+                    # 3. 内部自我重复检测 (n-gram) - 收紧检测长度与频次
+                    elif len(new_text) > 15:
+                        # 增加片段长度从 8 到 12，但只要出现 > 1 次即触发 (捕获双重循环)
+                        for i in range(len(new_text) - 13):
+                            fragment = new_text[i:i+12]
+                            if new_text.count(fragment) > 1:
                                 is_repetition = True
                                 break
+                        # 额外捕获短片段的高频循环 (如 "那么如果...")
+                        if not is_repetition:
+                            for i in range(len(new_text) - 7):
+                                fragment = new_text[i:i+6]
+                                if new_text.count(fragment) > 3: # 极短片段允许一定频次，但超限即断
+                                    is_repetition = True
+                                    break
 
                 if is_repetition:
                     # 触发状态强制偏移

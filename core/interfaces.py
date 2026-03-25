@@ -646,9 +646,16 @@ class BrainAIInterface:
                 'hippocampus': self.hippocampus
             }
             
+            # 对输入文本进行分词，获取 Token ID 以便 STDP 引擎建立时序关联
+            tokenizer = self.model.tokenizer
+            context_ids = tokenizer.encode(self._last_user_input, add_special_tokens=False)
+            # current_token 只要一个代表性的 ID
+            seed_ids = tokenizer.encode(self.thought_seed, add_special_tokens=False)
+            current_id = seed_ids[-1] if seed_ids else tokenizer.eos_token_id
+            
             inputs = {
-                'context_tokens': self._last_user_input,
-                'current_token': self.thought_seed,
+                'context_tokens': torch.tensor(context_ids, device=self.device),
+                'current_token': int(current_id),
                 'features': self.current_thought_state.squeeze(0) if self.current_thought_state.dim() == 2 else self.current_thought_state
             }
             
