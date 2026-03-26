@@ -89,15 +89,11 @@ class BrainAIBot:
                         logger.info(f"[Thinking] 正在流式生成内心独白...")
                         
                         # 先发送初始消息
-                        try:
-                            message = await self.application.bot.send_message(
-                                chat_id=chat_id,
-                                text="💭 *[内心独白]*\n_思考中..._",
-                                parse_mode='Markdown'
-                            )
-                        except Exception as e:
-                            logger.warning(f"发送初始消息失败: {e}")
-                            continue
+                        message = await self.application.bot.send_message(
+                            chat_id=chat_id,
+                            text="💭 *[内心独白]*\n_思考中..._",
+                            parse_mode='Markdown'
+                        )
                         
                         # 流式生成独白
                         full_monologue = ""
@@ -105,38 +101,22 @@ class BrainAIBot:
                         last_sent_text = ""
                         update_interval = 1.5  # 增加间隔以避免 429
                         
-                        try:
-                            async for chunk in self.ai.generate_monologue_stream(max_tokens=150):
-                                full_monologue += chunk
+                        async for chunk in self.ai.generate_monologue_stream(max_tokens=150):
+                            full_monologue += chunk
+                            
+                            current_time = time.time()
+                            if current_time - last_update_time > update_interval:
+                                display_text = full_monologue[:500]
+                                new_text = f"💭 *[内心独白]*\n_{display_text}▌_"
                                 
-                                current_time = time.time()
-                                if current_time - last_update_time > update_interval:
-                                    display_text = full_monologue[:500]
-                                    new_text = f"💭 *[内心独白]*\n_{display_text}▌_"
-                                    
-                                    # 只有在内容变化时才更新，避免 400 错误
-                                    if new_text != last_sent_text:
-                                        try:
-                                            await message.edit_text(
-                                                text=new_text,
-                                                parse_mode='Markdown'
-                                            )
-                                            last_sent_text = new_text
-                                            last_update_time = current_time
-                                        except Exception as e:
-                                            if "Message is not modified" in str(e):
-                                                pass
-                                            elif "Flood control exceeded" in str(e):
-                                                await asyncio.sleep(5) # 遇到 429 暂停
-                                            else:
-                                                try:
-                                                    fallback_text = f"💭 内心独白:\n{display_text}▌"
-                                                    if fallback_text != last_sent_text:
-                                                        await message.edit_text(text=fallback_text, parse_mode=None)
-                                                        last_sent_text = fallback_text
-                                                except:
-                                                    pass
-                                            
+                                # 只有在内容变化时才更新，避免 400 错误
+                                if new_text != last_sent_text:
+                                    await message.edit_text(
+                                        text=new_text,
+                                        parse_mode='Markdown'
+                                    )
+                                    last_sent_text = new_text
+                                    last_update_time = current_time
                         except Exception as e:
                             logger.error(f"流式独白生成失败: {e}")
                             full_monologue = "我正在思考..."
@@ -153,28 +133,10 @@ class BrainAIBot:
                             # 最终消息
                             final_text = f"💭 *[内心独白]*\n_{clean_monologue}_"
                             if final_text != last_sent_text:
-                                for attempt in range(3):
-                                    try:
-                                        await message.edit_text(
-                                            text=final_text,
-                                            parse_mode='Markdown'
-                                        )
-                                        break
-                                    except Exception as e:
-                                        if "Message is not modified" in str(e):
-                                            break
-                                        if "Flood control exceeded" in str(e) and attempt < 2:
-                                            await asyncio.sleep(2)
-                                            continue
-                                        try:
-                                            await message.edit_text(
-                                                text=f"💭 内心独白:\n{clean_monologue}",
-                                                parse_mode=None
-                                            )
-                                            break
-                                        except:
-                                            if attempt == 2: logger.error(f"内心独白最终编辑失败: {e}")
-                                            await asyncio.sleep(1)
+                                await message.edit_text(
+                                    text=final_text,
+                                    parse_mode='Markdown'
+                                )
                             
                             logger.info(f"[Monologue Push] Sent to {chat_id}: {clean_monologue[:50]}...")
                 else:

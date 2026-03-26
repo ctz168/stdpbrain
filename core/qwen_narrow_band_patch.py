@@ -116,81 +116,72 @@ class SparseAttentionCompressor:
             
             # Try to extract from key_features
             if 'key_features' in anchor and anchor['key_features'] is not None:
-                try:
-                    feat = torch.tensor(anchor['key_features'], device=device, dtype=key_states.dtype)
-                    if feat.dim() == 1:
-                        feat = feat.view(1, 1, 1, -1)
-                    elif feat.dim() == 2:
-                        feat = feat.unsqueeze(0).unsqueeze(0)
-                    elif feat.dim() == 3:
-                        feat = feat.unsqueeze(0)
-                    
-                    # Adjust to correct head_dim
-                    if feat.shape[-1] != head_dim:
-                        if feat.shape[-1] < head_dim:
-                            pad = torch.zeros(*feat.shape[:-1], head_dim - feat.shape[-1], device=device, dtype=key_states.dtype)
-                            feat = torch.cat([feat, pad], dim=-1)
-                        else:
-                            feat = feat[..., :head_dim]
-                    
-                    # Expand to correct batch and num_heads
-                    if feat.shape[0] != batch_size:
-                        feat = feat.expand(batch_size, -1, -1, -1)
-                    if feat.shape[1] != num_heads:
-                        feat = feat.expand(-1, num_heads, -1, -1)
-                    
-                    anchor_k = feat
-                except Exception as e:
-                    pass
+                feat = torch.tensor(anchor['key_features'], device=device, dtype=key_states.dtype)
+                if feat.dim() == 1:
+                    feat = feat.view(1, 1, 1, -1)
+                elif feat.dim() == 2:
+                    feat = feat.unsqueeze(0).unsqueeze(0)
+                elif feat.dim() == 3:
+                    feat = feat.unsqueeze(0)
+                
+                # Adjust to correct head_dim
+                if feat.shape[-1] != head_dim:
+                    if feat.shape[-1] < head_dim:
+                        pad = torch.zeros(*feat.shape[:-1], head_dim - feat.shape[-1], device=device, dtype=key_states.dtype)
+                        feat = torch.cat([feat, pad], dim=-1)
+                    else:
+                        feat = feat[..., :head_dim]
+                
+                # Expand to correct batch and num_heads
+                if feat.shape[0] != batch_size:
+                    feat = feat.expand(batch_size, -1, -1, -1)
+                if feat.shape[1] != num_heads:
+                    feat = feat.expand(-1, num_heads, -1, -1)
+                
+                anchor_k = feat
             
             # Try to extract from value_features
             if 'value_features' in anchor and anchor['value_features'] is not None:
-                try:
-                    feat = torch.tensor(anchor['value_features'], device=device, dtype=value_states.dtype)
-                    if feat.dim() == 1:
-                        feat = feat.view(1, 1, 1, -1)
-                    elif feat.dim() == 2:
-                        feat = feat.unsqueeze(0).unsqueeze(0)
-                    elif feat.dim() == 3:
-                        feat = feat.unsqueeze(0)
-                    
-                    if feat.shape[-1] != head_dim:
-                        if feat.shape[-1] < head_dim:
-                            pad = torch.zeros(*feat.shape[:-1], head_dim - feat.shape[-1], device=device, dtype=value_states.dtype)
-                            feat = torch.cat([feat, pad], dim=-1)
-                        else:
-                            feat = feat[..., :head_dim]
-                    
-                    if feat.shape[0] != batch_size:
-                        feat = feat.expand(batch_size, -1, -1, -1)
-                    if feat.shape[1] != num_heads:
-                        feat = feat.expand(-1, num_heads, -1, -1)
-                    
-                    anchor_v = feat
-                except Exception as e:
-                    pass
+                feat = torch.tensor(anchor['value_features'], device=device, dtype=value_states.dtype)
+                if feat.dim() == 1:
+                    feat = feat.view(1, 1, 1, -1)
+                elif feat.dim() == 2:
+                    feat = feat.unsqueeze(0).unsqueeze(0)
+                elif feat.dim() == 3:
+                    feat = feat.unsqueeze(0)
+                
+                if feat.shape[-1] != head_dim:
+                    if feat.shape[-1] < head_dim:
+                        pad = torch.zeros(*feat.shape[:-1], head_dim - feat.shape[-1], device=device, dtype=value_states.dtype)
+                        feat = torch.cat([feat, pad], dim=-1)
+                    else:
+                        feat = feat[..., :head_dim]
+                
+                if feat.shape[0] != batch_size:
+                    feat = feat.expand(batch_size, -1, -1, -1)
+                if feat.shape[1] != num_heads:
+                    feat = feat.expand(-1, num_heads, -1, -1)
+                
+                anchor_v = feat
             
             # If no pre-computed features, try to generate from dg_features
             if (anchor_k is None or anchor_v is None) and 'dg_features' in anchor and anchor['dg_features'] is not None:
-                try:
-                    feat = torch.tensor(anchor['dg_features'], device=device, dtype=key_states.dtype)
-                    if feat.dim() == 1:
-                        feat = feat.unsqueeze(0)
-                    
-                    # Simple projection to generate K and V
-                    hidden_size = num_heads * head_dim
-                    if feat.shape[-1] < hidden_size:
-                        pad = torch.zeros(feat.shape[0], hidden_size - feat.shape[-1], device=device, dtype=key_states.dtype)
-                        feat = torch.cat([feat, pad], dim=-1)
-                    else:
-                        feat = feat[..., :hidden_size]
-                    
-                    # Split into K and V
-                    kv_size = num_heads * head_dim
-                    anchor_k = feat[:, :kv_size].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1)
-                    anchor_v = feat[:, kv_size:kv_size*2].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1) if feat.shape[-1] >= kv_size * 2 else anchor_k.clone()
-                except Exception as e:
-                    pass
+                feat = torch.tensor(anchor['dg_features'], device=device, dtype=key_states.dtype)
+                if feat.dim() == 1:
+                    feat = feat.unsqueeze(0)
+                
+                # Simple projection to generate K and V
+                hidden_size = num_heads * head_dim
+                if feat.shape[-1] < hidden_size:
+                    pad = torch.zeros(feat.shape[0], hidden_size - feat.shape[-1], device=device, dtype=key_states.dtype)
+                    feat = torch.cat([feat, pad], dim=-1)
+                else:
+                    feat = feat[..., :hidden_size]
+                
+                # Split into K and V
+                kv_size = num_heads * head_dim
+                anchor_k = feat[:, :kv_size].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1)
+                anchor_v = feat[:, kv_size:kv_size*2].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1) if feat.shape[-1] >= kv_size * 2 else anchor_k.clone()
             
             # Add to lists
             if anchor_k is not None:
@@ -411,13 +402,8 @@ def patch_qwen_attention():
 # Helper functions from transformers
 def apply_rotary_pos_emb(q, k, cos, sin):
     """Apply rotary position embeddings"""
-    try:
-        from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb as _apply
-        return _apply(q, k, cos, sin)
-    except:
-        q_embed = (q * cos) + (rotate_half(q) * sin)
-        k_embed = (k * cos) + (rotate_half(k) * sin)
-        return q_embed, k_embed
+    from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb as _apply
+    return _apply(q, k, cos, sin)
 
 
 def rotate_half(x):

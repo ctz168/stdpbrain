@@ -73,50 +73,42 @@ class StreamHandler:
         start_time = time.time()
         full_response = ""
         
-        try:
-            self.total_streams += 1
-            
-            # ========== 2. 使用真实 AI 接口流式生成 ==========
-            if self.ai is not None:
-                # 使用 BrainAIInterface 的流式生成
-                async for token_text in self.ai.generate_stream(
-                    input_text=input_text,
-                    max_tokens=self.max_tokens,
-                    **kwargs
-                ):
-                    full_response += token_text
-                    yield token_text
-                    
-                    # 模拟打字延迟
-                    if self.delay_ms > 0:
-                        await asyncio.sleep(self.delay_ms / 1000.0)
+        # ========== 1. 使用真实 AI 接口流式生成 ==========
+        if self.ai is not None:
+            # 使用 BrainAIInterface 的流式生成
+            async for token_text in self.ai.generate_stream(
+                input_text=input_text,
+                max_tokens=self.max_tokens,
+                **kwargs
+            ):
+                full_response += token_text
+                yield token_text
                 
-                self.total_tokens_generated += len(full_response.split())
-            else:
-                # ========== 3. 降级：使用简化实现 ==========
-                full_response = self._generate_simple_response(input_text)
-                
-                # 按字符分块输出
-                chunk_size = 3
-                for i in range(0, len(full_response), chunk_size):
-                    chunk = full_response[i:i+chunk_size]
-                    yield chunk
+                # 模拟打字延迟
+                if self.delay_ms > 0:
                     await asyncio.sleep(self.delay_ms / 1000.0)
             
-            # ========== 4. 完成回调 ==========
-            if self.on_complete_callback:
-                self.on_complete_callback(full_response)
+            self.total_tokens_generated += len(full_response.split())
+        else:
+            # ========== 2. 降级：使用简化实现 ==========
+            full_response = self._generate_simple_response(input_text)
             
-            elapsed = time.time() - start_time
-            self.avg_stream_length = (
-                (self.avg_stream_length * (self.total_streams - 1) + len(full_response))
-                / self.total_streams
-            )
-            
-        except Exception as e:
-            if self.on_error_callback:
-                self.on_error_callback(e)
-            yield f"[错误] 生成失败：{str(e)}"
+            # 按字符分块输出
+            chunk_size = 3
+            for i in range(0, len(full_response), chunk_size):
+                chunk = full_response[i:i+chunk_size]
+                yield chunk
+                await asyncio.sleep(self.delay_ms / 1000.0)
+        
+        # ========== 3. 完成回调 ==========
+        if self.on_complete_callback:
+            self.on_complete_callback(full_response)
+        
+        elapsed = time.time() - start_time
+        self.avg_stream_length = (
+            (self.avg_stream_length * (self.total_streams - 1) + len(full_response))
+            / self.total_streams
+        )
 
     def _generate_simple_response(self, input_text: str) -> str:
         """生成简单响应 (无模型时使用)"""
@@ -152,11 +144,8 @@ class TypingSimulator:
 
     async def _typing_loop(self):
         while self._is_typing:
-            try:
-                await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
-                await asyncio.sleep(4) # Telegram typing state lasts 5 seconds
-            except:
-                break
+            await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
+            await asyncio.sleep(4) # Telegram typing state lasts 5 seconds
 
     async def start_typing(self):
         if not self._is_typing:

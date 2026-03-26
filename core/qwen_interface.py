@@ -22,21 +22,13 @@ logger = logging.getLogger(__name__)
 
 # ========== 窄带宽注意力补丁 ==========
 # 在导入时应用补丁，修改 Qwen 内部注意力层
-try:
-    from core.qwen_narrow_band_patch import patch_qwen_attention, get_memory_anchor_store
-    patch_qwen_attention()
-    NARROW_BAND_PATCHED = True
-except Exception as e:
-    print(f"[QwenInterface] 窄带宽注意力补丁失败: {e}")
-    NARROW_BAND_PATCHED = False
+from core.qwen_narrow_band_patch import patch_qwen_attention, get_memory_anchor_store
+patch_qwen_attention()
+NARROW_BAND_PATCHED = True
 
 # ========== KV Cache 滑动窗口管理器 ==========
-try:
-    from core.kv_cache_manager import KVCacheManager
-    KV_CACHE_MANAGER_AVAILABLE = True
-except Exception as e:
-    print(f"[QwenInterface] KV Cache管理器导入失败: {e}")
-    KV_CACHE_MANAGER_AVAILABLE = False
+from core.kv_cache_manager import KVCacheManager
+KV_CACHE_MANAGER_AVAILABLE = True
 
 
 class QwenModelWrapper(nn.Module):
@@ -69,16 +61,12 @@ class QwenModelWrapper(nn.Module):
         print(f"  量化：{self.quantization}")
         
         # ========== 1. 加载 Tokenizer ==========
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-               model_path,
-                trust_remote_code=True,
-               padding_side="left"
-            )
-            print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
-        except Exception as e:
-                print(f"[ERROR] Tokenizer 加载失败：{e}")
-                raise
+        self.tokenizer = AutoTokenizer.from_pretrained(
+           model_path,
+            trust_remote_code=True,
+           padding_side="left"
+        )
+        print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         
         # ========== 2. 加载模型 ==========
         self.base_model = self._load_model_with_quantization()
@@ -97,87 +85,74 @@ class QwenModelWrapper(nn.Module):
     
     def _load_model_with_quantization(self):
         """根据量化类型加载模型 (针对 macOS/CPU 优化)"""
-        try:
-            # 自动检测 Apple Silicon (M1/M2/M3)
-            is_mac = torch.backends.mps.is_available()
-            
-            # AUTO 模式：根据设备自动选择量化方式
-            if self.quantization == "AUTO":
-                if self.device == "cuda":
-                    self.quantization = "INT8"  # GPU 使用 INT8
-                elif is_mac:
-                    self.quantization = "FP16"  # macOS 使用 FP16
-                else:
-                    self.quantization = "FP32"  # CPU 使用 FP32（避免缓慢的动态量化）
-                print(f"  [AUTO] 自动选择量化方式: {self.quantization}")
-            
-            if self.quantization in ["INT4", "INT8"]:
-                if self.device == "cuda":
-                    # CUDA 环境下的量化
-                    from transformers import BitsAndBytesConfig
-                    load_in_4bit = (self.quantization == "INT4")
-                    quantization_config = BitsAndBytesConfig(
-                        load_in_4bit=load_in_4bit,
-                        load_in_8bit=not load_in_4bit,
-                        bnb_4bit_compute_dtype=torch.float16,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_use_double_quant=True
-                    )
-                    model = AutoModelForCausalLM.from_pretrained(
-                        self.model_path,
-                        quantization_config=quantization_config,
-                        device_map={"": self.device},
-                        trust_remote_code=True
-                    )
-                    print(f"  [OK] [CUDA] {self.quantization} 量化加载成功")
-                elif is_mac:
-                    # macOS 下使用 FP16
-                    model = AutoModelForCausalLM.from_pretrained(
-                        self.model_path,
-                        torch_dtype=torch.float16,
-                        device_map={"": "mps"},
-                        trust_remote_code=True
-                    )
-                    print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
-                else:
-                    # CPU 环境：使用更高兼容性的 FP32 加载
-                    print(f"  [!] [CPU] bitsandbytes 的 {self.quantization} 量化完全依赖 CUDA (Nvidia GPU)。")
-                    print(f"  [!] [CPU] 正在安全模式下以全精度 (FP32) 加载模型...")
-                    if self.quantization == "INT8":
-                        print(f"  [!] [CPU] 提示：全精度加载完成后，系统将为您调用 PyTorch 动态量化模块，在内存中将其转为 INT8。")
-                    
-                    model = AutoModelForCausalLM.from_pretrained(
-                        self.model_path,
-                        torch_dtype=torch.float32,
-                        low_cpu_mem_usage=True,
-                        trust_remote_code=True
-                    ).to("cpu")
-                    print("  [OK] [CPU] 纯 FP32 步骤防崩溃加载完成")
-                
-            else:  # FP16 或 FP32
-                dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
-                target_device = "mps" if (is_mac and self.device != "cuda") else self.device
+        # 自动检测 Apple Silicon (M1/M2/M3)
+        is_mac = torch.backends.mps.is_available()
+        
+        # AUTO 模式：根据设备自动选择量化方式
+        if self.quantization == "AUTO":
+            if self.device == "cuda":
+                self.quantization = "INT8"  # GPU 使用 INT8
+            elif is_mac:
+                self.quantization = "FP16"  # macOS 使用 FP16
+            else:
+                self.quantization = "FP32"  # CPU 使用 FP32（避免缓慢的动态量化）
+            print(f"  [AUTO] 自动选择量化方式: {self.quantization}")
+        
+        if self.quantization in ["INT4", "INT8"]:
+            if self.device == "cuda":
+                # CUDA 环境下的量化
+                from transformers import BitsAndBytesConfig
+                load_in_4bit = (self.quantization == "INT4")
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=load_in_4bit,
+                    load_in_8bit=not load_in_4bit,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True
+                )
                 model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    torch_dtype=dtype,
-                    device_map={"": target_device} if target_device != "cpu" else None,
+                    quantization_config=quantization_config,
+                    device_map={"": self.device},
                     trust_remote_code=True
                 )
-                print(f"  [OK] {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
+                print(f"  [OK] [CUDA] {self.quantization} 量化加载成功")
+            elif is_mac:
+                # macOS 下使用 FP16
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.float16,
+                    device_map={"": "mps"},
+                    trust_remote_code=True
+                )
+                print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
+            else:
+                # CPU 环境：使用更高兼容性的 FP32 加载
+                print(f"  [!] [CPU] bitsandbytes 的 {self.quantization} 量化完全依赖 CUDA (Nvidia GPU)。")
+                print(f"  [!] [CPU] 正在安全模式下以全精度 (FP32) 加载模型...")
+                if self.quantization == "INT8":
+                    print(f"  [!] [CPU] 提示：全精度加载完成后，系统将为您调用 PyTorch 动态量化模块，在内存中将其转为 INT8。")
+                
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True
+                ).to("cpu")
+                print("  [OK] [CPU] 纯 FP32 步骤防崩溃加载完成")
             
-            return model
-            
-        except Exception as e:
-            print(f"[!] 模型加载异常：{e}，回退到标准 FP32 加载")
-            # 最终回退 - 更新设备为 CPU
-            self.device = "cpu"
+        else:  # FP16 或 FP32
+            dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
+            target_device = "mps" if (is_mac and self.device != "cuda") else self.device
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
-                torch_dtype=torch.float32,
+                torch_dtype=dtype,
+                device_map={"": target_device} if target_device != "cpu" else None,
                 trust_remote_code=True
             )
-            print(f"  [!] 设备已更新为: {self.device}")
-            return model
+            print(f"  [OK] {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
+        
+        return model
 
     def tokenize_safe(self, text, **kwargs):
         """线程安全的 Tokenization 封装"""

@@ -48,23 +48,14 @@ class EpisodicMemory:
         
         # 安全序列化tensor：detach并转为numpy
         if self.dg_features is not None:
-            try:
-                result['dg_features'] = self.dg_features.detach().cpu().numpy().tolist()
-            except:
-                result['dg_features'] = None
+            result['dg_features'] = self.dg_features.detach().cpu().numpy().tolist()
         
         # 序列化 KV 特征
         if self.key_features is not None:
-            try:
-                result['key_features'] = self.key_features.detach().cpu().numpy().tolist()
-            except:
-                result['key_features'] = None
+            result['key_features'] = self.key_features.detach().cpu().numpy().tolist()
         
         if self.value_features is not None:
-            try:
-                result['value_features'] = self.value_features.detach().cpu().numpy().tolist()
-            except:
-                result['value_features'] = None
+            result['value_features'] = self.value_features.detach().cpu().numpy().tolist()
         
         return result
 
@@ -300,14 +291,11 @@ class CA3EpisodicMemory(nn.Module):
             # 处理dg_features字段
             dg_features = None
             if 'dg_features' in mem_dict and mem_dict['dg_features'] is not None:
-                try:
-                    # 如果是list，转换为tensor
-                    if isinstance(mem_dict['dg_features'], list):
-                        dg_features = torch.tensor(mem_dict['dg_features'], dtype=torch.float32)
-                    elif isinstance(mem_dict['dg_features'], torch.Tensor):
-                        dg_features = mem_dict['dg_features']
-                except:
-                    dg_features = None
+                # 如果是list，转换为tensor
+                if isinstance(mem_dict['dg_features'], list):
+                    dg_features = torch.tensor(mem_dict['dg_features'], dtype=torch.float32)
+                elif isinstance(mem_dict['dg_features'], torch.Tensor):
+                    dg_features = mem_dict['dg_features']
             
             # 创建EpisodicMemory对象
             memory = EpisodicMemory(

@@ -428,30 +428,25 @@ class SelfLoopOptimizer:
         
         # ========== 真实模型调用 ==========
         if self.model:
-            try:
-                # 如果有真实的模型接口，调用它
-                if hasattr(self.model, 'generate'):
-                    # 准备输入
-                    input_ids = self._tokenize_input(input_text, context)
-                    
-                    # 生成
-                    with torch.no_grad():
-                        outputs = self.model.generate(
-                            input_ids,
-                            max_new_tokens=100,
-                            temperature=temperature,
-                            do_sample=temperature > 0.1,
-                            top_p=0.95,
-                            top_k=20
-                        )
-                    
-                    # 解码
-                    generated_text = self._decode_output(outputs)
-                    return generated_text
-                    
-            except Exception as e:
-                # 模型调用失败，降级到简化实现
-                pass
+            # 如果有真实的模型接口，调用它
+            if hasattr(self.model, 'generate'):
+                # 准备输入
+                input_ids = self._tokenize_input(input_text, context)
+                
+                # 生成
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        input_ids,
+                        max_new_tokens=100,
+                        temperature=temperature,
+                        do_sample=temperature > 0.1,
+                        top_p=0.95,
+                        top_k=20
+                    )
+                
+                # 解码
+                generated_text = self._decode_output(outputs)
+                return generated_text
         
         # ========== 降级实现 (当模型不可用时) ==========
         # 使用更智能的模板匹配
@@ -479,20 +474,17 @@ class SelfLoopOptimizer:
             tokenizer = self.model.model.tokenizer
         
         if tokenizer is not None:
-            try:
-                # 构建完整输入（包含上下文）
-                full_input = text
-                if context:
-                    # 添加最近的上下文
-                    recent_context = context[-2:]  # 取最近2条
-                    context_str = " | ".join(recent_context)
-                    full_input = f"[上下文] {context_str} [问题] {text}"
-                
-                # Tokenize
-                tokens = tokenizer.encode(full_input, return_tensors="pt")
-                return tokens.to(self.model.device if hasattr(self.model, 'device') else 'cpu')
-            except Exception as e:
-                print(f"[SelfLoopOptimizer] Tokenization 失败: {e}")
+            # 构建完整输入（包含上下文）
+            full_input = text
+            if context:
+                # 添加最近的上下文
+                recent_context = context[-2:]  # 取最近2条
+                context_str = " | ".join(recent_context)
+                full_input = f"[上下文] {context_str} [问题] {text}"
+            
+            # Tokenize
+            tokens = tokenizer.encode(full_input, return_tensors="pt")
+            return tokens.to(self.model.device if hasattr(self.model, 'device') else 'cpu')
         
         # 降级回退：创建最小有效输入
         print(f"[SelfLoopOptimizer] 使用降级 tokenization")
@@ -509,20 +501,17 @@ class SelfLoopOptimizer:
             tokenizer = self.model.model.tokenizer
         
         if tokenizer is not None:
-            try:
-                # 解码输出
-                if outputs.dim() == 2:
-                    # [batch, seq] -> 解码每个序列
-                    decoded_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
-                    return decoded_texts[0] if decoded_texts else ""
-                elif outputs.dim() == 1:
-                    # [seq] -> 解码单个序列
-                    return tokenizer.decode(outputs, skip_special_tokens=True)
-                else:
-                    # 其他形状，尝试展平
-                    return tokenizer.decode(outputs.flatten(), skip_special_tokens=True)
-            except Exception as e:
-                print(f"[SelfLoopOptimizer] 解码失败: {e}")
+            # 解码输出
+            if outputs.dim() == 2:
+                # [batch, seq] -> 解码每个序列
+                decoded_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                return decoded_texts[0] if decoded_texts else ""
+            elif outputs.dim() == 1:
+                # [seq] -> 解码单个序列
+                return tokenizer.decode(outputs, skip_special_tokens=True)
+            else:
+                # 其他形状，尝试展平
+                return tokenizer.decode(outputs.flatten(), skip_special_tokens=True)
         
         # 降级回退
         print(f"[SelfLoopOptimizer] 使用降级解码")

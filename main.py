@@ -114,8 +114,7 @@ def run_chat(ai):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    while True:
-        try:
+        while True:
             user_input = input("\n\033[92m你：\033[0m").strip()
             
             if user_input.lower() in ['quit', 'exit']:
@@ -127,59 +126,41 @@ def run_chat(ai):
             # 使用流式对话接口
             start_time = time.time()
             
-            try:
-                # 检查是否支持 chat_stream
-                if hasattr(ai, 'chat_stream'):
-                    print("\033[90m💭 [潜意识消化中...]\033[0m")
-                    
-                    monologue = ""
-                    response = ""
-                    
-                    # 运行异步生成（使用已创建的事件循环）
-                    async def stream_chat():
-                        nonlocal monologue, response
-                        async for event in ai.chat_stream(user_input, history):
-                            if event["type"] == "monologue":
-                                monologue = event["content"]
-                                # 实时更新独白显示
-                                print(f"\r\033[90m💭 [潜意识] {monologue[:50]}...\033[0m", end="", flush=True)
-                            elif event["type"] == "chunk":
-                                if monologue and not response:
-                                    # 独白结束，开始回复
-                                    print()  # 换行
-                                    print(f"\033[90m💭 [内心独白] {monologue}\033[0m")
-                                    print("\n\033[93mAI:\033[0m", end=" ", flush=True)
-                                response += event["content"]
-                                print(event["content"], end="", flush=True)
-                        return response
-                    
-                    # 使用已存在的事件循环
-                    response = loop.run_until_complete(stream_chat())
-                    print()  # 最终换行
-                else:
-                    # 降级到同步模式
-                    response = ai.chat(user_input, history)
-                    print(f"\n\033[93mAI:\033[0m {response}")
+            # 检查是否支持 chat_stream
+            if hasattr(ai, 'chat_stream'):
+                print("\033[90m💭 [潜意识消化中...]\033[0m")
                 
-                elapsed = time.time() - start_time
-                print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
+                monologue = ""
+                response = ""
                 
-            except Exception as e:
-                # 异常处理，降级到基础模式
-                print(f"\n\033[91m[流式模式失败，使用基础模式]\033[0m")
+                # 运行异步生成（使用已创建的事件循环）
+                async def stream_chat():
+                    nonlocal monologue, response
+                    async for event in ai.chat_stream(user_input, history):
+                        if event["type"] == "monologue":
+                            monologue = event["content"]
+                            # 实时更新独白显示
+                            print(f"\r\033[90m💭 [潜意识] {monologue[:50]}...\033[0m", end="", flush=True)
+                        elif event["type"] == "chunk":
+                            if monologue and not response:
+                                # 独白结束，开始回复
+                                print()  # 换行
+                                print(f"\033[90m💭 [内心独白] {monologue}\033[0m")
+                                print("\n\033[93mAI:\033[0m", end=" ", flush=True)
+                            response += event["content"]
+                            print(event["content"], end="", flush=True)
+                    return response
+                
+                # 使用已存在的事件循环
+                response = loop.run_until_complete(stream_chat())
+                print()  # 最终换行
+            else:
+                # 降级到同步模式
                 response = ai.chat(user_input, history)
                 print(f"\n\033[93mAI:\033[0m {response}")
-                elapsed = time.time() - start_time
-                print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
             
-            # 更新历史
-            history.append({"role": "user", "content": user_input})
-            history.append({"role": "assistant", "content": response})
-            
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            print(f"\033[91m[错误] {e}\033[0m")
+            elapsed = time.time() - start_time
+            print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
     
     # 关闭事件循环
     loop.close()
@@ -286,16 +267,11 @@ def run_telegram_bot(ai, token: str = None, async_mode: bool = False):
     print("\n按 Ctrl+C 停止 Bot")
     print("=" * 60)
     
-    try:
-        if async_mode:
-            import asyncio
-            asyncio.run(bot.start_async())
-        else:
-            bot.run()
-    except KeyboardInterrupt:
-        print("\n[Bot] 已停止")
-    except Exception as e:
-        print(f"[错误] Bot 运行失败：{e}")
+    if async_mode:
+        import asyncio
+        asyncio.run(bot.start_async())
+    else:
+        bot.run()
 
 
 def main():
@@ -314,63 +290,46 @@ def main():
     config.model_path = args.model_path
     
     # 从 config.py 读取量化配置（如果存在）
-    try:
-        import config as user_config
-        config.quantization = getattr(user_config, 'QUANTIZATION', config.quantization)
-        config.QUANTIZATION = config.quantization  # 同步大小写
-        print(f"[配置] 量化模式: {config.quantization}")
-    except:
-        print(f"[配置] 使用默认量化模式: {config.quantization}")
+    import config as user_config
+    config.quantization = getattr(user_config, 'QUANTIZATION', config.quantization)
+    config.QUANTIZATION = config.quantization  # 同步大小写
+    print(f"[配置] 量化模式: {config.quantization}")
     
     # ========== 2. 创建 AI 实例 ==========
     print("\n[初始化] 加载模型和模块...")
     
-    try:
-        from core.interfaces import BrainAIInterface
-        
-        ai = BrainAIInterface(config, device=args.device)
-        print("[初始化] 完成 ✓")
-        
-    except Exception as e:
-        print(f"[错误] 初始化失败：{e}")
-        print("\n提示：请确保已下载 Qwen3.5-2B 模型到指定路径")
-        print("可使用以下命令下载:")
-        print("  python download_model.py")
-        print("  或手动下载: huggingface-cli download Qwen/Qwen3.5-2B --local-dir ./models/Qwen3.5-2B")
-        sys.exit(1)
+    from core.interfaces import BrainAIInterface
+    
+    ai = BrainAIInterface(config, device=args.device)
+    print("[初始化] 完成 ✓")
     
     # ========== 3. 执行对应模式 ==========
-    try:
-        if args.mode == "chat":
-            run_chat(ai)
-        
-        elif args.mode == "continuous":
-            # 持续独白观察模式
-            from continuous_chat import run_continuous_chat
-            run_continuous_chat(ai)
-        
-        elif args.mode == "generate":
-            run_generate(ai, args.input)
-        
-        elif args.mode == "eval":
-            run_evaluation(ai)
-        
-        elif args.mode == "stats":
-            run_stats(ai)
-        
-        elif args.mode == "telegram":
-            run_telegram_bot(ai, args.telegram_token, args.async_mode)
-        
-        elif args.mode == "evaluate":
-            run_automated_evaluation(ai)
+    if args.mode == "chat":
+        run_chat(ai)
     
-    finally:
-        # ========== 4. 清理 (睡眠固化) ==========
-        print("\n[退出] 正在固化记忆与意识状态...")
-        try:
-            ai.save_state("brain_state.pt")
-        except Exception as e:
-            print(f"[警告] 状态保存失败: {e}")
+    elif args.mode == "continuous":
+        # 持续独白观察模式
+        from continuous_chat import run_continuous_chat
+        run_continuous_chat(ai)
+    
+    elif args.mode == "generate":
+        run_generate(ai, args.input)
+    
+    elif args.mode == "eval":
+        run_evaluation(ai)
+    
+    elif args.mode == "stats":
+        run_stats(ai)
+    
+    elif args.mode == "telegram":
+        run_telegram_bot(ai, args.telegram_token, args.async_mode)
+    
+    elif args.mode == "evaluate":
+        run_automated_evaluation(ai)
+    
+    # ========== 4. 清理 (睡眠固化) ==========
+    print("\n[退出] 正在固化记忆与意识状态...")
+    ai.save_state("brain_state.pt")
     
     print("\n再见！")
 

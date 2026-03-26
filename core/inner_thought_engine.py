@@ -308,12 +308,9 @@ class InnerThoughtEngine:
         # 1. SelfEncoder 情感状态驱动
         arousal, valence = 0.5, 0.0
         if hasattr(self, '_self_encoder') and self._self_encoder is not None:
-            try:
-                emo = self._self_encoder.get_emotional_state()
-                arousal = emo.get('arousal', 0.5)
-                valence = emo.get('valence', 0.0)
-            except Exception:
-                pass
+            emo = self._self_encoder.get_emotional_state()
+            arousal = emo.get('arousal', 0.5)
+            valence = emo.get('valence', 0.0)
         
         # 高唤醒 → 偏向 ANALYTICAL / DEDUCTIVE
         if arousal > 0.65:
@@ -332,21 +329,18 @@ class InnerThoughtEngine:
         
         # 2. GoalSystem 目标类型驱动
         if hasattr(self, '_goal_system') and self._goal_system is not None:
-            try:
-                goal_info = self._goal_system.get_current_goal_info()
-                goal_type_str = goal_info.get('type', '')
-                _goal_mode_map = {
-                    'understand':    ThinkingMode.ANALYTICAL,
-                    'solve':         ThinkingMode.DEDUCTIVE,
-                    'explore':       ThinkingMode.INDUCTIVE,
-                    'self_reflect':  ThinkingMode.CRITICAL,
-                    'generate':      ThinkingMode.SYNTHESIZING,
-                }
-                if goal_type_str in _goal_mode_map:
-                    preferred = _goal_mode_map[goal_type_str]
-                    mode_scores[list(ThinkingMode).index(preferred)] += 0.5
-            except Exception:
-                pass
+            goal_info = self._goal_system.get_current_goal_info()
+            goal_type_str = goal_info.get('type', '')
+            _goal_mode_map = {
+                'understand':    ThinkingMode.ANALYTICAL,
+                'solve':         ThinkingMode.DEDUCTIVE,
+                'explore':       ThinkingMode.INDUCTIVE,
+                'self_reflect':  ThinkingMode.CRITICAL,
+                'generate':      ThinkingMode.SYNTHESIZING,
+            }
+            if goal_type_str in _goal_mode_map:
+                preferred = _goal_mode_map[goal_type_str]
+                mode_scores[list(ThinkingMode).index(preferred)] += 0.5
         
         # 3. 数学检测（保留原有逻辑，优先级最高）
         if context and re.search(r'\d+\s*[+\-*/=]\s*\d+', context):
@@ -633,27 +627,24 @@ class InnerThoughtEngine:
         if not self.hippocampus or not query:
             return ""
         
-        try:
-            # 使用模型tokenizer（线程安全）
-            if hasattr(self.model, 'encode_safe'):
-                input_ids = self.model.encode_safe(query[:30], return_tensors="pt")
-                device = getattr(self.model, 'device', 'cpu')
-                input_ids = input_ids.to(device)
-                
-                with torch.no_grad():
-                    if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
-                        embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
-                        query_features = embeddings.mean(dim=1).squeeze(0)
-                    else:
-                        return ""
-                
-                memories = self.hippocampus.recall(query_features, topk=2)
-                
-                if memories:
-                    pointers = [m.get('semantic_pointer', '') for m in memories if m.get('semantic_pointer')]
-                    return " | ".join(pointers[:2])
-        except Exception:
-            pass
+        # 使用模型tokenizer（线程安全）
+        if hasattr(self.model, 'encode_safe'):
+            input_ids = self.model.encode_safe(query[:30], return_tensors="pt")
+            device = getattr(self.model, 'device', 'cpu')
+            input_ids = input_ids.to(device)
+            
+            with torch.no_grad():
+                if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+                    embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+                    query_features = embeddings.mean(dim=1).squeeze(0)
+                else:
+                    return ""
+            
+            memories = self.hippocampus.recall(query_features, topk=2)
+            
+            if memories:
+                pointers = [m.get('semantic_pointer', '') for m in memories if m.get('semantic_pointer')]
+                return " | ".join(pointers[:2])
         
         return ""
 
@@ -705,32 +696,23 @@ class InnerThoughtEngine:
         # 1. GlobalWorkspace 意识焦点强度（若有注入）
         gw_strength = 0.3  # 默认中等（无 GW 时的回退）
         if hasattr(self, '_global_workspace') and self._global_workspace is not None:
-            try:
-                cs = self._global_workspace.get_consciousness_state()
-                if cs is not None:
-                    # 使用归一化激活强度（均值绝对值）作为意识强度
-                    gw_strength = min(1.0, cs.abs().mean().item() * 2.0)
-            except Exception:
-                pass
+            cs = self._global_workspace.get_consciousness_state()
+            if cs is not None:
+                # 使用归一化激活强度（均值绝对值）作为意识强度
+                gw_strength = min(1.0, cs.abs().mean().item() * 2.0)
         urge += gw_strength * 0.4
         
         # 2. SelfEncoder 情绪唤醒度（高唤醒→更想开口）
         arousal = 0.5
         if hasattr(self, '_self_encoder') and self._self_encoder is not None:
-            try:
-                emo = self._self_encoder.get_emotional_state()
-                arousal = emo.get('arousal', 0.5)
-            except Exception:
-                pass
+            emo = self._self_encoder.get_emotional_state()
+            arousal = emo.get('arousal', 0.5)
         urge += arousal * 0.3
         
         # 3. GoalSystem 目标奖励信号（目标越迫切→越想表达）
         goal_reward = 0.5
         if hasattr(self, '_goal_system') and self._goal_system is not None:
-            try:
-                goal_reward = self._goal_system.get_reward_signal()
-            except Exception:
-                pass
+            goal_reward = self._goal_system.get_reward_signal()
         urge += goal_reward * 0.3
         
         # 4. 时间衰减：距上次开口越近，urge 被动压低（防止骚扰式输出）
@@ -749,17 +731,14 @@ class InnerThoughtEngine:
         """
         # 1. 尝试从海马体召回随机记忆
         if self.hippocampus:
-            try:
-                # 随机语义种子（不依赖关键词，而是用随机向量探测记忆）
-                random_query = torch.randn(1024) * 0.5
-                memories = self.hippocampus.recall(random_query, topk=1)
-                if memories:
-                    pointer = memories[0].get('semantic_pointer', '')
-                    if pointer and len(pointer) > 3:
-                        # 用记忆内容作为跳跃种子
-                        return f"……忽然想到：{pointer[:25]}……"
-            except Exception:
-                pass
+            # 随机语义种子（不依赖关键词，而是用随机向量探测记忆）
+            random_query = torch.randn(1024) * 0.5
+            memories = self.hippocampus.recall(random_query, topk=1)
+            if memories:
+                pointer = memories[0].get('semantic_pointer', '')
+                if pointer and len(pointer) > 3:
+                    # 用记忆内容作为跳跃种子
+                    return f"……忽然想到：{pointer[:25]}……"
         
         # 2. 回退：由模型当前主题衍生（而非固定字符串）
         if self.current_theme and self.current_theme.keywords:

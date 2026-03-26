@@ -99,17 +99,13 @@ class KVCacheManager:
         # 检测是否是 DynamicCache 对象
         is_dynamic_cache = hasattr(past_key_values, 'get_seq_length')
         
-        try:
-            # 获取当前KV长度
-            if is_dynamic_cache:
-                current_len = past_key_values.get_seq_length()
-            else:
-                # Legacy tuple format
-                first_layer_k = past_key_values[0][0]
-                current_len = first_layer_k.shape[2]
-        except Exception as e:
-            logger.warning(f"[KVCacheManager] 无法获取KV长度: {e}")
-            return past_key_values, None
+        # 获取当前KV长度
+        if is_dynamic_cache:
+            current_len = past_key_values.get_seq_length()
+        else:
+            # Legacy tuple format
+            first_layer_k = past_key_values[0][0]
+            current_len = first_layer_k.shape[2]
         
         self.total_tokens_processed += 1
         
@@ -170,39 +166,38 @@ class KVCacheManager:
             trimmed_cache: 修剪后的缓存
             evicted_kv: 被释放的KV列表
         """
-        try:
-            # 方法1: 尝试转换为 legacy format 进行处理
-            if hasattr(cache, 'to_legacy_cache'):
-                legacy_cache = cache.to_legacy_cache()
+        # 方法1: 尝试转换为 legacy format 进行处理
+        if hasattr(cache, 'to_legacy_cache'):
+            legacy_cache = cache.to_legacy_cache()
+            
+            # 检查转换结果是否有效
+            if legacy_cache is None:
+                logger.debug("[KVCacheManager] to_legacy_cache()返回None，尝试其他方法")
+            else:
+                evicted_kv = self._extract_evicted_kv(legacy_cache, self.window_size)
+                trimmed_legacy = self._keep_window_kv(legacy_cache, self.window_size)
                 
-                # 检查转换结果是否有效
-                if legacy_cache is None:
-                    logger.debug("[KVCacheManager] to_legacy_cache()返回None，尝试其他方法")
-                else:
-                    evicted_kv = self._extract_evicted_kv(legacy_cache, self.window_size)
-                    trimmed_legacy = self._keep_window_kv(legacy_cache, self.window_size)
-                    
-                    # 重新构建 DynamicCache
-                    # 注意：某些版本的 DynamicCache 可能不支持直接从 tuple 构建
-                    # 这里我们返回 legacy format，因为模型可以处理两种格式
-                    trimmed_cache = trimmed_legacy
-                    
-                    self.total_kv_evicted += current_len - self.window_size
-                    
-                    # 存储到海马体
-                    if self.enable_hippocampus and hippocampus is not None and evicted_kv:
-                        self._store_evicted_kv_to_hippocampus(
-                            evicted_kv, 
-                            current_token_text or "", 
-                            hippocampus
-                        )
-                    
-                    logger.info(
-                        f"[KVCacheManager] DynamicCache修剪完成(to_legacy): "
-                        f"{current_len} -> {self.window_size} tokens"
+                # 重新构建 DynamicCache
+                # 注意：某些版本的 DynamicCache 可能不支持直接从 tuple 构建
+                # 这里我们返回 legacy format，因为模型可以处理两种格式
+                trimmed_cache = trimmed_legacy
+                
+                self.total_kv_evicted += current_len - self.window_size
+                
+                # 存储到海马体
+                if self.enable_hippocampus and hippocampus is not None and evicted_kv:
+                    self._store_evicted_kv_to_hippocampus(
+                        evicted_kv, 
+                        current_token_text or "", 
+                        hippocampus
                     )
-                    
-                    return trimmed_cache, evicted_kv
+                
+                logger.info(
+                    f"[KVCacheManager] DynamicCache修剪完成(to_legacy): "
+                    f"{current_len} -> {self.window_size} tokens"
+                )
+                
+                return trimmed_cache, evicted_kv
             
             # 方法2: 直接操作 DynamicCache 对象
             elif hasattr(cache, 'key_cache') and hasattr(cache, 'value_cache'):
@@ -221,25 +216,21 @@ class KVCacheManager:
                     return cache, None
                 
                 for layer_idx in range(num_layers):
-                    try:
-                        k = cache.key_cache[layer_idx]  # [batch, num_heads, seq_len, head_dim]
-                        v = cache.value_cache[layer_idx]
-                        
-                        if k is None or v is None:
-                            logger.debug(f"[KVCacheManager] 层{layer_idx}的KV为None，跳过")
-                            continue
-                        
-                        # 提取被释放的 KV
-                        evicted_k = k[:, :, :-self.window_size, :].clone()
-                        evicted_v = v[:, :, :-self.window_size, :].clone()
-                        evicted_kv.append((evicted_k, evicted_v))
-                        
-                        # 修剪到窗口大小
-                        cache.key_cache[layer_idx] = k[:, :, -self.window_size:, :].clone()
-                        cache.value_cache[layer_idx] = v[:, :, -self.window_size:, :].clone()
-                    except (IndexError, TypeError, RuntimeError) as e:
-                        logger.debug(f"[KVCacheManager] 处理层{layer_idx}失败: {e}，跳过该层")
+                    k = cache.key_cache[layer_idx]  # [batch, num_heads, seq_len, head_dim]
+                    v = cache.value_cache[layer_idx]
+                    
+                    if k is None or v is None:
+                        logger.debug(f"[KVCacheManager] 层{layer_idx}的KV为None，跳过")
                         continue
+                    
+                    # 提取被释放的 KV
+                    evicted_k = k[:, :, :-self.window_size, :].clone()
+                    evicted_v = v[:, :, :-self.window_size, :].clone()
+                    evicted_kv.append((evicted_k, evicted_v))
+                    
+                    # 修剪到窗口大小
+                    cache.key_cache[layer_idx] = k[:, :, -self.window_size:, :].clone()
+                    cache.value_cache[layer_idx] = v[:, :, -self.window_size:, :].clone()
                 
                 self.total_kv_evicted += current_len - self.window_size
                 
@@ -266,41 +257,34 @@ class KVCacheManager:
                 )
                 
                 # 尝试通过迭代或其他方式获取 KV
-                try:
-                    # 某些实现可能支持 __getitem__
-                    if hasattr(cache, '__getitem__'):
-                        legacy_cache = tuple(cache[layer_idx] for layer_idx in range(len(cache)))
-                        evicted_kv = self._extract_evicted_kv(legacy_cache, self.window_size)
-                        trimmed_legacy = self._keep_window_kv(legacy_cache, self.window_size)
-                        
-                        self.total_kv_evicted += current_len - self.window_size
-                        
-                        # 存储到海马体
-                        if self.enable_hippocampus and hippocampus is not None and evicted_kv:
-                            self._store_evicted_kv_to_hippocampus(
-                                evicted_kv, 
-                                current_token_text or "", 
-                                hippocampus
-                            )
-                        
-                        logger.info(
-                            f"[KVCacheManager] DynamicCache修剪完成(manual): "
-                            f"{current_len} -> {self.window_size} tokens"
+                # 某些实现可能支持 __getitem__
+                if hasattr(cache, '__getitem__'):
+                    legacy_cache = tuple(cache[layer_idx] for layer_idx in range(len(cache)))
+                    evicted_kv = self._extract_evicted_kv(legacy_cache, self.window_size)
+                    trimmed_legacy = self._keep_window_kv(legacy_cache, self.window_size)
+                    
+                    self.total_kv_evicted += current_len - self.window_size
+                    
+                    # 存储到海马体
+                    if self.enable_hippocampus and hippocampus is not None and evicted_kv:
+                        self._store_evicted_kv_to_hippocampus(
+                            evicted_kv, 
+                            current_token_text or "", 
+                            hippocampus
                         )
-                        
-                        return trimmed_legacy, evicted_kv
-                except Exception as inner_e:
-                    logger.debug(f"[KVCacheManager] 手动提取失败: {inner_e}")
+                    
+                    logger.info(
+                        f"[KVCacheManager] DynamicCache修剪完成(manual): "
+                        f"{current_len} -> {self.window_size} tokens"
+                    )
+                    
+                    return trimmed_legacy, evicted_kv
                 
                 # 如果所有方法都失败，记录调试信息并跳过修剪
                 logger.debug(
                     f"[KVCacheManager] DynamicCache类型{type(cache).__name__}不支持修剪，跳过"
                 )
                 return cache, None
-                
-        except Exception as e:
-            logger.debug(f"[KVCacheManager] DynamicCache修剪失败: {e}，跳过修剪")
-            return cache, None
     
     def _extract_evicted_kv(
         self,
@@ -369,50 +353,47 @@ class KVCacheManager:
             context_text: 上下文文本
             hippocampus: 海马体实例
         """
-        try:
-            # 提取KV特征（使用均值池化）
-            all_k_features = []
-            all_v_features = []
+        # 提取KV特征（使用均值池化）
+        all_k_features = []
+        all_v_features = []
+        
+        for k, v in evicted_kv:
+            # k, v: [batch, num_heads, seq_len, head_dim]
+            # 沿序列维度池化
+            k_mean = k.mean(dim=2)  # [batch, num_heads, head_dim]
+            v_mean = v.mean(dim=2)
             
-            for k, v in evicted_kv:
-                # k, v: [batch, num_heads, seq_len, head_dim]
-                # 沿序列维度池化
-                k_mean = k.mean(dim=2)  # [batch, num_heads, head_dim]
-                v_mean = v.mean(dim=2)
-                
-                all_k_features.append(k_mean)
-                all_v_features.append(v_mean)
+            all_k_features.append(k_mean)
+            all_v_features.append(v_mean)
+        
+        # 拼接所有层的特征
+        combined_k = torch.cat(all_k_features, dim=-1)  # [batch, num_heads, all_dims]
+        combined_v = torch.cat(all_v_features, dim=-1)
+        
+        # 取第一层作为代表特征
+        key_features = combined_k[0, 0, :].cpu().tolist()  # [all_dims]
+        value_features = combined_v[0, 0, :].cpu().tolist()
+        
+        # 存储到海马体
+        if hasattr(hippocampus, 'store_kv_as_memory'):
+            memory_id = hippocampus.store_kv_as_memory(
+                kv_features={
+                    'key_features': key_features,
+                    'value_features': value_features,
+                    'num_layers': len(evicted_kv),
+                    'seq_len': evicted_kv[0][0].shape[2],
+                    'timestamp': int(time.time() * 1000)
+                },
+                context_text=context_text
+            )
             
-            # 拼接所有层的特征
-            combined_k = torch.cat(all_k_features, dim=-1)  # [batch, num_heads, all_dims]
-            combined_v = torch.cat(all_v_features, dim=-1)
+            self.total_kv_stored_to_hippocampus += 1
             
-            # 取第一层作为代表特征
-            key_features = combined_k[0, 0, :].cpu().tolist()  # [all_dims]
-            value_features = combined_v[0, 0, :].cpu().tolist()
-            
-            # 存储到海马体
-            if hasattr(hippocampus, 'store_kv_as_memory'):
-                memory_id = hippocampus.store_kv_as_memory(
-                    kv_features={
-                        'key_features': key_features,
-                        'value_features': value_features,
-                        'num_layers': len(evicted_kv),
-                        'seq_len': evicted_kv[0][0].shape[2],
-                        'timestamp': int(time.time() * 1000)
-                    },
-                    context_text=context_text
-                )
-                
-                self.total_kv_stored_to_hippocampus += 1
-                
-                logger.debug(
-                    f"[KVCacheManager] KV已存储到海马体: "
-                    f"memory_id={memory_id}, "
-                    f"seq_len={evicted_kv[0][0].shape[2]}"
-                )
-        except Exception as e:
-            logger.warning(f"[KVCacheManager] 存储KV到海马体失败: {e}")
+            logger.debug(
+                f"[KVCacheManager] KV已存储到海马体: "
+                f"memory_id={memory_id}, "
+                f"seq_len={evicted_kv[0][0].shape[2]}"
+            )
     
     def get_stats(self) -> Dict[str, Any]:
         """

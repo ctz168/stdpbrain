@@ -268,25 +268,15 @@ class HippocampusSystem(nn.Module):
             
             # DG 特征
             if mem_id in memory_dg_features:
-                try:
-                    mem_dict['dg_features'] = memory_dg_features[mem_id].detach().cpu().numpy().tolist()
-                except:
-                    mem_dict['dg_features'] = None
+                mem_dict['dg_features'] = memory_dg_features[mem_id].detach().cpu().numpy().tolist()
             else:
-                try:
-                    mem_dict['dg_features'] = dg_features.detach().cpu().numpy().tolist()
-                except:
-                    mem_dict['dg_features'] = None
+                mem_dict['dg_features'] = dg_features.detach().cpu().numpy().tolist()
             
             # KV 特征（用于窄带宽注意力）
             if mem_id in memory_kv_features:
-                try:
-                    kv = memory_kv_features[mem_id]
-                    mem_dict['key_features'] = kv['key'].detach().cpu().numpy().tolist() if kv['key'] is not None else None
-                    mem_dict['value_features'] = kv['value'].detach().cpu().numpy().tolist() if kv['value'] is not None else None
-                except:
-                    mem_dict['key_features'] = None
-                    mem_dict['value_features'] = None
+                kv = memory_kv_features[mem_id]
+                mem_dict['key_features'] = kv['key'].detach().cpu().numpy().tolist() if kv['key'] is not None else None
+                mem_dict['value_features'] = kv['value'].detach().cpu().numpy().tolist() if kv['value'] is not None else None
             
             if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:
                 mem_dict['content'] = self.ca3_memory.memories[mem_id].content
@@ -536,68 +526,63 @@ class HippocampusSystem(nn.Module):
         Returns:
             memory_id: 生成的记忆ID
         """
-        try:
-            # 提取KV特征
-            key_features = kv_features.get('key_features', [])
-            value_features = kv_features.get('value_features', [])
-            num_layers = kv_features.get('num_layers', 0)
-            seq_len = kv_features.get('seq_len', 0)
-            timestamp = kv_features.get('timestamp', int(time.time() * 1000))
-            
-            if not key_features or not value_features:
-                logger.warning("[Hippocampus] KV特征为空，跳过存储")
-                return ""
-            
-            # 使用KV特征作为记忆特征
-            # 将特征向量转换为tensor
-            key_tensor = torch.tensor(key_features, dtype=torch.float32, device=self.device)
-            
-            if key_tensor.dim() == 1:
-                key_tensor = key_tensor.unsqueeze(0)
-            
-            # 使用key特征作为记忆编码的输入
-            # EC编码
-            ec_code = self.ec_encoder.encode_single(key_tensor.squeeze(0))
-            
-            # DG模式分离
-            dg_output, memory_id = self.dg_separator.separate_and_id(ec_code)
-            
-            # 构建记忆上下文
-            context = [{
-                'content': context_text,
-                'type': 'kv_memory',
-                'num_layers': num_layers,
-                'seq_len': seq_len,
-                'is_core': False,
-                'semantic_pointer': f"kv_{timestamp}"
-            }]
-            
-            # 存储到CA3
-            self.ca3_memory.store(
-                memory_id=memory_id,
-                timestamp=timestamp,
-                semantic_pointer=f"kv_{timestamp}",
-                temporal_skeleton="",
-                causal_links=[],
-                dg_features=dg_output.detach().cpu(),
-                is_core=False,
-                content=context_text,
-                key_features=key_tensor.detach().cpu() if isinstance(key_tensor, torch.Tensor) else key_features,
-                value_features=torch.tensor(value_features, dtype=torch.float32).detach().cpu() if isinstance(value_features, list) else value_features
-            )
-            
-            logger.debug(
-                f"[Hippocampus] KV已存储为记忆: "
-                f"memory_id={memory_id}, "
-                f"seq_len={seq_len}, "
-                f"layers={num_layers}"
-            )
-            
-            return memory_id
-            
-        except Exception as e:
-            logger.warning(f"[Hippocampus] 存储KV记忆失败: {e}")
+        # 提取KV特征
+        key_features = kv_features.get('key_features', [])
+        value_features = kv_features.get('value_features', [])
+        num_layers = kv_features.get('num_layers', 0)
+        seq_len = kv_features.get('seq_len', 0)
+        timestamp = kv_features.get('timestamp', int(time.time() * 1000))
+        
+        if not key_features or not value_features:
+            logger.warning("[Hippocampus] KV特征为空，跳过存储")
             return ""
+        
+        # 使用KV特征作为记忆特征
+        # 将特征向量转换为tensor
+        key_tensor = torch.tensor(key_features, dtype=torch.float32, device=self.device)
+        
+        if key_tensor.dim() == 1:
+            key_tensor = key_tensor.unsqueeze(0)
+        
+        # 使用key特征作为记忆编码的输入
+        # EC编码
+        ec_code = self.ec_encoder.encode_single(key_tensor.squeeze(0))
+        
+        # DG模式分离
+        dg_output, memory_id = self.dg_separator.separate_and_id(ec_code)
+        
+        # 构建记忆上下文
+        context = [{
+            'content': context_text,
+            'type': 'kv_memory',
+            'num_layers': num_layers,
+            'seq_len': seq_len,
+            'is_core': False,
+            'semantic_pointer': f"kv_{timestamp}"
+        }]
+        
+        # 存储到CA3
+        self.ca3_memory.store(
+            memory_id=memory_id,
+            timestamp=timestamp,
+            semantic_pointer=f"kv_{timestamp}",
+            temporal_skeleton="",
+            causal_links=[],
+            dg_features=dg_output.detach().cpu(),
+            is_core=False,
+            content=context_text,
+            key_features=key_tensor.detach().cpu() if isinstance(key_tensor, torch.Tensor) else key_features,
+            value_features=torch.tensor(value_features, dtype=torch.float32).detach().cpu() if isinstance(value_features, list) else value_features
+        )
+        
+        logger.debug(
+            f"[Hippocampus] KV已存储为记忆: "
+            f"memory_id={memory_id}, "
+            f"seq_len={seq_len}, "
+            f"layers={num_layers}"
+        )
+        
+        return memory_id
     
     def recall_kv(
         self,
@@ -620,33 +605,28 @@ class HippocampusSystem(nn.Module):
                 - content: 上下文文本
                 - similarity: 相似度
         """
-        try:
-            # 使用常规召回方法
-            memories = self.recall(
-                query_features=query_features,
-                topk=topk * 2  # 多召回一些，后续过滤
-            )
-            
-            # 过滤出包含KV特征的记忆
-            kv_memories = []
-            for mem in memories:
-                # 检查是否是KV记忆
-                if mem.get('type') == 'kv_memory' or 'kv_features' in mem:
-                    kv_memories.append({
-                        'memory_id': mem.get('memory_id', ''),
-                        'kv_features': {
-                            'key_features': mem.get('key_features'),
-                            'value_features': mem.get('value_features'),
-                            'num_layers': mem.get('num_layers', 0),
-                            'seq_len': mem.get('seq_len', 0)
-                        },
-                        'content': mem.get('content', ''),
-                        'similarity': mem.get('activation_strength', 0.0)
-                    })
-            
-            # 返回topk个
-            return kv_memories[:topk]
-            
-        except Exception as e:
-            logger.warning(f"[Hippocampus] 召回KV记忆失败: {e}")
-            return []
+        # 使用常规召回方法
+        memories = self.recall(
+            query_features=query_features,
+            topk=topk * 2  # 多召回一些，后续过滤
+        )
+        
+        # 过滤出包含KV特征的记忆
+        kv_memories = []
+        for mem in memories:
+            # 检查是否是KV记忆
+            if mem.get('type') == 'kv_memory' or 'kv_features' in mem:
+                kv_memories.append({
+                    'memory_id': mem.get('memory_id', ''),
+                    'kv_features': {
+                        'key_features': mem.get('key_features'),
+                        'value_features': mem.get('value_features'),
+                        'num_layers': mem.get('num_layers', 0),
+                        'seq_len': mem.get('seq_len', 0)
+                    },
+                    'content': mem.get('content', ''),
+                    'similarity': mem.get('activation_strength', 0.0)
+                })
+        
+        # 返回topk个
+        return kv_memories[:topk]

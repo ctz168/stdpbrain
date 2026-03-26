@@ -110,15 +110,11 @@ class BrainAIInterface:
         # 9. 真正自指循环模块（增强自指深度）- 默认开启
         enable_self_ref = getattr(config, 'enable_self_reference', True)
         if enable_self_ref:
-            try:
-                self.true_self_loop = TrueSelfReferentialLoop(
-                    hidden_size=self.model_hidden_size,
-                    max_recursion_depth=3
-                ).to(self.device)
-                print("[BrainAI] [OK] 真正自指循环模块已初始化")
-            except Exception as e:
-                logger.warning(f"真正自指循环模块初始化失败: {e}")
-                self.true_self_loop = None
+            self.true_self_loop = TrueSelfReferentialLoop(
+                hidden_size=self.model_hidden_size,
+                max_recursion_depth=3
+            ).to(self.device)
+            print("[BrainAI] [OK] 真正自指循环模块已初始化")
         else:
             self.true_self_loop = None
             print("[BrainAI] [INFO] 真正自指循环模块已禁用（配置）")
@@ -126,18 +122,14 @@ class BrainAIInterface:
         # 10. 预测编码模块（预测误差最小化）- 默认开启
         enable_predictive = getattr(config, 'enable_predictive_coding', True)
         if enable_predictive:
-            try:
-                self.predictive_coder = PredictiveCodingModule(
-                    hidden_size=self.model_hidden_size,
-                    vocab_size=self.model.tokenizer.vocab_size if hasattr(self.model, 'tokenizer') else 50257
-                ).to(self.device)
-                # 追踪上一轮输出
-                self.last_output_ids = None
-                self.last_output_embedding = None
-                print("[BrainAI] [OK] 预测编码模块已初始化")
-            except Exception as e:
-                logger.warning(f"预测编码模块初始化失败: {e}")
-                self.predictive_coder = None
+            self.predictive_coder = PredictiveCodingModule(
+                hidden_size=self.model_hidden_size,
+                vocab_size=self.model.tokenizer.vocab_size if hasattr(self.model, 'tokenizer') else 50257
+            ).to(self.device)
+            # 追踪上一轮输出
+            self.last_output_ids = None
+            self.last_output_embedding = None
+            print("[BrainAI] [OK] 预测编码模块已初始化")
         else:
             self.predictive_coder = None
             print("[BrainAI] [INFO] 预测编码模块已禁用（配置）")
@@ -145,26 +137,22 @@ class BrainAIInterface:
         # 11. 主动意图生成器（主动输出）- 默认开启 (类人脑核心功能)
         enable_proactive = getattr(config, 'enable_proactive_output', True) # 改为默认开启
         if enable_proactive:
-            try:
-                self.proactive_generator = ProactiveIntentGenerator(
-                    hidden_size=self.model_hidden_size,
-                    min_interval_seconds=getattr(config, 'proactive_min_interval', 120), # 缩短最小间隔
-                    max_daily_count=getattr(config, 'proactive_max_daily', 30) # 提升每日上限
-                ).to(self.device)
-                
-                # 注入枚举引用以便外部持锁访问
-                self.proactive_generator.intent_enum = ProactiveIntent
-                
-                # 主动输出统计
-                self.last_output_time = time.time() - 300 # 预留时间
-                self.last_user_input_time = time.time()
-                self.proactive_debug_log = []
-                self.clarification_count = 0
-                self.max_clarifications_per_turn = 3 # 提升澄清灵敏度
-                print("[BrainAI] [OK] 主动意图生成器已初始化 (已开启)")
-            except Exception as e:
-                logger.warning(f"主动意图生成器初始化失败: {e}")
-                self.proactive_generator = None
+            self.proactive_generator = ProactiveIntentGenerator(
+                hidden_size=self.model_hidden_size,
+                min_interval_seconds=getattr(config, 'proactive_min_interval', 120), # 缩短最小间隔
+                max_daily_count=getattr(config, 'proactive_max_daily', 30) # 提升每日上限
+            ).to(self.device)
+            
+            # 注入枚举引用以便外部持锁访问
+            self.proactive_generator.intent_enum = ProactiveIntent
+            
+            # 主动输出统计
+            self.last_output_time = time.time() - 300 # 预留时间
+            self.last_user_input_time = time.time()
+            self.proactive_debug_log = []
+            self.clarification_count = 0
+            self.max_clarifications_per_turn = 3 # 提升澄清灵敏度
+            print("[BrainAI] [OK] 主动意图生成器已初始化 (已开启)")
         else:
             self.proactive_generator = None
             print("[BrainAI] [INFO] 主动意图生成器已禁用（配置）")
@@ -226,46 +214,31 @@ class BrainAIInterface:
         self._inject_wakeup_memory()
         
         # 初始化统一的内心思维独白引擎
-        try:
-            self.inner_thought_engine = InnerThoughtEngine(
-                model_interface=self.model,
-                hippocampus_system=self.hippocampus,
-                self_loop_optimizer=self.self_loop,
-                config=config,
-                device=self.device
-            )
-            print("[BrainAI] [OK] 内心思维独白引擎已初始化")
-            # 注入自我编码器引用，让独白引擎能感知自身隐状态
-            if hasattr(self, 'self_encoder'):
-                self.inner_thought_engine._self_encoder = self.self_encoder
-        except Exception as e:
-            logger.error(f"内心思维独白引擎初始化失败: {e}")
-            raise RuntimeError(f"内心思维独白引擎初始化失败，无法继续: {e}")
+        self.inner_thought_engine = InnerThoughtEngine(
+            model_interface=self.model,
+            hippocampus_system=self.hippocampus,
+            self_loop_optimizer=self.self_loop,
+            config=config,
+            device=self.device
+        )
+        print("[BrainAI] [OK] 内心思维独白引擎已初始化")
+        # 注入自我编码器引用，让独白引擎能感知自身隐状态
+        if hasattr(self, 'self_encoder'):
+            self.inner_thought_engine._self_encoder = self.self_encoder
         
         # 启动海马体 SWR 监控
-        try:
-            self.hippocampus.start_swr_monitoring()
-            print("[BrainAI] [OK] 海马体 SWR 监控已启动")
-        except Exception as e:
-            logger.warning(f"SWR 监控启动失败: {e}")
+        self.hippocampus.start_swr_monitoring()
+        print("[BrainAI] [OK] 海马体 SWR 监控已启动")
         
         # 初始化目标系统
-        try:
-            self.goal_system = create_goal_system(hidden_size=self.model_hidden_size, device=self.device)
-            print("[BrainAI] [OK] 目标系统已初始化")
-        except Exception as e:
-            logger.warning(f"目标系统初始化失败: {e}")
-            self.goal_system = None
+        self.goal_system = create_goal_system(hidden_size=self.model_hidden_size, device=self.device)
+        print("[BrainAI] [OK] 目标系统已初始化")
         
         # 初始化全局工作空间
-        try:
-            self.global_workspace = create_global_workspace(hidden_size=self.model_hidden_size, device=self.device)
-            # 设置模型引用，用于获取真实embedding
-            self.global_workspace.set_model(self.model)
-            print("[BrainAI] [OK] 全局工作空间已初始化")
-        except Exception as e:
-            logger.warning(f"全局工作空间初始化失败: {e}")
-            self.global_workspace = None
+        self.global_workspace = create_global_workspace(hidden_size=self.model_hidden_size, device=self.device)
+        # 设置模型引用，用于获取真实embedding
+        self.global_workspace.set_model(self.model)
+        print("[BrainAI] [OK] 全局工作空间已初始化")
         
         # 设置海马体门控函数（连接CA1到注意力层）
         self._setup_hippocampus_gate()
@@ -292,24 +265,18 @@ class BrainAIInterface:
         """设置海马体门控，让CA1门控信号影响注意力"""
         def hippocampus_gate_fn(query, key, memory_anchors):
             """CA1门控函数"""
-            try:
-                if memory_anchors and len(memory_anchors) > 0:
-                    # 计算注意力门控信号
-                    gate_signal = self.hippocampus.ca1_gate.compute_gate(
-                        query_features=query,
-                        memory_anchors=memory_anchors
-                    )
-                    return gate_signal
-            except:
-                pass
+            if memory_anchors and len(memory_anchors) > 0:
+                # 计算注意力门控信号
+                gate_signal = self.hippocampus.ca1_gate.compute_gate(
+                    query_features=query,
+                    memory_anchors=memory_anchors
+                )
+                return gate_signal
             return None
 
         # 注入到模型
-        try:
-            self.model.set_hippocampus_gate(hippocampus_gate_fn)
-            print("[OK] 已设置海马体门控函数")
-        except Exception as e:
-            logger.warning(f"海马体门控设置失败: {e}")
+        self.model.set_hippocampus_gate(hippocampus_gate_fn)
+        print("[OK] 已设置海马体门控函数")
 
     def _warmup_kv_cache(self):
         """
@@ -319,28 +286,22 @@ class BrainAIInterface:
         - 首个token生成需要prefill整个输入序列，计算O(n²)
         - 提前处理系统prompt，缓存KV，减少首token时间
         """
-        try:
-            print("[BrainAI] 正在预热KV cache...")
-            warmup_prompts = [
-                "系统初始化",
-                "你是一个AI助手"
-            ]
+        print("[BrainAI] 正在预热KV cache...")
+        warmup_prompts = [
+            "系统初始化",
+            "你是一个AI助手"
+        ]
 
-            # 快速生成，缓存KV（不输出）
-            for prompt in warmup_prompts:
-                try:
-                    _ = self.model.generate(
-                        prompt,
-                        max_tokens=1,
-                        temperature=1.0,
-                        use_cache=True
-                    )
-                except:
-                    pass
+        # 快速生成，缓存KV（不输出）
+        for prompt in warmup_prompts:
+            _ = self.model.generate(
+                prompt,
+                max_tokens=1,
+                temperature=1.0,
+                use_cache=True
+            )
 
-            print("[BrainAI] [OK] KV cache预热完成")
-        except Exception as e:
-            print(f"[BrainAI] [WARN] KV cache预热失败（不影响使用）: {e}")
+        print("[BrainAI] [OK] KV cache预热完成")
             # 使用保存的完整记忆字典，而不是传入的tensor
             recalled_memories = getattr(self, '_current_recalled_memories', None)
             if not recalled_memories:

@@ -115,11 +115,8 @@ class ContinuousThoughtFlowSession:
                     return
             
             # 悄悄保存状态
-            try:
-                if hasattr(self.ai, 'save_state'):
-                    self.ai.save_state()
-            except Exception:
-                pass
+            if hasattr(self.ai, 'save_state'):
+                self.ai.save_state()
             self._print_session_summary()
     
     def _monologue_loop(self):
@@ -306,11 +303,8 @@ class ContinuousThoughtFlowSession:
                 }
                 
                 if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
-                    try:
-                        mode = self.ai.self_loop.decide_mode(user_input)
-                        print(f"\n[自闭环模式: {mode_names.get(mode, mode)}]")
-                    except Exception as e:
-                        print(f"\n[自闭环模式检测失败: {e}]")
+                    mode = self.ai.self_loop.decide_mode(user_input)
+                    print(f"\n[自闭环模式: {mode_names.get(mode, mode)}]")
                 
                 # 显示思考中
                 print(f"\nAI: ", end="", flush=True)
@@ -336,11 +330,8 @@ class ContinuousThoughtFlowSession:
                 
                 # 显示自闭环优化统计
                 if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
-                    try:
-                        sl_stats = self.ai.self_loop.get_stats()
-                        print(f"\n\n[自闭环统计] 周期={sl_stats['cycle_count']}, 平均准确率={sl_stats['avg_accuracy']:.2f}")
-                    except Exception as e:
-                        print(f"\n\n[自闭环统计获取失败: {e}]")
+                    sl_stats = self.ai.self_loop.get_stats()
+                    print(f"\n\n[自闭环统计] 周期={sl_stats['cycle_count']}, 平均准确率={sl_stats['avg_accuracy']:.2f}")
                 
                 print("\n" + "-" * 40 + "\n")
                 

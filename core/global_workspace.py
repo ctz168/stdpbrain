@@ -219,15 +219,12 @@ class GlobalWorkspace:
             model_interface: QwenInterface 或类似接口，需提供 tokenizer 和 base_model
         """
         self._model_interface = model_interface
-        try:
-            if hasattr(model_interface, 'model') and hasattr(model_interface.model, 'base_model'):
-                self._embedding_layer = model_interface.model.base_model.get_input_embeddings()
-                print("[GlobalWorkspace] 模型embedding层已设置")
-            elif hasattr(model_interface, 'embeddings'):
-                self._embedding_layer = model_interface.embeddings
-                print("[GlobalWorkspace] 模型embedding层已设置（通过embeddings属性）")
-        except Exception as e:
-            print(f"[GlobalWorkspace] 获取embedding层失败: {e}")
+        if hasattr(model_interface, 'model') and hasattr(model_interface.model, 'base_model'):
+            self._embedding_layer = model_interface.model.base_model.get_input_embeddings()
+            print("[GlobalWorkspace] 模型embedding层已设置")
+        elif hasattr(model_interface, 'embeddings'):
+            self._embedding_layer = model_interface.embeddings
+            print("[GlobalWorkspace] 模型embedding层已设置（通过embeddings属性）")
     
     def register_module(
         self,
@@ -252,14 +249,7 @@ class GlobalWorkspace:
         if output.shape[-1] != self.hidden_size:
             # 检查是否有对应的适配器
             if module_name in self._dimension_adapters:
-                try:
-                    output = self._dimension_adapters[module_name](output)
-                except Exception as e:
-                    print(f"[GW] 维度适配失败 ({module_name}): {e}, 使用零填充")
-                    # 零填充到 hidden_size
-                    padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device)
-                    padded[:, :output.shape[-1]] = output
-                    output = padded
+                output = self._dimension_adapters[module_name](output)
             else:
                 # 没有适配器，使用零填充
                 padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device)
@@ -383,75 +373,63 @@ class GlobalWorkspace:
         
         # 1. 用户输入编码（最高权重）- 使用真实embedding
         if user_input and len(user_input.strip()) > 0:
-            try:
-                # 优先使用真实模型embedding
-                if self._embedding_layer is not None:
-                    # 获取tokenizer
-                    tokenizer = None
-                    if hasattr(self._model_interface, 'tokenizer'):
-                        tokenizer = self._model_interface.tokenizer
-                    elif hasattr(self._model_interface, 'model') and hasattr(self._model_interface.model, 'tokenizer'):
-                        tokenizer = self._model_interface.model.tokenizer
+            # 优先使用真实模型embedding
+            if self._embedding_layer is not None:
+                # 获取tokenizer
+                tokenizer = None
+                if hasattr(self._model_interface, 'tokenizer'):
+                    tokenizer = self._model_interface.tokenizer
+                elif hasattr(self._model_interface, 'model') and hasattr(self._model_interface.model, 'tokenizer'):
+                    tokenizer = self._model_interface.model.tokenizer
+                
+                if tokenizer is not None:
+                    # 使用真实模型获取embedding
+                    input_ids = tokenizer(
+                        user_input[:100],  # 限制长度
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=50
+                    )['input_ids'].to(self.device)
                     
-                    if tokenizer is not None:
-                        # 使用真实模型获取embedding
-                        input_ids = tokenizer(
-                            user_input[:100],  # 限制长度
-                            return_tensors="pt",
-                            truncation=True,
-                            max_length=50
-                        )['input_ids'].to(self.device)
-                        
-                        with torch.no_grad():
-                            # 使用真实的embedding层
-                            embeddings = self._embedding_layer(input_ids)
-                            # 平均池化获取句子级别的表示
-                            user_embedding = embeddings.mean(dim=1).squeeze(0)
-                        
-                        # 如果embedding维度与hidden_size不匹配，需要投影
-                        if user_embedding.shape[0] != self.hidden_size:
-                            # 创建投影矩阵（简单的线性投影）
-                            if not hasattr(self, '_projection'):
-                                self._projection = nn.Linear(
-                                    user_embedding.shape[0], 
-                                    self.hidden_size, 
-                                    bias=False
-                                ).to(self.device)
-                                # 初始化为接近恒等映射（如果维度相同）
-                                nn.init.xavier_uniform_(self._projection.weight)
-                            user_embedding = self._projection(user_embedding)
-                        
-                        context_parts.append(user_embedding)
-                        weights.append(0.6)  # 用户输入权重60%
-                    else:
-                        # 回退到tokenizer + embedding层直接调用
-                        raise ValueError("未找到tokenizer")
+                    with torch.no_grad():
+                        # 使用真实的embedding层
+                        embeddings = self._embedding_layer(input_ids)
+                        # 平均池化获取句子级别的表示
+                        user_embedding = embeddings.mean(dim=1).squeeze(0)
+                    
+                    # 如果embedding维度与hidden_size不匹配，需要投影
+                    if user_embedding.shape[0] != self.hidden_size:
+                        # 创建投影矩阵（简单的线性投影）
+                        if not hasattr(self, '_projection'):
+                            self._projection = nn.Linear(
+                                user_embedding.shape[0], 
+                                self.hidden_size, 
+                                bias=False
+                            ).to(self.device)
+                            # 初始化为接近恒等映射（如果维度相同）
+                            nn.init.xavier_uniform_(self._projection.weight)
+                        user_embedding = self._projection(user_embedding)
+                    
+                    context_parts.append(user_embedding)
+                    weights.append(0.6)  # 用户输入权重60%
                 else:
-                    # 回退方案：使用简单的特征编码
-                    # 基于字符的简单编码
-                    char_features = torch.zeros(self.hidden_size, device=self.device)
-                    for i, char in enumerate(user_input[:50]):
-                        # 使用字符的Unicode值生成特征
-                        char_val = ord(char)
-                        idx = char_val % self.hidden_size
-                        char_features[idx] += 1.0 / (i + 1)
-                    
-                    # 归一化
-                    if char_features.norm() > 0:
-                        char_features = char_features / char_features.norm()
-                    
-                    context_parts.append(char_features)
-                    weights.append(0.6)
-                    
-            except Exception as e:
-                # 编码失败，尝试更简单的回退方案
-                print(f"[GlobalWorkspace] 用户输入编码失败: {e}，使用随机特征")
-                # 使用固定的随机特征（基于输入文本哈希）
-                import hashlib
-                hash_val = int(hashlib.md5(user_input.encode()).hexdigest()[:8], 16)
-                torch.manual_seed(hash_val)
-                fallback_features = torch.randn(self.hidden_size, device=self.device) * 0.1
-                context_parts.append(fallback_features)
+                    # 回退到tokenizer + embedding层直接调用
+                    raise ValueError("未找到tokenizer")
+            else:
+                # 回退方案：使用简单的特征编码
+                # 基于字符的简单编码
+                char_features = torch.zeros(self.hidden_size, device=self.device)
+                for i, char in enumerate(user_input[:50]):
+                    # 使用字符的Unicode值生成特征
+                    char_val = ord(char)
+                    idx = char_val % self.hidden_size
+                    char_features[idx] += 1.0 / (i + 1)
+                
+                # 归一化
+                if char_features.norm() > 0:
+                    char_features = char_features / char_features.norm()
+                
+                context_parts.append(char_features)
                 weights.append(0.6)
         
         # 2. 历史意识状态（次要权重）

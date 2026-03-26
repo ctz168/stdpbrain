@@ -83,113 +83,101 @@ class RefreshCycleEngine:
         cycle_start = time.time()
         timestamp = cycle_start * 1000  # ms
         
-        try:
-            # ========== 1. 输入 token 接收与特征提取 ==========
-            # 使用模型的 embedding 层 (如果可用)
-            if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
-                # 针对 QwenInterface
-                embeddings = self.model.model.base_model.get_input_embeddings()
-                token_tensor = torch.tensor([[input_token]], device=self.device)
-                features = embeddings(token_tensor).squeeze(0)
-            else:
-                features = torch.randn(1, 1024, device=self.device) # Fallback
-            
-            # ========== 2. 海马体记忆锚点调取与注意力门控加载（生产级实现） ==========
-            memory_anchors = self.hippocampus.recall(features, topk=self.narrow_window_size)
-            
-            # 提取海马体提示用于这步前向推理
-            memory_anchor_id = memory_anchors[0].get('memory_id', 'unknown') if memory_anchors else 'none'
-            
-            # 生产级门控信号：使用CA1注意力门控
-            memory_anchor_gate = self._generate_memory_gate_signal(features, memory_anchors)
-            
-            # ========== 3. 窄窗口上下文 + 当前token的模型前向推理 ==========
-            # 在 O(1) 模式下，我们只传最近 1-2 个 token 或直接依靠 KV-cache
-            model_input_ids = torch.tensor([[input_token]], device=self.device)
-            
-            # 调用模型的 forward_step (支持 KV-cache)
-            step_outputs = self.model.forward_step(
-                model_input_ids,
-                past_key_values=past_key_values,
-                memory_anchor_id=memory_anchor_id,
-                memory_anchor_gate=memory_anchor_gate,
-                **kwargs
-            )
-            
-            output_token = step_outputs['token_id']
-            new_past_key_values = step_outputs.get('past_key_values')
-            
-            # ========== 5. 全链路 STDP 权重本地刷新 ==========
-            # 生产级实现：从KV-cache和上下文缓冲区提取完整的上下文token序列
-            context_tokens = self._extract_context_tokens(
-                input_token, 
-                past_key_values
-            ) 
+        # ========== 1. 输入 token 接收与特征提取 ==========
+        # 使用模型的 embedding 层 (如果可用)
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+            # 针对 QwenInterface
+            embeddings = self.model.model.base_model.get_input_embeddings()
+            token_tensor = torch.tensor([[input_token]], device=self.device)
+            features = embeddings(token_tensor).squeeze(0)
+        else:
+            features = torch.randn(1, 1024, device=self.device) # Fallback
+        
+        # ========== 2. 海马体记忆锚点调取与注意力门控加载（生产级实现） ==========
+        memory_anchors = self.hippocampus.recall(features, topk=self.narrow_window_size)
+        
+        # 提取海马体提示用于这步前向推理
+        memory_anchor_id = memory_anchors[0].get('memory_id', 'unknown') if memory_anchors else 'none'
+        
+        # 生产级门控信号：使用CA1注意力门控
+        memory_anchor_gate = self._generate_memory_gate_signal(features, memory_anchors)
+        
+        # ========== 3. 窄窗口上下文 + 当前token的模型前向推理 ==========
+        # 在 O(1) 模式下，我们只传最近 1-2 个 token 或直接依靠 KV-cache
+        model_input_ids = torch.tensor([[input_token]], device=self.device)
+        
+        # 调用模型的 forward_step (支持 KV-cache)
+        step_outputs = self.model.forward_step(
+            model_input_ids,
+            past_key_values=past_key_values,
+            memory_anchor_id=memory_anchor_id,
+            memory_anchor_gate=memory_anchor_gate,
+            **kwargs
+        )
+        
+        output_token = step_outputs['token_id']
+        new_past_key_values = step_outputs.get('past_key_values')
+        
+        # ========== 5. 全链路 STDP 权重本地刷新 ==========
+        # 生产级实现：从KV-cache和上下文缓冲区提取完整的上下文token序列
+        context_tokens = self._extract_context_tokens(
+            input_token, 
+            past_key_values
+        ) 
 
-            stdp_inputs = {
-                'context_tokens': context_tokens,
-                'current_token': input_token,
-                'features': features,
-                'memory_anchor_id': memory_anchors[0].get('memory_id', 'unknown') if memory_anchors else 'none',
-                'context': kwargs.get('context', [])
-            }
-            stdp_outputs = {
-                'attention_output': step_outputs.get('attention_output', torch.zeros(1)),
-                'ffn_output': step_outputs.get('ffn_output', torch.zeros(1)),
-                'memory_contribution': step_outputs.get('memory_contribution', 0.5),
-                'evaluation_score': step_outputs.get('evaluation_score', 35.0)
-            }
-            
-            # 记录 STDP 激活时间
-            for anchor in memory_anchors:
-                self.stdp_engine.record_activation(
-                    'memory',
-                    anchor.get('memory_id', 'unknown'),
-                    timestamp
-                )
-            
-            # 优化4: STDP 更新和海马体编码异步执行，不阻塞生成
-            # 将 stdp.step() 和 hippocampus.encode() 提交到后台线程
-            import concurrent.futures
-            
-            def _async_stdp_and_encode():
-                try:
-                    self.stdp_engine.step(
-                        model_components={
-                            'attention': self.model,
-                            'ffn': self.model,
-                            'hippocampus': self.hippocampus
-                        },
-                        inputs=stdp_inputs,
-                        outputs=stdp_outputs,
-                        timestamp=timestamp
-                    )
-                    self.hippocampus.encode(
-                        features=features,
-                        token_id=input_token,
-                        timestamp=int(timestamp),
-                        context=[]
-                    )
-                except Exception as e:
-                    pass  # STDP 错误不影响生成
-            
-            # fire-and-forget: 后台执行，当前循环不等待
-            if hasattr(self.model, '_stdp_executor'):
-                self.model._stdp_executor.submit(_async_stdp_and_encode)
-            else:
-                # fallback: 同步执行
-                _async_stdp_and_encode()
-            
-            self.cycle_count += 1
-            success = True
-            
-        except Exception as e:
-            print(f"[Cycle Engine] Error: {e}")
-            output_token = input_token
-            new_past_key_values = past_key_values
-            memory_anchors = []
-            features = torch.zeros(1, 1024, device=self.device)
-            success = False
+        stdp_inputs = {
+            'context_tokens': context_tokens,
+            'current_token': input_token,
+            'features': features,
+            'memory_anchor_id': memory_anchors[0].get('memory_id', 'unknown') if memory_anchors else 'none',
+            'context': kwargs.get('context', [])
+        }
+        stdp_outputs = {
+            'attention_output': step_outputs.get('attention_output', torch.zeros(1)),
+            'ffn_output': step_outputs.get('ffn_output', torch.zeros(1)),
+            'memory_contribution': step_outputs.get('memory_contribution', 0.5),
+            'evaluation_score': step_outputs.get('evaluation_score', 35.0)
+        }
+        
+        # 记录 STDP 激活时间
+        for anchor in memory_anchors:
+            self.stdp_engine.record_activation(
+                'memory',
+                anchor.get('memory_id', 'unknown'),
+                timestamp
+            )
+        
+        # 优化4: STDP 更新和海马体编码异步执行，不阻塞生成
+        # 将 stdp.step() 和 hippocampus.encode() 提交到后台线程
+        import concurrent.futures
+        
+        def _async_stdp_and_encode():
+            self.stdp_engine.step(
+                model_components={
+                    'attention': self.model,
+                    'ffn': self.model,
+                    'hippocampus': self.hippocampus
+                },
+                inputs=stdp_inputs,
+                outputs=stdp_outputs,
+                timestamp=timestamp
+            )
+            self.hippocampus.encode(
+                features=features,
+                token_id=input_token,
+                timestamp=int(timestamp),
+                context=[]
+            )
+        
+        # fire-and-forget: 后台执行，当前循环不等待
+        if hasattr(self.model, '_stdp_executor'):
+            self.model._stdp_executor.submit(_async_stdp_and_encode)
+        else:
+            # fallback: 同步执行
+            _async_stdp_and_encode()
+        
+        self.cycle_count += 1
+        success = True
         
         # 精确 10ms 控制
         elapsed_ms = (time.time() - cycle_start) * 1000
@@ -249,13 +237,10 @@ class RefreshCycleEngine:
         
         # 2. 从KV-cache推断活跃token
         if past_key_values is not None:
-            try:
-                # KV-cache结构: List[Tuple[key_states, value_states]]
-                # key_states形状: [batch, num_heads, seq_len, head_dim]
-                active_tokens = self._infer_active_tokens_from_kv(past_key_values)
-                context_tokens.extend(active_tokens)
-            except Exception:
-                pass  # KV-cache解析失败不影响主流程
+            # KV-cache结构: List[Tuple[key_states, value_states]]
+            # key_states形状: [batch, num_heads, seq_len, head_dim]
+            active_tokens = self._infer_active_tokens_from_kv(past_key_values)
+            context_tokens.extend(active_tokens)
         
         # 3. 添加当前token
         context_tokens.append(current_token)
@@ -289,30 +274,27 @@ class RefreshCycleEngine:
         """
         active_tokens = []
         
-        try:
-            # 遍历各层的KV-cache
-            for layer_idx, (key_states, value_states) in enumerate(past_key_values[:3]):  # 只看前3层
-                if key_states is None:
-                    continue
+        # 遍历各层的KV-cache
+        for layer_idx, (key_states, value_states) in enumerate(past_key_values[:3]):  # 只看前3层
+            if key_states is None:
+                continue
+            
+            # 计算每个位置的激活能量
+            # key_states: [batch, num_heads, seq_len, head_dim]
+            if hasattr(key_states, 'shape') and len(key_states.shape) == 4:
+                # 计算L2范数作为能量指标
+                energy = key_states.norm(dim=-1).mean(dim=1).squeeze(0)  # [seq_len]
                 
-                # 计算每个位置的激活能量
-                # key_states: [batch, num_heads, seq_len, head_dim]
-                if hasattr(key_states, 'shape') and len(key_states.shape) == 4:
-                    # 计算L2范数作为能量指标
-                    energy = key_states.norm(dim=-1).mean(dim=1).squeeze(0)  # [seq_len]
+                # 选择能量较高的位置
+                if len(energy) > 0:
+                    threshold = energy.mean()
+                    high_energy_mask = energy > threshold
+                    high_energy_positions = high_energy_mask.nonzero(as_tuple=True)[0].tolist()
                     
-                    # 选择能量较高的位置
-                    if len(energy) > 0:
-                        threshold = energy.mean()
-                        high_energy_mask = energy > threshold
-                        high_energy_positions = high_energy_mask.nonzero(as_tuple=True)[0].tolist()
-                        
-                        # 将位置映射回token（简化：位置即token索引）
-                        # 实际应该维护position->token_id的映射
-                        for pos in high_energy_positions[-5:]:  # 最多取5个
-                            active_tokens.append(int(pos))
-        except Exception:
-            pass
+                    # 将位置映射回token（简化：位置即token索引）
+                    # 实际应该维护position->token_id的映射
+                    for pos in high_energy_positions[-5:]:  # 最多取5个
+                        active_tokens.append(int(pos))
         
         return active_tokens
     
