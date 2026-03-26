@@ -15,6 +15,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import time
 import asyncio
 import sys
+import logging
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 # ========== 窄带宽注意力补丁 ==========
 # 在导入时应用补丁，修改 Qwen 内部注意力层

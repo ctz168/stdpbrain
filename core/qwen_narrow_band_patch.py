@@ -101,7 +101,7 @@ class MemoryAnchorInjector:
         device = device or key_states.device
         batch_size = key_states.shape[0]
         
-        # 构建锚点 KV
+        # 构建锚点 KV (每个锚点形状: [batch, num_heads, 1, head_dim])
         anchor_keys = []
         anchor_values = []
         
@@ -114,19 +114,28 @@ class MemoryAnchorInjector:
             if 'key_features' in anchor and anchor['key_features'] is not None:
                 try:
                     anchor_k = torch.tensor(anchor['key_features'], device=device, dtype=key_states.dtype)
+                    # 确保 4D 形状: [batch, num_heads, 1, head_dim]
                     if anchor_k.dim() == 1:
-                        anchor_k = anchor_k.unsqueeze(0).unsqueeze(0)  # [1, 1, head_dim]
-                    # 确保形状正确
+                        anchor_k = anchor_k.view(1, 1, 1, -1)  # [1, 1, 1, head_dim]
+                    elif anchor_k.dim() == 2:
+                        anchor_k = anchor_k.unsqueeze(1).unsqueeze(1)  # [batch, 1, 1, head_dim]
+                    elif anchor_k.dim() == 3:
+                        anchor_k = anchor_k.unsqueeze(2)  # [batch, num_heads, 1, head_dim]
+                    
+                    # 调整 head_dim
                     if anchor_k.shape[-1] != head_dim:
-                        # 投影或截断
                         if anchor_k.shape[-1] < head_dim:
                             pad = torch.zeros(*anchor_k.shape[:-1], head_dim - anchor_k.shape[-1], device=device, dtype=key_states.dtype)
                             anchor_k = torch.cat([anchor_k, pad], dim=-1)
                         else:
                             anchor_k = anchor_k[..., :head_dim]
-                    # 扩展到多头
+                    
+                    # 扩展到正确的 batch 和 num_heads
+                    if anchor_k.shape[0] != batch_size:
+                        anchor_k = anchor_k.expand(batch_size, -1, -1, -1)
                     if anchor_k.shape[1] != num_heads:
-                        anchor_k = anchor_k.expand(-1, num_heads, -1)
+                        anchor_k = anchor_k.expand(-1, num_heads, -1, -1)
+                    
                     anchor_keys.append(anchor_k)
                 except Exception as e:
                     print(f"[MemoryAnchorInjector] key_features 处理失败: {e}")
@@ -134,47 +143,59 @@ class MemoryAnchorInjector:
             if 'value_features' in anchor and anchor['value_features'] is not None:
                 try:
                     anchor_v = torch.tensor(anchor['value_features'], device=device, dtype=value_states.dtype)
+                    # 确保 4D 形状
                     if anchor_v.dim() == 1:
-                        anchor_v = anchor_v.unsqueeze(0).unsqueeze(0)
+                        anchor_v = anchor_v.view(1, 1, 1, -1)
+                    elif anchor_v.dim() == 2:
+                        anchor_v = anchor_v.unsqueeze(1).unsqueeze(1)
+                    elif anchor_v.dim() == 3:
+                        anchor_v = anchor_v.unsqueeze(2)
+                    
                     if anchor_v.shape[-1] != head_dim:
                         if anchor_v.shape[-1] < head_dim:
                             pad = torch.zeros(*anchor_v.shape[:-1], head_dim - anchor_v.shape[-1], device=device, dtype=value_states.dtype)
                             anchor_v = torch.cat([anchor_v, pad], dim=-1)
                         else:
                             anchor_v = anchor_v[..., :head_dim]
+                    
+                    if anchor_v.shape[0] != batch_size:
+                        anchor_v = anchor_v.expand(batch_size, -1, -1, -1)
                     if anchor_v.shape[1] != num_heads:
-                        anchor_v = anchor_v.expand(-1, num_heads, -1)
+                        anchor_v = anchor_v.expand(-1, num_heads, -1, -1)
+                    
                     anchor_values.append(anchor_v)
                 except Exception as e:
                     print(f"[MemoryAnchorInjector] value_features 处理失败: {e}")
             
-            # 如果没有预计算的 KV，从 dg_features 生成（简单投影）
+            # 如果没有预计算的 KV，从 dg_features 生成
             if (anchor_k is None or anchor_v is None) and 'dg_features' in anchor and anchor['dg_features'] is not None:
                 try:
                     feat = torch.tensor(anchor['dg_features'], device=device, dtype=key_states.dtype)
                     if feat.dim() == 1:
                         feat = feat.unsqueeze(0)
                     
-                    # 简单截断或填充到 hidden_size
+                    # 简单截断或填充
                     if feat.shape[-1] < hidden_size:
                         pad = torch.zeros(feat.shape[0], hidden_size - feat.shape[-1], device=device, dtype=key_states.dtype)
                         feat = torch.cat([feat, pad], dim=-1)
                     elif feat.shape[-1] > hidden_size:
                         feat = feat[..., :hidden_size]
                     
-                    # 简单投影：取前 num_heads * head_dim 个元素作为 K 和 V
-                    # 这是一个简化的投影，实际应该用可学习的投影层
+                    # 简单投影生成 KV
                     kv_size = num_heads * head_dim
                     if feat.shape[-1] >= kv_size * 2:
-                        anchor_k = feat[:, :kv_size].view(1, num_heads, head_dim)
-                        anchor_v = feat[:, kv_size:kv_size*2].view(1, num_heads, head_dim)
+                        # [batch, num_heads, 1, head_dim]
+                        anchor_k = feat[:, :kv_size].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1)
+                        anchor_v = feat[:, kv_size:kv_size*2].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1)
                     else:
                         # 重复特征
-                        anchor_k = feat[:, :head_dim].unsqueeze(0).expand(-1, num_heads, -1)
-                        anchor_v = feat[:, head_dim:head_dim*2].unsqueeze(0).expand(-1, num_heads, -1) if feat.shape[-1] >= head_dim * 2 else anchor_k.clone()
+                        anchor_k = feat[:, :head_dim].view(1, 1, 1, head_dim).expand(batch_size, num_heads, -1, -1)
+                        anchor_v = feat[:, head_dim:head_dim*2].view(1, 1, 1, head_dim).expand(batch_size, num_heads, -1, -1) if feat.shape[-1] >= head_dim * 2 else anchor_k.clone()
                     
-                    anchor_keys.append(anchor_k)
-                    anchor_values.append(anchor_v)
+                    if anchor_k is not None:
+                        anchor_keys.append(anchor_k)
+                    if anchor_v is not None:
+                        anchor_values.append(anchor_v)
                 except Exception as e:
                     print(f"[MemoryAnchorInjector] dg_features 处理失败: {e}")
         
@@ -186,15 +207,9 @@ class MemoryAnchorInjector:
         anchor_keys = [k * strength for k in anchor_keys]
         anchor_values = [v * strength for v in anchor_values]
         
-        # 拼接锚点 KV
-        # [batch, num_heads, num_anchors, head_dim]
+        # 拼接锚点 KV: [batch, num_heads, num_anchors, head_dim]
         anchor_key_tensor = torch.cat(anchor_keys, dim=2)
         anchor_value_tensor = torch.cat(anchor_values, dim=2)
-        
-        # 扩展 batch 维度
-        if anchor_key_tensor.shape[0] != batch_size:
-            anchor_key_tensor = anchor_key_tensor.expand(batch_size, -1, -1, -1)
-            anchor_value_tensor = anchor_value_tensor.expand(batch_size, -1, -1, -1)
         
         # 拼接到原始 KV 前面
         # 新 KV: [锚点1, 锚点2, ..., 原始token1, 原始token2, ...]

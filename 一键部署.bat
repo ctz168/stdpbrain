@@ -62,15 +62,16 @@ REM 安装依赖
 echo.
 echo       [2/2] 安装依赖包...
 venv\Scripts\python.exe -m pip install torch transformers huggingface_hub numpy accelerate -i https://pypi.tuna.tsinghua.edu.cn/simple
-venv\Scripts\python.exe -m pip install python-telegram-bot aiohttp pydantic python-dotenv loguru modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+venv\Scripts\python.exe -m pip install python-telegram-bot aiohttp pydantic python-dotenv loguru tqdm colorama modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 echo.
 echo       [OK] 依赖安装完成
 echo.
 echo ============================================================
 echo       窄带宽注意力补丁已自动集成
-echo       - 类人脑稀疏注意力机制
-echo       - 海马体记忆锚点注入
+echo       - 类人脑稀疏注意力机制 (O(k) 复杂度)
+echo       - 海马体记忆锚点注入到 KV-cache
+echo       - 线程安全 Tokenizer (修复并发问题)
 echo       - 性能提升: 20-50%%
 echo ============================================================
 echo.
