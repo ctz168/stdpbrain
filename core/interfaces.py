@@ -873,7 +873,8 @@ class BrainAIInterface:
         if is_math:
             system_msg = "你正在进行逻辑计算。用最直接的方式分析这个计算过程，不要发散。保持纯粹的理性。"
         elif self.thought_seed:
-            system_msg = f"你是一个理性思维的AI。当前任务：{mode_desc}。用简洁的中文表达你的思考过程。保持逻辑性，不要情绪化表达。"
+            # 如果是用户问题，生成针对性的思考过程
+            system_msg = f"你是理性思维的AI。针对用户的问题，{mode_desc}。简短分析问题的核心，给出思考方向。保持逻辑性，控制在2-3句话。"
         elif self.monologue_history:
             system_msg = f"你是一个理性思维的AI。基于上一个思考，继续{mode_desc}。保持逻辑链条的连贯性。"
         else:
@@ -1024,7 +1025,8 @@ class BrainAIInterface:
         3. [并行/后台] 后期固化
         """
         self.hippocampus.record_activity()
-        self.thought_seed = user_input
+        self.thought_seed = user_input  # ← 提前设置，影响独白生成
+        self._last_user_input = user_input  # 同时更新最后用户输入
         
         def parallel_recall_for_stream():
             memory_context = ""
@@ -1050,6 +1052,7 @@ class BrainAIInterface:
             return memory_context, recalled_memories  # 返回记忆锚点用于窄带宽注意力
 
         recall_task = asyncio.to_thread(parallel_recall_for_stream)
+        # 独白生成现在已经会参考 thought_seed (即 user_input)
         monologue_task = asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.75)
         (memory_context, recalled_memories), monologue_raw = await asyncio.gather(recall_task, monologue_task)
         
@@ -1218,8 +1221,15 @@ class BrainAIInterface:
         if history:
             for msg in history[-4:]:
                 messages.append(msg)
-                
-        messages.append({"role": "user", "content": user_input})
+        
+        # ========== 关键修改：整合独白到用户输入 ==========
+        # 让模型理解这是"边思考边回答"的过程
+        if monologue and monologue != "思考中...":
+            # 将独白作为"思考过程"附加到用户问题前
+            enhanced_input = f"[思考过程]\n{monologue}\n\n[基于上述思考回答问题]\n{user_input}"
+            messages.append({"role": "user", "content": enhanced_input})
+        else:
+            messages.append({"role": "user", "content": user_input})
         
         try:
             prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)
