@@ -25,6 +25,9 @@ from core.inner_thought_engine import InnerThoughtEngine, MindState, ThinkingMod
 from core.goal_system import GoalSystem, create_goal_system
 from core.global_workspace import GlobalWorkspace, create_global_workspace
 from core.self_encoder import SelfStateEncoder
+from core.true_self_referential_loop import TrueSelfReferentialLoop
+from core.predictive_coding import PredictiveCodingModule
+from core.proactive_intent_generator import ProactiveIntentGenerator, ProactiveContext
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,55 @@ class BrainAIInterface:
         # 8. 自我状态编码器 (实现真正的自指)
         self.self_encoder = SelfStateEncoder(hidden_size=self.model_hidden_size, device=self.device)
         print("[BrainAI] [OK] 自我状态编码器已初始化")
+        
+        # 9. 真正自指循环模块（增强自指深度）
+        try:
+            self.true_self_loop = TrueSelfReferentialLoop(
+                hidden_size=self.model_hidden_size,
+                max_recursion_depth=3
+            ).to(self.device)
+            print("[BrainAI] [OK] 真正自指循环模块已初始化")
+        except Exception as e:
+            logger.warning(f"真正自指循环模块初始化失败: {e}")
+            self.true_self_loop = None
+        
+        # 10. 预测编码模块（预测误差最小化）
+        try:
+            self.predictive_coder = PredictiveCodingModule(
+                hidden_size=self.model_hidden_size,
+                vocab_size=self.model.tokenizer.vocab_size if hasattr(self.model, 'tokenizer') else 50257
+            ).to(self.device)
+            # 追踪上一轮输出
+            self.last_output_ids = None
+            self.last_output_embedding = None
+            print("[BrainAI] [OK] 预测编码模块已初始化")
+        except Exception as e:
+            logger.warning(f"预测编码模块初始化失败: {e}")
+            self.predictive_coder = None
+        
+        # 11. 主动意图生成器（主动输出）
+        try:
+            self.proactive_generator = ProactiveIntentGenerator(
+                hidden_size=self.model_hidden_size,
+                min_interval_seconds=getattr(config, 'proactive_min_interval', 600),
+                max_daily_count=getattr(config, 'proactive_max_daily', 5)
+            ).to(self.device)
+            # 主动输出统计
+            self.last_output_time = time.time()
+            self.last_user_input_time = time.time()
+            self.proactive_debug_log = []
+            self.clarification_count = 0
+            self.max_clarifications_per_turn = 2
+            print("[BrainAI] [OK] 主动意图生成器已初始化")
+        except Exception as e:
+            logger.warning(f"主动意图生成器初始化失败: {e}")
+            self.proactive_generator = None
+        
+        self.last_output_time = time.time()
+        self.last_user_input_time = time.time()
+        self.proactive_debug_log = []
+        self.clarification_count = 0
+        self.max_clarifications_per_turn = 2
         
         # 周期计数
         self.cycle_count = 0
@@ -246,6 +298,7 @@ class BrainAIInterface:
         1. [并行] 召回 (Recall) + 思考 (Think)
         2. [串行] 回复 (Respond)：基于记忆、独白和输入生成正式回答
         3. [并行/后台] 学习 (Learn)：STDP更新和记忆存储
+        4. [异步] 主动意图检查（如果启用）
         """
         self.hippocampus.record_activity()
         
@@ -254,6 +307,10 @@ class BrainAIInterface:
         # 仅当狍子为空时（初始化）才用用户输入初始化狍子
         if not self.thought_seed:
             self.thought_seed = user_input[:30]
+        
+        # 1.5 检查主动意图（异步，不阻塞主流程）
+        if hasattr(self, 'proactive_generator') and self.proactive_generator:
+            self._check_proactive_intent_async(user_input)
         
         # 1.5 目标推断（新增）
         if hasattr(self, 'goal_system') and self.goal_system:
@@ -378,7 +435,21 @@ class BrainAIInterface:
         # 3.2 更新全局思维状态 (latent continuity)
         if hasattr(output, 'hidden_state') and output.hidden_state is not None:
             self.current_thought_state = output.hidden_state
-            # 3.3 更新自我编码器：让AI"感知"自己的内部状态
+            
+            # 3.3 应用真正自指循环（增强自指）
+            if hasattr(self, 'true_self_loop') and self.true_self_loop:
+                try:
+                    # 获取当前思维状态
+                    mind_state = self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "FOCUSED"
+                    self.current_thought_state = self.true_self_loop(
+                        self.current_thought_state,
+                        current_mind_state=mind_state,
+                        recursion_depth=0
+                    )
+                except Exception as e:
+                    logger.warning(f"自指循环失败: {e}")
+            
+            # 3.4 更新自我编码器：让AI"感知"自己的内部状态
             if hasattr(self, 'self_encoder'):
                 try:
                     _, _ = self.self_encoder.encode(output.hidden_state)
@@ -394,7 +465,71 @@ class BrainAIInterface:
             else:
                 self.thought_seed = candidate
         
-        # 3.5 自闭环优化 - 高复杂度任务进行二次优化
+        # 3.5 预测编码：计算预测误差（如果启用了预测模块）
+        prediction_error = 0.0
+        if hasattr(self, 'predictive_coder') and self.predictive_coder and self.last_output_embedding is not None:
+            try:
+                # 预测下一状态和 token
+                pred_next_state, pred_token_logits = self.predictive_coder.predict_next(
+                    current_state=self.current_thought_state,
+                    last_output_embedding=self.last_output_embedding
+                )
+                
+                # 获取实际输出的 token ids（取第一个 token 作为实际观测）
+                actual_token_ids = self.model.tokenize_safe(output.text, add_special_tokens=False).input_ids[:1]
+                if len(actual_token_ids) == 0:
+                    actual_token_ids = torch.tensor([self.model.tokenizer.eos_token_id], device=self.device)
+                else:
+                    actual_token_ids = torch.tensor(actual_token_ids, device=self.device)
+                
+                # 计算预测误差
+                error_metrics = self.predictive_coder.compute_prediction_error(
+                    predicted_logits=pred_token_logits,
+                    actual_token_ids=actual_token_ids,
+                    predicted_state=pred_next_state,
+                    actual_next_state=self.current_thought_state
+                )
+                prediction_error = error_metrics["combined_error"]
+                
+                # 3.6 误差反馈：调整 STDP 贡献度
+                # 误差大 → 降低贡献，增强 LTD（削弱错误关联）
+                stdp_contribution = max(0.0, 1.0 - prediction_error / 5.0)  # 归一化
+                self.stdp_engine.set_contribution('attention', stdp_contribution)
+                
+                # 3.7 主动澄清：如果误差高且输入模糊，触发主动提问
+                if prediction_error > 3.0:  # 阈值可调
+                    should_clarify, reason = self.predictive_coder.should_trigger_clarification(
+                        current_error=prediction_error,
+                        context={
+                            "user_input": user_input,
+                            "is_ambiguous": len(user_input) < 10,
+                            "recent_clarifications": self.clarification_count
+                        }
+                    )
+                    if should_clarify and self.clarification_count < self.max_clarifications_per_turn:
+                        clarification = self._generate_clarification(user_input, prediction_error)
+                        # 主动发送（需 Bot 支持 allow_proactive）
+                        self._send_proactive_message(clarification, is_clarification=True)
+                        self.clarification_count += 1
+                
+            except Exception as e:
+                logger.warning(f"预测编码失败: {e}")
+        
+        # 3.8 更新追踪：保存当前输出用于下一轮预测
+        try:
+            self.last_output_ids = self.model.tokenize_safe(output.text, add_special_tokens=False).input_ids
+            if len(self.last_output_ids) > 0:
+                # 取最后一个 token 的 embedding
+                self.last_output_embedding = self.model.model.base_model.get_input_embeddings()(
+                    torch.tensor([self.last_output_ids[-1]], device=self.device)
+                ).squeeze(0)
+            else:
+                self.last_output_embedding = torch.zeros(self.model_hidden_size, device=self.device)
+        except Exception as e:
+            logger.warning(f"更新预测追踪失败: {e}")
+            self.last_output_embedding = None
+        
+        # 4. 自闭环优化 - 高复杂度任务进行二次优化
         mode = self.self_loop.decide_mode(user_input)
         output_confidence = output.confidence if hasattr(output, 'confidence') else 0.7
         
@@ -485,6 +620,12 @@ class BrainAIInterface:
                 logger.error(f"后台处理失败: {e}")
 
         self.executor.submit(post_processing)
+        
+        # 5. 更新用户输入时间（用于主动意图计算）
+        self.last_user_input_time = time.time()
+        # 重置澄清计数（每轮对话结束后）
+        self.clarification_count = 0
+        
         return output.text
 
     def think(self) -> dict:
@@ -1182,3 +1323,184 @@ class BrainAIInterface:
         if not self.inner_thought_engine:
             raise RuntimeError("内心思维独白引擎未初始化，无法获取统计信息")
         return self.inner_thought_engine.get_stats()
+    
+    # ==================== 预测编码集成 ====================
+    
+    def _generate_clarification(self, user_input: str, prediction_error: float, max_tokens: int = 30) -> str:
+        """生成澄清问题（基于预测误差）"""
+        # 根据误差大小选择澄清模板
+        if prediction_error > 4.0:
+            templates = [
+                "我不太确定我理解了。你是说「{input}」吗？",
+                "能再详细解释一下「{input}」是什么意思吗？",
+                "关于「{input}」，我可能需要更多背景信息。"
+            ]
+        elif prediction_error > 2.5:
+            templates = [
+                "你提到的「{input}」，具体是指什么？",
+                "我想确认一下：你是想说「{input}」吗？",
+                "关于「{input}」，你能多说一点吗？"
+            ]
+        else:
+            templates = [
+                "好的，我记住了「{input}」。",
+                "明白了，你在说「{input}」。",
+                "收到：{input}"
+            ]
+        
+        template = random.choice(templates)
+        short_input = user_input[:20] if len(user_input) > 20 else user_input
+        
+        prompt = f"系统指令：用自然、友好的语气生成一个澄清问题。模板：{template}\n用户输入：{short_input}\n澄清问题："
+        
+        try:
+            clarification = self.model.generate(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=0.7,
+                repetition_penalty=1.3
+            ).text.strip()
+            
+            clarification = clarification.replace("[[CLARIFY]]", "").strip()
+            return clarification if clarification else template.format(input=short_input)
+        except Exception as e:
+            logger.warning(f"生成澄清失败: {e}")
+            return template.format(input=short_input)
+    
+    def _send_proactive_message(self, text: str, is_clarification: bool = False):
+        """发送主动消息（需 Telegram Bot 支持）"""
+        try:
+            # 通过 OpenClaw 发送到当前会话
+            # 注意：需要配置 allow_proactive = true
+            from openclaw import send_message
+            send_message(text)
+            
+            # 更新时间戳
+            self.last_output_time = time.time()
+            self.clarification_count += 1 if is_clarification else 0
+            
+            logger.info(f"[Proactive] 发送{'澄清' if is_clarification else '主动'}消息：{text[:50]}...")
+            
+            # 记录到调试日志
+            self.proactive_debug_log.append({
+                "time": time.time(),
+                "text": text[:100],
+                "is_clarification": is_clarification
+            })
+            
+        except Exception as e:
+            logger.warning(f"主动发送失败：{e}")
+    
+    def _count_recent_clarifications(self) -> int:
+        """统计近期澄清次数（用于节流）"""
+        # 简单实现：返回本轮对话的澄清计数
+        return self.clarification_count
+    
+    def _get_recent_memory_salience(self) -> float:
+        """获取最近记忆的显著性（用于主动意图）"""
+        try:
+            if hasattr(self.hippocampus, 'ca3_memory') and self.hippocampus.ca3_memory.memories:
+                # 取激活强度最高的几个记忆的平均值
+                memories = list(self.hippocampus.ca3_memory.memories.values())
+                if len(memories) > 0:
+                    sorted_memories = sorted(memories, key=lambda m: m.activation_strength, reverse=True)
+                    top_k = sorted_memories[:3]
+                    avg_salience = sum(m.activation_strength for m in top_k) / len(top_k)
+                    return min(1.0, avg_salience)  # 归一化到 [0,1]
+        except Exception:
+            pass
+        return 0.0
+    
+    def _check_proactive_intent_async(self, user_input: str):
+        """异步检查主动意图（不阻塞对话）"""
+        def worker():
+            try:
+                context = ProactiveContext(
+                    time_silence_seconds=time.time() - self.last_user_input_time,
+                    time_since_output=time.time() - self.last_output_time,
+                    current_thought=self.current_thought_state.mean(dim=-1) if self.current_thought_state is not None else torch.zeros(self.model_hidden_size, device=self.device),
+                    mind_state=self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "RESTING",
+                    goal_context=self.goal_system.current_goal.description if self.goal_system and self.goal_system.current_goal else None,
+                    memory_salience=self._get_recent_memory_salience(),
+                    recent_clarifications=self.clarification_count,
+                    conversation_turns=self.cycle_count
+                )
+                
+                if not hasattr(self, 'proactive_generator') or self.proactive_generator is None:
+                    return
+                
+                intent, confidence, debug = self.proactive_generator(
+                    self.current_thought_state,
+                    context
+                )
+                
+                self.proactive_debug_log.append({
+                    "time": time.time(),
+                    "intent": intent.value,
+                    "confidence": confidence,
+                    "debug": debug
+                })
+                
+                # 如果决定主动输出，生成内容（延迟执行，避免同一轮多次主动）
+                if intent != ProactiveIntent.SILENCE:
+                    # 延迟 5-10 秒后执行（模拟「思考后决定说话」）
+                    delay = random.uniform(5, 10)
+                    time.sleep(delay)
+                    
+                    # 再次检查是否仍满足条件（用户可能刚输入）
+                    if time.time() - self.last_user_input_time > 30:  # 确保用户已离开30秒
+                        proactive_text = self._generate_proactive_content(intent, context)
+                        self._send_proactive_message(proactive_text, is_clarification=False)
+                        
+                        # 重置澄清计数（主动分享不计入澄清限制）
+                        self.clarification_count = max(0, self.clarification_count - 1)
+                        
+            except Exception as e:
+                logger.warning(f"主动意图检查失败: {e}")
+        
+        import threading
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+    
+    def _generate_proactive_content(
+        self, 
+        intent: ProactiveIntent, 
+        context: ProactiveContext
+    ) -> str:
+        """根据意图生成主动内容"""
+        
+        if intent == ProactiveIntent.SHARE_THOUGHT:
+            # 分享最近的独白或记忆
+            if self.monologue_history and len(self.monologue_history) > 0:
+                thought = random.choice(self.monologue_history[-3:])
+                templates = [
+                    f"刚才我在想：{thought[:50]}...",
+                    f"我注意到一个点：{thought[:40]}",
+                    f"突然想到：{thought[:50]}"
+                ]
+                return random.choice(templates)
+            
+            # fallback：随机思维
+            return self._generate_spontaneous_monologue(max_tokens=40)
+        
+        elif intent == ProactiveIntent.ASK_QUESTION:
+            # 基于记忆或目标提问
+            if self.goal_system and self.goal_system.current_goal:
+                goal_desc = self.goal_system.current_goal.description
+                return f"关于{goal_desc}，你有什么更多信息想分享的吗？"
+            
+            # fallback：通用好奇
+            return "我很好奇，你平时是怎么处理这类问题的？"
+        
+        elif intent == ProactiveIntent.REFLECT_SHARE:
+            # 分享反思
+            return "我回顾了一下我们的对话，感觉...（反思内容）"
+        
+        elif intent == ProactiveIntent.REMIND:
+            # 基于目标的提醒
+            if self.goal_system and self.goal_system.current_goal:
+                return f"对了，你之前提到{self.goal_system.current_goal.description}，进展如何？"
+            
+            return "记得我们之前聊过相关的话题，你有新的想法吗？"
+        
+        return "..."  # 默认
