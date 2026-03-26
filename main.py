@@ -313,6 +313,15 @@ def main():
     config = BrainAIConfig()
     config.model_path = args.model_path
     
+    # 从 config.py 读取量化配置（如果存在）
+    try:
+        import config as user_config
+        config.quantization = getattr(user_config, 'QUANTIZATION', config.quantization)
+        config.QUANTIZATION = config.quantization  # 同步大小写
+        print(f"[配置] 量化模式: {config.quantization}")
+    except:
+        print(f"[配置] 使用默认量化模式: {config.quantization}")
+    
     # ========== 2. 创建 AI 实例 ==========
     print("\n[初始化] 加载模型和模块...")
     

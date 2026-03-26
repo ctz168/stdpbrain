@@ -101,6 +101,16 @@ class QwenModelWrapper(nn.Module):
             # 自动检测 Apple Silicon (M1/M2/M3)
             is_mac = torch.backends.mps.is_available()
             
+            # AUTO 模式：根据设备自动选择量化方式
+            if self.quantization == "AUTO":
+                if self.device == "cuda":
+                    self.quantization = "INT8"  # GPU 使用 INT8
+                elif is_mac:
+                    self.quantization = "FP16"  # macOS 使用 FP16
+                else:
+                    self.quantization = "FP32"  # CPU 使用 FP32（避免缓慢的动态量化）
+                print(f"  [AUTO] 自动选择量化方式: {self.quantization}")
+            
             if self.quantization in ["INT4", "INT8"]:
                 if self.device == "cuda":
                     # CUDA 环境下的量化
@@ -231,24 +241,26 @@ class QwenModelWrapper(nn.Module):
         print(f"[OK] 已包裹 {replaced_count} 个量化/线性投影为双权重版本")
         
         # ========== 后置优化：如果是 CPU，执行动态量化 ==========
+        # 注意：2B 模型的 CPU 动态量化非常慢（5-10分钟）且内存占用大
+        # 建议：使用 AUTO 量化模式（GPU用INT8，CPU用FP32）
         if self.device == "cpu" and self.quantization == "INT8":
+            import time
+            start_time = time.time()
             print(f"  [*] 正在对基础模型执行动态量化 (INT8)...")
-            # 动态量化会寻找 nn.Linear。注意：DualWeightLinear 默认不被识别，这很好，
-            # 因为我们需要动态权重保持浮点高精度以进行 STDP 学习。
-            self.base_model = torch.quantization.quantize_dynamic(
-                self.base_model, {torch.nn.Linear}, dtype=torch.qint8
-            )
-            print("  [OK] [CPU] 后置动态量化完成")
-        
-        # ========== 后置优化：如果是 CPU，执行动态量化 ==========
-        # 注意：我们只量化非 DualWeight 的部分，或者直接对整个模型尝试
-        if self.device == "cpu" and self.quantization == "INT8":
-            print(f"  [*] 正在对基础模型执行动态量化 (INT8)...")
-            # 仅量化 nn.Linear 层，回避我们的 DualWeight 模块
-            self.base_model = torch.quantization.quantize_dynamic(
-                self.base_model, {torch.nn.Linear}, dtype=torch.qint8
-            )
-            print("  [OK] [CPU] 后置动态量化完成")
+            print(f"  [!] 警告：CPU 动态量化可能需要 5-10 分钟，请耐心等待...")
+            print(f"  [!] 提示：可以在 config.py 中设置 QUANTIZATION='FP32' 跳过此步骤")
+            
+            try:
+                # 动态量化会寻找 nn.Linear。注意：DualWeightLinear 默认不被识别，这很好，
+                # 因为我们需要动态权重保持浮点高精度以进行 STDP 学习。
+                self.base_model = torch.quantization.quantize_dynamic(
+                    self.base_model, {torch.nn.Linear}, dtype=torch.qint8
+                )
+                elapsed = time.time() - start_time
+                print(f"  [OK] [CPU] 后置动态量化完成 (耗时: {elapsed:.1f}秒)")
+            except Exception as e:
+                print(f"  [!] [CPU] 动态量化失败: {e}")
+                print(f"  [!] [CPU] 继续使用 FP32 模式")
     
     def set_hippocampus_gate(self, gate_fn):
         """

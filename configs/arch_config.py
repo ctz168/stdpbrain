@@ -17,10 +17,10 @@ class HardConstraints:
     STATIC_WEIGHT_RATIO: float = 0.85  # 85% 静态基础权重比例
     DYNAMIC_WEIGHT_RATIO: float = 0.15  # 15% STDP动态增量权重比例（平衡稳定性和学习能力）
     
-    # 端侧算力约束
-    MAX_MEMORY_MB: int = 420  # INT4 量化后最大显存占用 (MB)
+    # 端侧算力约束 - 针对 Qwen3.5-2B 优化
+    MAX_MEMORY_MB: int = 1200  # INT8 量化后最大内存占用 (MB) - 2B模型需要更多内存
     REFRESH_PERIOD_MS: int = 10  # 10ms 刷新周期
-    MAX_COMPUTE_OVERHEAD: float = 0.1  # 单周期算力开销不超过原生 10%
+    MAX_COMPUTE_OVERHEAD: float = 0.15  # 单周期算力开销不超过原生 15%
     
     # 窄窗口约束（类人脑注意力机制）
     NARROW_WINDOW_SIZE: int = 32  # 窄窗口大小：保留最近32个token（优化：从64降低，让KV压缩更早触发）
@@ -37,8 +37,8 @@ class HardConstraints:
     KV_EVICT_TO_HIPPOCAMPUS: bool = True  # 被释放的KV自动存储到海马体
     MAX_MEMORY_KV: int = 5  # 最大记忆KV数量（用于组合注意力）
     
-    # 海马体内存约束
-    HIPPOCAMPUS_MAX_MEMORY_MB: int = 2  # 情景记忆库最大 2MB
+    # 海马体内存约束 - 针对 2B 模型扩展
+    HIPPOCAMPUS_MAX_MEMORY_MB: int = 5  # 情景记忆库最大 5MB（hidden_size 增加到 2048）
 
 
 # ==================== STDP超参数配置 ====================
@@ -96,7 +96,7 @@ class HippocampusConfig:
     SWR_replay_frequency: float = 0.1  # 回放频率
     
     # 内存约束
-    max_memory_bytes: int = 2 * 1024 * 1024  # 2MB
+    max_memory_bytes: int = 5 * 1024 * 1024  # 5MB (2B模型需要更大内存)
     use_cycle_buffer: bool = True  # 循环缓存
     
     # 召回阈值优化
@@ -235,6 +235,10 @@ class BrainAIConfig:
     """类人脑双系统全闭环 AI架构全局配置"""
     model_name: str = "Qwen3.5-2B"
     model_path: str = "./models/Qwen3.5-2B"
+    
+    # 量化配置（从 config.py 读取）
+    quantization: str = "AUTO"  # 默认 AUTO 模式（GPU用INT8，CPU用FP32）
+    QUANTIZATION: str = "AUTO"  # 兼容大写属性名
     
     hard_constraints: HardConstraints = field(default_factory=HardConstraints)
     stdp: STDPConfig = field(default_factory=STDPConfig)
