@@ -235,29 +235,10 @@ class UserFeedbackHandler:
             not feedback.is_positive and 
             feedback.intensity >= 0.7
         )
-    
-    def get_learning_priority(self, feedback: FeedbackResult) -> str:
-        """
-        获取学习优先级
-        
-        Args:
-            feedback: 反馈结果
-            
-        Returns:
-            str: 优先级 ("high", "medium", "low", "none")
-        """
-        if not feedback.is_feedback:
-            return "none"
-        
-        if feedback.intensity >= 0.7:
-            return "high"
-        elif feedback.intensity >= 0.5:
-            return "medium"
-        else:
-            return "low"
 
 
 # 全局实例
+
 _user_feedback_handler = None
 
 def get_feedback_handler() -> UserFeedbackHandler:

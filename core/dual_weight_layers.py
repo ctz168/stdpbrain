@@ -64,13 +64,7 @@ class DualWeightLinear(nn.Module):
         # 3. 输出聚合，还原回基底的数据类型(防止外层发生类型冲突)
         out = (base_out * self.static_ratio) + dynamic_out.to(base_out.dtype)
         return out
-    
-    def get_static_weight(self) -> Optional[torch.Tensor]:
-        """获取静态权重 (仅作调试，量化时可能返回特殊对象)"""
-        if hasattr(self.base_layer, 'weight'):
-            return getattr(self.base_layer, 'weight')
-        return None
-    
+     
     def get_dynamic_weight(self) -> torch.Tensor:
         """获取动态权重 (用于 STDP 更新)"""
         return self.dynamic_weight.clone()
@@ -83,34 +77,5 @@ class DualWeightLinear(nn.Module):
                 delta_w = delta_w.to(self.dynamic_weight.dtype)
             self.dynamic_weight.add_(delta_w * lr)
             self.dynamic_weight.clamp_(min_val, max_val)
-    
-    def reset_dynamic_weight(self):
-        """重置动态权重"""
-        nn.init.normal_(self.dynamic_weight, mean=0, std=0.01)
-
-# ==================== 角色适配接口 ====================
-
-ROLE_PROMPT_TEMPLATES = {
-    "generator": "你是一个专业的文本生成助手。请根据上下文生成连贯、准确的回复。",
-    "verifier": "你是一个严谨的验证者。请仔细检查以下内容的逻辑正确性、事实准确性，指出任何错误或漏洞。",
-    "evaluator": "你是一个公正的评判者。请从事实准确性、逻辑完整性、语义连贯性、指令遵循度四个维度对以下内容进行打分 (每个维度 0-10 分)。"
-}
 
 
-def create_role_prompt(role: str, custom_instruction: Optional[str] = None) -> str:
-    """
-    创建角色提示词
-    
-    Args:
-        role: 角色类型 ("generator", "verifier", "evaluator")
-        custom_instruction: 自定义指令
-    
-    Returns:
-        完整的角色提示词
-    """
-    base_prompt = ROLE_PROMPT_TEMPLATES.get(role, ROLE_PROMPT_TEMPLATES["generator"])
-    
-    if custom_instruction:
-        return f"{base_prompt}\n\n{custom_instruction}"
-    
-    return base_prompt

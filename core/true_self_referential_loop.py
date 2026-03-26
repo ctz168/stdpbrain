@@ -109,9 +109,4 @@ class TrueSelfReferentialLoop(nn.Module):
             return self.forward(meta_state, current_mind_state, recursion_depth + 1)
         
         return meta_state
-    
-    def get_self_reference_strength(self, base_state: torch.Tensor) -> float:
-        """诊断：当前自指强度（用于调试）"""
-        with torch.no_grad():
-            gate_val = self.self_gate(base_state.mean(dim=-1, keepdim=True))
-            return gate_val.item()
+

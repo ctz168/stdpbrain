@@ -15,16 +15,6 @@ from dataclasses import dataclass
 import time
 
 
-@dataclass
-class STDPTrace:
-    """STDP 追踪记录"""
-    pre_activation_time: float  # 前序激活时间 (ms)
-    post_activation_time: float  # 后序激活时间 (ms)
-    contribution_score: float  # 贡献度评分 (-1.0 ~ 1.0)
-    layer_name: str  # 层名称
-    weight_indices: Tuple[int, ...]  # 权重索引
-
-
 class STDPRule:
     """
     STDP 时序可塑性核心规则 (已向量化)

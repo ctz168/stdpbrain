@@ -96,27 +96,6 @@ class SelfStateEncoder(nn.Module):
         
         return self_repr, context_embed
     
-    def get_self_context(self) -> Optional[torch.Tensor]:
-        """
-        获取综合自我上下文向量（考虑历史轨迹）
-        
-        Returns:
-            综合自我感知向量 [hidden_size]，用于注入生成
-        """
-        if not self.self_state_history:
-            return None
-        
-        # 指数加权历史（越近越重要）
-        weights = [0.5 ** i for i in range(len(self.self_state_history) - 1, -1, -1)]
-        total = sum(weights)
-        
-        weighted_self = torch.zeros(self.SELF_DIM, device=self.device)
-        for state, w in zip(self.self_state_history, weights):
-            weighted_self += state.to(self.device) * (w / total)
-        
-        with torch.no_grad():
-            return self.decoder(weighted_self)  # [hidden_size]
-    
     def get_emotional_state(self, hidden_state: Optional[torch.Tensor] = None) -> Dict[str, float]:
         """
         评估当前情感状态（唤醒度/效价）

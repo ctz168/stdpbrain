@@ -800,26 +800,8 @@ class InnerThoughtEngine:
         
         return random.choice(fillers.get(response_type, fillers["thinking"]))
     
-    # ==================== 自闭环优化触发 ====================
-    
-    def check_self_loop_trigger(self, user_input: str) -> Tuple[bool, str]:
-        """
-        检查是否应该触发自闭环优化
-        
-        Returns:
-            (should_trigger, mode): 是否触发，以及模式
-        """
-        if not self.self_loop:
-            return False, "self_combine"
-        
-        mode = self.self_loop.decide_mode(user_input)
-        
-        # self_game 和 self_eval 模式需要优化
-        should_trigger = mode in ["self_game", "self_eval"]
-        
-        return should_trigger, mode
-    
     # ==================== 统计信息 ====================
+
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""

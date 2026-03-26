@@ -511,3 +511,142 @@ class HippocampusSystem(nn.Module):
         self.ca3_memory.time_index.clear()
         self.ca3_memory.semantic_index.clear()
         self._update_memory_usage()
+    
+    # ========== KV Cache 专用方法 (用于滑动窗口管理) ==========
+    
+    def store_kv_as_memory(
+        self,
+        kv_features: Dict[str, Any],
+        context_text: str
+    ) -> str:
+        """
+        将KV cache作为记忆存储
+        
+        用于滑动窗口管理器，将被释放的KV存储到海马体
+        
+        Args:
+            kv_features: KV特征字典，包含:
+                - key_features: Key特征向量
+                - value_features: Value特征向量
+                - num_layers: 层数
+                - seq_len: 序列长度
+                - timestamp: 时间戳
+            context_text: 上下文文本
+        
+        Returns:
+            memory_id: 生成的记忆ID
+        """
+        try:
+            # 提取KV特征
+            key_features = kv_features.get('key_features', [])
+            value_features = kv_features.get('value_features', [])
+            num_layers = kv_features.get('num_layers', 0)
+            seq_len = kv_features.get('seq_len', 0)
+            timestamp = kv_features.get('timestamp', int(time.time() * 1000))
+            
+            if not key_features or not value_features:
+                logger.warning("[Hippocampus] KV特征为空，跳过存储")
+                return ""
+            
+            # 使用KV特征作为记忆特征
+            # 将特征向量转换为tensor
+            key_tensor = torch.tensor(key_features, dtype=torch.float32, device=self.device)
+            
+            if key_tensor.dim() == 1:
+                key_tensor = key_tensor.unsqueeze(0)
+            
+            # 使用key特征作为记忆编码的输入
+            # EC编码
+            ec_code = self.ec_encoder.encode_single(key_tensor.squeeze(0))
+            
+            # DG模式分离
+            dg_output, memory_id = self.dg_separator.separate_and_id(ec_code)
+            
+            # 构建记忆上下文
+            context = [{
+                'content': context_text,
+                'type': 'kv_memory',
+                'num_layers': num_layers,
+                'seq_len': seq_len,
+                'is_core': False,
+                'semantic_pointer': f"kv_{timestamp}"
+            }]
+            
+            # 存储到CA3
+            self.ca3_memory.store(
+                memory_id=memory_id,
+                timestamp=timestamp,
+                semantic_pointer=f"kv_{timestamp}",
+                temporal_skeleton="",
+                causal_links=[],
+                dg_features=dg_output.detach().cpu(),
+                is_core=False,
+                content=context_text,
+                key_features=key_tensor.detach().cpu() if isinstance(key_tensor, torch.Tensor) else key_features,
+                value_features=torch.tensor(value_features, dtype=torch.float32).detach().cpu() if isinstance(value_features, list) else value_features
+            )
+            
+            logger.debug(
+                f"[Hippocampus] KV已存储为记忆: "
+                f"memory_id={memory_id}, "
+                f"seq_len={seq_len}, "
+                f"layers={num_layers}"
+            )
+            
+            return memory_id
+            
+        except Exception as e:
+            logger.warning(f"[Hippocampus] 存储KV记忆失败: {e}")
+            return ""
+    
+    def recall_kv(
+        self,
+        query_features: torch.Tensor,
+        topk: int = 2
+    ) -> List[Dict[str, Any]]:
+        """
+        召回相关的KV记忆
+        
+        用于滑动窗口管理器，从海马体检索相关的KV特征
+        
+        Args:
+            query_features: 查询特征
+            topk: 返回的记忆数量
+        
+        Returns:
+            kv_memories: KV记忆列表，每个元素包含:
+                - memory_id: 记忆ID
+                - kv_features: KV特征字典
+                - content: 上下文文本
+                - similarity: 相似度
+        """
+        try:
+            # 使用常规召回方法
+            memories = self.recall(
+                query_features=query_features,
+                topk=topk * 2  # 多召回一些，后续过滤
+            )
+            
+            # 过滤出包含KV特征的记忆
+            kv_memories = []
+            for mem in memories:
+                # 检查是否是KV记忆
+                if mem.get('type') == 'kv_memory' or 'kv_features' in mem:
+                    kv_memories.append({
+                        'memory_id': mem.get('memory_id', ''),
+                        'kv_features': {
+                            'key_features': mem.get('key_features'),
+                            'value_features': mem.get('value_features'),
+                            'num_layers': mem.get('num_layers', 0),
+                            'seq_len': mem.get('seq_len', 0)
+                        },
+                        'content': mem.get('content', ''),
+                        'similarity': mem.get('activation_strength', 0.0)
+                    })
+            
+            # 返回topk个
+            return kv_memories[:topk]
+            
+        except Exception as e:
+            logger.warning(f"[Hippocampus] 召回KV记忆失败: {e}")
+            return []

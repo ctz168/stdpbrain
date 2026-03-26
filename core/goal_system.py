@@ -417,12 +417,6 @@ class GoalSystem:
         
         self.goal_type_reward_weights[goal_type] = new_weight
     
-    def is_complete(self) -> bool:
-        """检查当前目标是否完成"""
-        if self.current_goal:
-            return self.current_goal.is_complete()
-        return True
-    
     def get_current_goal_info(self) -> Dict:
         """获取当前目标信息"""
         if not self.current_goal:

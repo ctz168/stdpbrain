@@ -30,6 +30,14 @@ except Exception as e:
     print(f"[QwenInterface] 窄带宽注意力补丁失败: {e}")
     NARROW_BAND_PATCHED = False
 
+# ========== KV Cache 滑动窗口管理器 ==========
+try:
+    from core.kv_cache_manager import KVCacheManager
+    KV_CACHE_MANAGER_AVAILABLE = True
+except Exception as e:
+    print(f"[QwenInterface] KV Cache管理器导入失败: {e}")
+    KV_CACHE_MANAGER_AVAILABLE = False
+
 
 class QwenModelWrapper(nn.Module):
     """
@@ -779,6 +787,26 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
+            # ========== KV Cache 滑动窗口管理 ==========
+            # 检查是否启用KV cache滑动窗口
+            enable_kv_sliding = getattr(self.config.hard_constraints, 'ENABLE_KV_SLIDING_WINDOW', True)
+            kv_window_size = getattr(self.config.hard_constraints, 'KV_CACHE_WINDOW_SIZE', 32)
+            
+            if enable_kv_sliding and past_key_values is not None and KV_CACHE_MANAGER_AVAILABLE:
+                # 创建KV管理器（懒加载）
+                if not hasattr(self, '_kv_cache_manager'):
+                    self._kv_cache_manager = KVCacheManager(
+                        window_size=kv_window_size,
+                        enable_hippocampus=False  # 这里不直接存储到海马体，由上层BrainAI管理
+                    )
+                
+                # 修剪KV cache
+                past_key_values, _ = self._kv_cache_manager.trim_kv_cache(
+                    past_key_values,
+                    current_token_text=None,
+                    hippocampus=None
+                )
+            
             token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
             # 使用简单的阻断词拦截标签幻觉
@@ -865,6 +893,26 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
+            # ========== KV Cache 滑动窗口管理 ==========
+            # 检查是否启用KV cache滑动窗口
+            enable_kv_sliding = getattr(self.config.hard_constraints, 'ENABLE_KV_SLIDING_WINDOW', True)
+            kv_window_size = getattr(self.config.hard_constraints, 'KV_CACHE_WINDOW_SIZE', 32)
+            
+            if enable_kv_sliding and past_key_values is not None and KV_CACHE_MANAGER_AVAILABLE:
+                # 创建KV管理器（懒加载）
+                if not hasattr(self, '_kv_cache_manager'):
+                    self._kv_cache_manager = KVCacheManager(
+                        window_size=kv_window_size,
+                        enable_hippocampus=False  # 这里不直接存储到海马体，由上层BrainAI管理
+                    )
+                
+                # 修剪KV cache
+                past_key_values, _ = self._kv_cache_manager.trim_kv_cache(
+                    past_key_values,
+                    current_token_text=None,
+                    hippocampus=None
+                )
+            
             token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
             # 使用简单的阻断词拦截标签幻觉
@@ -944,6 +992,26 @@ class QwenInterface:
             
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
+            
+            # ========== KV Cache 滑动窗口管理 ==========
+            # 检查是否启用KV cache滑动窗口
+            enable_kv_sliding = getattr(self.config.hard_constraints, 'ENABLE_KV_SLIDING_WINDOW', True)
+            kv_window_size = getattr(self.config.hard_constraints, 'KV_CACHE_WINDOW_SIZE', 32)
+            
+            if enable_kv_sliding and past_key_values is not None and KV_CACHE_MANAGER_AVAILABLE:
+                # 创建KV管理器（懒加载）
+                if not hasattr(self, '_kv_cache_manager'):
+                    self._kv_cache_manager = KVCacheManager(
+                        window_size=kv_window_size,
+                        enable_hippocampus=False  # 这里不直接存储到海马体，由上层BrainAI管理
+                    )
+                
+                # 修剪KV cache
+                past_key_values, _ = self._kv_cache_manager.trim_kv_cache(
+                    past_key_values,
+                    current_token_text=None,
+                    hippocampus=None
+                )
             generated_tokens.append(next_token_id)
             
             if next_token_id in stop_token_ids:
@@ -1098,28 +1166,3 @@ class QwenInterface:
         
         print(f"[QwenInterface] 检查点已加载：{path} (恢复 {restored_count} 个权重层)")
 
-
-def create_real_qwen_ai(
-   model_path: str,
-    device: str = "cpu",
-    quantization: str = "INT4"
-) -> QwenInterface:
-    """
-    快捷创建真实 Qwen AI 实例
-    
-    Args:
-       model_path: 模型路径
-        device: 设备
-        quantization: 量化类型
-    
-    Returns:
-        ai: QwenInterface 实例
-    """
-    from configs.arch_config import default_config
-    
-    return QwenInterface(
-       model_path=model_path,
-        config=default_config,
-        device=device,
-        quantization=quantization
-    )

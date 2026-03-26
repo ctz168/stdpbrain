@@ -463,6 +463,37 @@ class BrainAIInterface:
         # 存储完整记忆字典供注意力层使用
         self._current_recalled_memories = recalled_memories
         
+        # ========== 新增：从海马体检索KV并组合 ==========
+        # 检查是否启用KV滑动窗口和海马体KV存储
+        enable_kv_hippocampus = getattr(self.config.hard_constraints, 'ENABLE_KV_HIPPOCAMPUS_INTEGRATION', True)
+        
+        if enable_kv_hippocampus and recalled_memories:
+            try:
+                # 从海马体检索KV记忆
+                query_features_for_kv = query_features if 'query_features' in locals() else None
+                if query_features_for_kv is None and recalled_memories:
+                    # 使用召回的记忆特征作为查询
+                    if recalled_memories[0].get('dg_features') is not None:
+                        dg_feat = recalled_memories[0]['dg_features']
+                        if isinstance(dg_feat, list):
+                            query_features_for_kv = torch.tensor(dg_feat, dtype=torch.float32)
+                        else:
+                            query_features_for_kv = dg_feat
+                
+                if query_features_for_kv is not None and hasattr(self.hippocampus, 'recall_kv'):
+                    # 召回KV记忆
+                    kv_memories = self.hippocampus.recall_kv(
+                        query_features=query_features_for_kv,
+                        topk=2
+                    )
+                    
+                    # 存储KV记忆，供后续生成使用
+                    if kv_memories:
+                        self._current_kv_memories = kv_memories
+                        logger.debug(f"[BrainAI] 从海马体检索到{len(kv_memories)}个KV记忆")
+            except Exception as e:
+                logger.debug(f"[BrainAI] KV记忆检索失败: {e}")
+        
         # 3. GW 广播整合：将记忆、思维状态、目标整合成为统一意识状态
         gw_state = None
         gw_context = ""
@@ -1403,90 +1434,14 @@ class BrainAIInterface:
         self._store_with_real_features(f"唤醒事件：{prompt} {output}", hidden_state)
         self.thought_seed = f"我刚在 {wakeup_time_str} 醒来，我记得..."
     
-    def generate_thought_stream(self, max_chunks: int = 5):
-        """
-        流式思维生成 - 高刷新小数据
-        
-        每次生成15-25个token，模拟人脑的思维流
-        
-        Args:
-            max_chunks: 最大思维片段数
-        
-        Yields:
-            dict: {'type': 'char', 'content': char} 或 {'type': 'chunk_end', 'content': full_chunk}
-        """
-        # 直接使用已验证的独白生成方法
-        for _ in range(max_chunks):
-            monologue = self._generate_spontaneous_monologue(max_tokens=25, temperature=0.75)
-            # 清理独白内容
-            monologue = self._clean_monologue_for_stream(monologue)
-            
-            if monologue and len(monologue) > 3:
-                # 流式输出
-                for char in monologue:
-                    yield {'type': 'char', 'content': char}
-                yield {'type': 'chunk_end', 'content': monologue}
-            else:
-                # 如果生成失败，使用预设的思维片段
-                thoughts = [
-                    "分析当前情况...",
-                    "思考问题的本质...",
-                    "推理可能的结论...",
-                    "验证逻辑链条...",
-                    "综合各种因素..."
-                ]
-                selected = random.choice(thoughts)
-                for char in selected:
-                    yield {'type': 'char', 'content': char}
-                yield {'type': 'chunk_end', 'content': selected}
-    
-    def _clean_monologue_for_stream(self, text: str) -> str:
-        """清理流式独白内容"""
-        if not text:
-            return ""
-        
-        # 移除特殊标签
-        for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>', '[', ']']:
-            text = text.replace(tag, '')
-        
-        # 移除多余的点和数字（如"1.0.%"）
-        import re
-        text = re.sub(r'\d+\.\d+\.\d+\.?', '', text)
-        text = re.sub(r'\.{3,}', '...', text)
-        
-        # 移除开头和结尾的空白
-        text = text.strip()
-        
-        # 如果内容太短或无意义，返回空
-        if len(text) < 2 or not any(c.isalpha() or '\u4e00' <= c <= '\u9fff' for c in text):
-            return ""
-        
-        # 限制长度
-        if len(text) > 60:
-            # 在标点符号处截断
-            for end_marker in ['。', '，', '！', '？', '...']:
-                pos = text.rfind(end_marker, 10, 55)
-                if pos > 0:
-                    text = text[:pos+1]
-                    break
-            else:
-                text = text[:50] + "..."
-        
-        return text
-    
     def get_quick_response(self, user_input: str = "") -> str:
         """获取快速响应填充词"""
         if not self.inner_thought_engine:
             raise RuntimeError("内心思维独白引擎未初始化，无法生成快速响应")
         return self.inner_thought_engine.get_quick_response(user_input)
     
-    def get_thought_flow_stats(self) -> dict:
-        """获取思维流统计"""
-        if not self.inner_thought_engine:
-            raise RuntimeError("内心思维独白引擎未初始化，无法获取统计信息")
-        return self.inner_thought_engine.get_stats()
-    
     # ==================== 预测编码集成 ====================
+
     
     def _generate_clarification(self, user_input: str, prediction_error: float, max_tokens: int = 30) -> str:
         """生成澄清问题（基于预测误差）"""
@@ -1774,16 +1729,5 @@ class BrainAIInterface:
             
         except Exception as e:
             logger.error(f"[用户反馈学习] 应用失败: {e}")
-    
-    def get_feedback_learning_stats(self) -> dict:
-        """获取反馈学习统计"""
-        return {
-            'total_stdp_updates': self.total_stdp_updates,
-            'last_feedback': getattr(self, 'last_feedback', None),
-            'goal_reward_weights': (
-                self.goal_system.goal_type_reward_weights 
-                if hasattr(self, 'goal_system') and self.goal_system 
-                else {}
-            )
-        }
+
 

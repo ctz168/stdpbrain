@@ -281,6 +281,7 @@ class SparseAttentionCompressor:
 
 # ==================== Qwen Attention Layer Patch ====================
 
+
 def patch_qwen_attention():
     """
     Patch Qwen3.5 attention layer at runtime
@@ -453,15 +454,6 @@ def eager_attention_forward(
     return attn_output, attn_weights
 
 
-# ==================== Auto-apply patch ====================
-
-def auto_patch():
-    """Auto-apply patch (execute on import)"""
-    try:
-        patch_qwen_attention()
-    except Exception as e:
-        print(f"[QwenNarrowBandPatch] Auto-patch failed (will retry on model load): {e}")
-
-
 # Try to apply patch on module import
 # auto_patch()  # Uncomment to auto-apply on import
+

@@ -521,41 +521,6 @@ class GlobalWorkspace:
         self.stats.update(state.get("stats", {}))
 
 
-# 意识内容分析工具
-class ConsciousnessAnalyzer:
-    """意识内容分析器"""
-    
-    def __init__(self, hidden_size: int = 1024):
-        self.hidden_size = hidden_size
-    
-    def analyze_content(self, consciousness_state: torch.Tensor) -> Dict:
-        """
-        分析意识内容
-        
-        Returns:
-            analysis: 分析结果
-        """
-        if consciousness_state is None:
-            return {"status": "no_content"}
-        
-        # 计算激活模式
-        activation_pattern = (consciousness_state > consciousness_state.mean()).float()
-        active_ratio = activation_pattern.mean().item()
-        
-        # 计算熵（信息量）
-        probs = F.softmax(consciousness_state, dim=-1)
-        entropy = -(probs * torch.log(probs + 1e-9)).sum().item()
-        
-        # 计算稀疏度
-        sparsity = (consciousness_state == 0).float().mean().item()
-        
-        return {
-            "active_ratio": active_ratio,
-            "entropy": entropy,
-            "sparsity": sparsity,
-            "magnitude": consciousness_state.norm().item()
-        }
-
 
 # 工厂函数
 def create_global_workspace(
