@@ -50,6 +50,11 @@ class CompetitionMechanism(nn.Module):
             nn.Linear(competition_dim, 1),
             nn.Sigmoid()
         )
+        
+        # [动态化] 竞争权重 (Importance, Relevance, Confidence)
+        self.competition_weights = nn.Parameter(
+            torch.tensor([0.5, 0.3, 0.2]), requires_grad=False
+        )
     
     def forward(
         self,
@@ -90,10 +95,11 @@ class CompetitionMechanism(nn.Module):
             relevance = torch.ones_like(importance)
         
         # 3. 结合置信度
-        confidences = torch.tensor([o.confidence for o in outputs])
+        confidences = torch.tensor([o.confidence for o in outputs], device=importance.device)
         
-        # 4. 综合竞争分数
-        competition_scores = importance * 0.5 + relevance * 0.3 + confidences * 0.2
+        # 4. [动态化] 综合竞争分数（使用可学习权重，softmax 归一化保证总和为1）
+        weights = torch.softmax(self.competition_weights, dim=0)
+        competition_scores = importance * weights[0] + relevance * weights[1] + confidences * weights[2]
         
         return competition_scores
 

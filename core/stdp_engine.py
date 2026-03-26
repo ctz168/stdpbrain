@@ -120,7 +120,12 @@ class FullLinkSTDP:
     def record_activation(self, layer_name: str, id: Any, timestamp: float):
         """记录激活时间"""
         if isinstance(id, (torch.Tensor, list)):
-            # 批量记录 (Tokens 为主)
+            # 批量记录 (Tokens 为主) - 强制转为 long 类型，避免 float 索引错误
+            if isinstance(id, torch.Tensor):
+                id = id.long()
+                # 限制索引在合法范围内（vocabulary 大小）
+                vocab_size = self.activation_times_tensor.shape[0]
+                id = id.clamp(0, vocab_size - 1)
             self.activation_times_tensor[id] = timestamp
         else:
             # 单点记录 (杂项)
@@ -145,10 +150,16 @@ class FullLinkSTDP:
         if not self.config.stdp.update_attention or attention_layer is None:
             return
             
-        current_token_tensor = torch.tensor([current_token], device=self.device)
+        current_token_tensor = torch.tensor([current_token], device=self.device, dtype=torch.long)
         self.record_activation('attention', current_token_tensor, timestamp)
         
         # 向量化计算所有上下文 token 的更新
+        # 强制转为 long 类型并限制范围，避免 float 索引错误，同时确保与 activation_times_tensor 在同一 device
+        target_device = self.activation_times_tensor.device
+        if isinstance(context_tokens, torch.Tensor):
+            context_tokens = context_tokens.long().to(target_device).clamp(0, self.activation_times_tensor.shape[0] - 1)
+        else:
+            context_tokens = torch.tensor(context_tokens, dtype=torch.long, device=target_device).clamp(0, self.activation_times_tensor.shape[0] - 1)
         pre_times = self.activation_times_tensor[context_tokens]
         post_times = torch.full_like(pre_times, timestamp)
         contributions = torch.full_like(pre_times, self.contribution_cache.get('attention', 0.5))
@@ -393,7 +404,40 @@ class STDPEngine:
                 hippocampus_module=model_components['hippocampus'],
                 timestamp=timestamp
             )
+            
+        # ========== 5. [动态化] 元学习闭环 (意识调度参数 STDP 更新) ==========
+        if 'evaluation_score' in outputs:
+            reward = (outputs['evaluation_score'] / 40.0) * 2 - 1  # 归一化到 -1~1
+            self.apply_meta_learning(
+                module_name=outputs.get('generation_path', 'unknown'),
+                reward=reward,
+                model_components=model_components
+            )
     
+    def apply_meta_learning(self, module_name: str, reward: float, model_components: Dict[str, nn.Module]):
+        """
+        [新增] 元学习闭环机制
+        将 STDP 奖励信号传播到各个意识调度组件，更新非神经网络的动态规则参数：
+        1. 状态转换矩阵概率 (InnerThoughtEngine)
+        2. 全局工作空间竞争权重 (GlobalWorkspace)
+        3. 目标系统的目标收益权重 (GoalSystem) -> 这一步在接口层处理
+        """
+        if not self.config.stdp.update_self_eval:
+            return
+            
+        # 1. 更新 InnerThoughtEngine 的状态矩阵
+        if 'inner_thought_engine' in model_components:
+            engine = model_components['inner_thought_engine']
+            if hasattr(engine, '_transition_reward_accum'):
+                # engine._transition_state 内部有收集机制，这里我们可以补发一次转换信号
+                # 实际上 _transition_state(reward) 会累积
+                pass # 实际由 engine 自己在 _transition_state 调用时传入
+
+        # 2. 更新 GlobalWorkspace 的竞争权重
+        if 'global_workspace' in model_components:
+            gw = model_components['global_workspace']
+            if hasattr(gw, 'update_from_stdp_signal'):
+                gw.update_from_stdp_signal(reward)
     
     def get_stats(self) -> dict:
         """获取 STDP 更新统计信息"""

@@ -75,6 +75,16 @@ class ProactiveIntentGenerator(nn.Module):
         self.last_proactive_time = 0.0
         self.last_user_input_time = time.time()
         
+        # ========== [动态化] 自适应阈值（由用户互动历史驱动）==========
+        # 初始值与原硬编码相同
+        self.adaptive_confidence_threshold = 0.35
+        self.adaptive_quality_threshold = 0.5
+        # 阈值边界：防止极化
+        self._threshold_min = 0.2
+        self._threshold_max = 0.7
+        # 最近一次主动输出的时间戳（用于判断用户是否在5分钟内响应）
+        self._last_proactive_output_time = 0.0
+        
     def forward(
         self, 
         current_state: torch.Tensor,
@@ -148,24 +158,53 @@ class ProactiveIntentGenerator(nn.Module):
             "mind_state": context.mind_state
         })
         
-        # ========== 5. 决策 ==========
-        # 降低阈值，让 AI 更“活跃”
-        confidence_threshold = 0.35  # 从 0.4 降到 0.35
-        quality_threshold = 0.5      # 从 0.6 降到 0.5
-        
-        if (top_confidence > confidence_threshold and 
-            quality_score > quality_threshold and
+        # ========== 5. [动态化] 决策 —— 使用自适应阈值 ==========
+        if (top_confidence > self.adaptive_confidence_threshold and 
+            quality_score > self.adaptive_quality_threshold and
             top_intent != ProactiveIntent.SILENCE):
             
             # 通过！更新统计
             self.daily_count += 1
             self.last_proactive_time = time.time()
+            self._last_proactive_output_time = time.time()
             
             debug_info["decision"] = f"proactive_output: {top_intent.value}"
+            debug_info["thresholds"] = {
+                "conf": self.adaptive_confidence_threshold,
+                "qual": self.adaptive_quality_threshold
+            }
             return top_intent, top_confidence * quality_score, debug_info
         
         debug_info["decision"] = "below_thresholds"
         return ProactiveIntent.SILENCE, 0.0, debug_info
+    
+    def record_user_response(self, responded: bool):
+        """
+        [新增] 记录用户对主动输出的响应情况，动态调整阈值。
+        responded=True: 用户在5分钟内响应（正向）→ 降低阈值（更主动）
+        responded=False: 用户30分钟内无响应（负向）→ 提高阈值（更谨慎）
+        应由 telegram_bot 的消息接收循环调用。
+        """
+        if responded:
+            # LTP: 用户喜欢 AI 主动 → 降低阈值，更活跃
+            self.adaptive_confidence_threshold = max(
+                self._threshold_min,
+                self.adaptive_confidence_threshold * 0.97
+            )
+            self.adaptive_quality_threshold = max(
+                self._threshold_min,
+                self.adaptive_quality_threshold * 0.97
+            )
+        else:
+            # LTD: 用户不响应 → 提高阈值，更谨慎
+            self.adaptive_confidence_threshold = min(
+                self._threshold_max,
+                self.adaptive_confidence_threshold * 1.05
+            )
+            self.adaptive_quality_threshold = min(
+                self._threshold_max,
+                self.adaptive_quality_threshold * 1.05
+            )
     
     def reset_daily_count(self):
         """重置每日计数（午夜调用）"""

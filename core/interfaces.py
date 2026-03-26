@@ -720,19 +720,25 @@ class BrainAIInterface:
         ]
         mode_name, mode_desc = random.choice(reasoning_modes)
         
+        # 先确定 trigger，再判断是否为数学类型（修复变量先于赋值被引用的 bug）
+        if self.thought_seed:
+            trigger = self.thought_seed
+        elif self.monologue_history:
+            last = self.monologue_history[-1]
+            trigger = last[-30:] if len(last) > 30 else last
+        else:
+            default_triggers = ["思考起点...", "分析角度...", "推理路径...", "逻辑框架...", "问题本质..."]
+            trigger = random.choice(default_triggers)
+        
+        # 现在 trigger 已经确定，再判断类型
         is_math = any(op in trigger for op in ['+', '-', '*', '/', '='])
         if is_math:
             system_msg = "你正在进行逻辑计算。用最直接的方式分析这个计算过程，不要发散。保持纯粹的理性。"
         elif self.thought_seed:
-            trigger = self.thought_seed
             system_msg = f"你是一个理性思维的AI。当前任务：{mode_desc}。用简洁的中文表达你的思考过程。保持逻辑性，不要情绪化表达。"
         elif self.monologue_history:
-            last = self.monologue_history[-1]
-            trigger = last[-30:] if len(last) > 30 else last
             system_msg = f"你是一个理性思维的AI。基于上一个思考，继续{mode_desc}。保持逻辑链条的连贯性。"
         else:
-            default_triggers = ["思考起点...", "分析角度...", "推理路径...", "逻辑框架...", "问题本质..."]
-            trigger = random.choice(default_triggers)
             system_msg = "你是一个理性思维的AI。开始一个结构化的思考过程。明确你的分析目标。"
         
         messages = [

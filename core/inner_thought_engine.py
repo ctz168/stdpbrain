@@ -14,6 +14,8 @@
 """
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import random
 import time
 import re
@@ -121,35 +123,45 @@ class InnerThoughtEngine:
         self.cycle_count = 0
         self.total_output_chars = 0
         self._last_urge_to_speak = 0.0  # 开口欲望评分 (0-1)
+        self._last_output_time = 0.0    # 上次开口时间戳（用于时间衰减）
         
         # ========== 自我编码器接口（由 BrainAIInterface 注入）==========
         self._self_encoder = None  # 注入后提供真实的自我感知
         
-        # ========== 状态转换矩阵 ==========
-        self.state_transitions = {
-            MindState.FOCUSED: {
-                MindState.WANDERING: 0.20,    # 专注→漂移
-                MindState.REFLECTING: 0.15,   # 专注→反思
-                MindState.FOCUSED: 0.65       # 保持专注
-            },
-            MindState.WANDERING: {
-                MindState.FOCUSED: 0.35,      # 漂移→回归
-                MindState.REFLECTING: 0.20,   # 漂移→反思
-                MindState.WANDERING: 0.45     # 继续漂移
-            },
-            MindState.REFLECTING: {
-                MindState.FOCUSED: 0.40,      # 反思→专注
-                MindState.RESTING: 0.25,      # 反思→休息
-                MindState.REFLECTING: 0.35    # 继续反思
-            },
-            MindState.RESTING: {
-                MindState.FOCUSED: 0.50,      # 休息→专注
-                MindState.WANDERING: 0.30,    # 休息→漂移
-                MindState.RESTING: 0.20       # 继续休息
-            }
-        }
+        # ========== 外部系统引用（由 BrainAIInterface 注入）==========
+        self._global_workspace = None  # GlobalWorkspace 引用
+        self._goal_system = None        # GoalSystem 引用
         
-        # ========== 状态-风格映射 ==========
+        # ========== [动态化] 可学习状态转换矩阵 ==========
+        # 4个状态: FOCUSED(0) WANDERING(1) REFLECTING(2) RESTING(3)
+        # 初始 logits 对应原始硬编码概率（通过 log 反算）
+        # FOCUSED行: [0.65, 0.20, 0.15, 0.00]
+        # WANDERING行: [0.35, 0.45, 0.20, 0.00]
+        # REFLECTING行: [0.40, 0.00, 0.35, 0.25]
+        # RESTING行: [0.50, 0.30, 0.00, 0.20]
+        _init_logits = torch.tensor([
+            [1.87, 0.00, -0.77, -9.0],   # FOCUSED
+            [0.38, 0.78,  0.00, -9.0],   # WANDERING
+            [0.47, -9.0,  0.29,  0.00],  # REFLECTING
+            [0.92, 0.40, -9.0,  0.00],   # RESTING
+        ], dtype=torch.float32)
+        self.state_transition_logits = nn.Parameter(_init_logits, requires_grad=False)
+        # 用于统计哪些转换路径受到了 STDP 奖惩
+        self._transition_reward_accum = torch.zeros(4, 4)  # [from, to]
+        self._transition_count = torch.zeros(4, 4, dtype=torch.long)
+        
+        # 状态索引映射
+        self._state_idx = {
+            MindState.FOCUSED: 0, MindState.WANDERING: 1,
+            MindState.REFLECTING: 2, MindState.RESTING: 3
+        }
+        self._idx_state = [MindState.FOCUSED, MindState.WANDERING,
+                           MindState.REFLECTING, MindState.RESTING]
+        
+        # ========== 思维模式偏好（由情感+目标联合调节）==========
+        self._mode_preference = torch.ones(len(ThinkingMode)) / len(ThinkingMode)
+        
+        # ========== 状态-风格映射（仍保留，仅用于 prompt 风格渲染）==========
         self.state_prompts = {
             MindState.FOCUSED: {
                 "prefix": "思考中...",
@@ -167,14 +179,6 @@ class InnerThoughtEngine:
                 "prefix": "...",
                 "triggers": ["嗯...", "思考着...", "整理中..."]
             }
-        }
-        
-        self.mode_prompts = {
-            ThinkingMode.ANALYTICAL: ["分析", "分解", "梳理", "理解"],
-            ThinkingMode.DEDUCTIVE: ["推导", "因此", "所以", "意味着"],
-            ThinkingMode.INDUCTIVE: ["归纳", "总结", "规律", "模式"],
-            ThinkingMode.CRITICAL: ["质疑", "真的吗", "验证", "确认"],
-            ThinkingMode.SYNTHESIZING: ["综合", "整合", "结合", "整体"]
         }
         
         # ========== 初始化 ==========
@@ -232,45 +236,127 @@ class InnerThoughtEngine:
     
     # ==================== 状态转换 ====================
     
-    def _transition_state(self):
-        """状态转换"""
+    def _transition_state(self, reward: float = None):
+        """
+        [动态化] 状态转换 —— 基于可学习矩阵采样，而非固定概率。
+        reward: STDP 奖励信号（若提供则更新转换矩阵权重）
+        """
         self.state_duration += 1
         
-        # 2-4个周期后考虑转换
-        if self.state_duration >= random.randint(2, 4):
-            probs = self.state_transitions[self.mind_state]
-            rand = random.random()
-            cumulative = 0
-            
-            for next_state, prob in probs.items():
-                cumulative += prob
-                if rand < cumulative:
-                    self.mind_state = next_state
-                    self.state_duration = 0
-                    break
+        # 思维惯性：待在同一状态越久，转出概率自动提升（防止永久 RESTING）
+        inertia_bonus = min(self.state_duration * 0.1, 0.5)
+        
+        from_idx = self._state_idx[self.mind_state]
+        logits = self.state_transition_logits[from_idx].clone()
+        
+        # 对自身状态施加惯性衰减（越久越想换状态）
+        logits[from_idx] -= inertia_bonus
+        
+        # Softmax 采样
+        probs = F.softmax(logits, dim=0)
+        next_idx = torch.multinomial(probs, 1).item()
+        next_state = self._idx_state[next_idx]
+        
+        # 更新 STDP 累计奖励（若有信号）
+        if reward is not None:
+            self._transition_reward_accum[from_idx, next_idx] += reward
+            self._transition_count[from_idx, next_idx] += 1
+            # 每 20 次转换后批量更新矩阵 logits
+            total = self._transition_count.sum().item()
+            if total > 0 and total % 20 == 0:
+                self._apply_stdp_to_transition_matrix()
+        
+        if next_state != self.mind_state:
+            self.state_duration = 0
+        self.mind_state = next_state
+    
+    def _apply_stdp_to_transition_matrix(self):
+        """
+        用 STDP 奖惩信号批量更新状态转换矩阵 logits。
+        正奖励 → LTP（增强该路径）；负奖励 → LTD（削弱该路径）。
+        """
+        count = self._transition_count.float().clamp(min=1)
+        avg_reward = self._transition_reward_accum / count  # [4,4]
+        
+        # 归一化到 [-1, 1]
+        r_max = avg_reward.abs().max().item()
+        if r_max > 0:
+            norm_reward = avg_reward / (r_max + 1e-8)
+        else:
+            norm_reward = avg_reward
+        
+        # 直接叠加到 logits（学习率 0.05，有效但温和）
+        with torch.no_grad():
+            self.state_transition_logits.data += norm_reward * 0.05
+            # 限制 logits 范围，防止某条路径被完全封死
+            self.state_transition_logits.data.clamp_(-5.0, 5.0)
+        
+        # 清零累计
+        self._transition_reward_accum.zero_()
+        self._transition_count.zero_()
     
     def _select_thinking_mode(self, context: str = ""):
-        """根据内容选择思维模式"""
-        if not context:
-            self.thinking_mode = random.choice(list(ThinkingMode))
+        """
+        [动态化] 思维模式选择 —— 由 SelfEncoder 情感状态 + GoalSystem 目标类型驱动，
+        而非关键词列表匹配。调用链：(arousal, valence) + goal_type → mode 概率分布 → 采样。
+        """
+        from core.goal_system import GoalType  # 按需导入，避免循环
+        
+        # 基础：用情感状态调节模式偏好
+        mode_scores = self._mode_preference.clone()  # [5]
+        
+        # 1. SelfEncoder 情感状态驱动
+        arousal, valence = 0.5, 0.0
+        if hasattr(self, '_self_encoder') and self._self_encoder is not None:
+            try:
+                emo = self._self_encoder.get_emotional_state()
+                arousal = emo.get('arousal', 0.5)
+                valence = emo.get('valence', 0.0)
+            except Exception:
+                pass
+        
+        # 高唤醒 → 偏向 ANALYTICAL / DEDUCTIVE
+        if arousal > 0.65:
+            mode_scores[ThinkingMode.ANALYTICAL.value.__hash__() % 5] += 0.3
+            mode_scores[ThinkingMode.DEDUCTIVE.value.__hash__() % 5] += 0.2
+        # 负效价 → 偏向 CRITICAL
+        if valence < -0.25:
+            mode_scores[list(ThinkingMode).index(ThinkingMode.CRITICAL)] += 0.4
+        # 漂移状态 → 偏向 SYNTHESIZING / INDUCTIVE
+        if self.mind_state == MindState.WANDERING:
+            mode_scores[list(ThinkingMode).index(ThinkingMode.SYNTHESIZING)] += 0.35
+            mode_scores[list(ThinkingMode).index(ThinkingMode.INDUCTIVE)] += 0.25
+        # 反思状态 → 偏向 CRITICAL
+        if self.mind_state == MindState.REFLECTING:
+            mode_scores[list(ThinkingMode).index(ThinkingMode.CRITICAL)] += 0.3
+        
+        # 2. GoalSystem 目标类型驱动
+        if hasattr(self, '_goal_system') and self._goal_system is not None:
+            try:
+                goal_info = self._goal_system.get_current_goal_info()
+                goal_type_str = goal_info.get('type', '')
+                _goal_mode_map = {
+                    'understand':    ThinkingMode.ANALYTICAL,
+                    'solve':         ThinkingMode.DEDUCTIVE,
+                    'explore':       ThinkingMode.INDUCTIVE,
+                    'self_reflect':  ThinkingMode.CRITICAL,
+                    'generate':      ThinkingMode.SYNTHESIZING,
+                }
+                if goal_type_str in _goal_mode_map:
+                    preferred = _goal_mode_map[goal_type_str]
+                    mode_scores[list(ThinkingMode).index(preferred)] += 0.5
+            except Exception:
+                pass
+        
+        # 3. 数学检测（保留原有逻辑，优先级最高）
+        if context and re.search(r'\d+\s*[+\-*/=]\s*\d+', context):
+            self.thinking_mode = ThinkingMode.DEDUCTIVE
             return
         
-        # 基于关键词选择模式
-        mode_keywords = {
-            ThinkingMode.ANALYTICAL: ["分析", "理解", "分解", "梳理"],
-            ThinkingMode.DEDUCTIVE: ["推导", "因此", "逻辑", "因果"],
-            ThinkingMode.INDUCTIVE: ["总结", "归纳", "规律", "模式"],
-            ThinkingMode.CRITICAL: ["质疑", "验证", "确认", "真的"],
-            ThinkingMode.SYNTHESIZING: ["综合", "整合", "整体", "结合"]
-        }
-        
-        for mode, keywords in mode_keywords.items():
-            if any(kw in context for kw in keywords):
-                self.thinking_mode = mode
-                return
-        
-        # 默认随机
-        self.thinking_mode = random.choice(list(ThinkingMode))
+        # 4. Softmax 采样（含随机性，非贪心）
+        probs = F.softmax(mode_scores, dim=0)
+        idx = torch.multinomial(probs, 1).item()
+        self.thinking_mode = list(ThinkingMode)[idx]
     
     # ==================== 思维生成 ====================
     
@@ -495,9 +581,9 @@ class InnerThoughtEngine:
                     # 触发状态强制偏移
                     self.mind_state = MindState.WANDERING
                     self.current_focus = ""
-                    # 返回一个偏移引导
-                    offset_thoughts = ["……不，换个角度想，", "……突然觉得当前的想法有些卷，", "……此时此刻，我的思绪飘到了别处"]
-                    new_text = random.choice(offset_thoughts)
+                    # [动态化] 从海马体召回随机记忆作为语义跳跃种子
+                    # 若海马体无记忆，则从模型生成（而非固定字符串池）
+                    new_text = self._generate_semantic_jump()
 
                 for char in new_text:
                     generated_text += char
@@ -623,28 +709,87 @@ class InnerThoughtEngine:
             self.current_concept = keywords[0]
     
     def _calculate_urge(self, content: str) -> float:
-        """计算开启外部对话的欲望程度"""
+        """
+        [动态化] 计算开启外部对话的欲望程度。
+        来源：GlobalWorkspace 意识强度 + SelfEncoder 唤醒度 + GoalSystem 奖励信号。
+        时间惩罚：输出越频繁，urge 被动压低。
+        """
         if not content or len(content) < 10:
             return 0.1
-            
-        urge = 0.2
         
-        # 1. 基于思维状态
-        if self.mind_state == MindState.FOCUSED:
-            urge += 0.3
-        elif self.mind_state == MindState.REFLECTING:
-            urge += 0.4
-            
-        # 2. 基于内容情感/重要性关键词
-        strong_keywords = ["必须", "重要", "发现", "确定", "原来", "回答", "告诉", "警告"]
-        if any(kw in content for kw in strong_keywords):
-            urge += 0.3
-            
-        # 3. 基于标点符号 (语气)
-        if "！" in content: urge += 0.1
-        if "？" in content: urge += 0.2
+        urge = 0.0
         
-        return min(1.0, urge)
+        # 1. GlobalWorkspace 意识焦点强度（若有注入）
+        gw_strength = 0.3  # 默认中等（无 GW 时的回退）
+        if hasattr(self, '_global_workspace') and self._global_workspace is not None:
+            try:
+                cs = self._global_workspace.get_consciousness_state()
+                if cs is not None:
+                    # 使用归一化激活强度（均值绝对值）作为意识强度
+                    gw_strength = min(1.0, cs.abs().mean().item() * 2.0)
+            except Exception:
+                pass
+        urge += gw_strength * 0.4
+        
+        # 2. SelfEncoder 情绪唤醒度（高唤醒→更想开口）
+        arousal = 0.5
+        if hasattr(self, '_self_encoder') and self._self_encoder is not None:
+            try:
+                emo = self._self_encoder.get_emotional_state()
+                arousal = emo.get('arousal', 0.5)
+            except Exception:
+                pass
+        urge += arousal * 0.3
+        
+        # 3. GoalSystem 目标奖励信号（目标越迫切→越想表达）
+        goal_reward = 0.5
+        if hasattr(self, '_goal_system') and self._goal_system is not None:
+            try:
+                goal_reward = self._goal_system.get_reward_signal()
+            except Exception:
+                pass
+        urge += goal_reward * 0.3
+        
+        # 4. 时间衰减：距上次开口越近，urge 被动压低（防止骚扰式输出）
+        if self._last_output_time > 0:
+            elapsed = time.time() - self._last_output_time
+            # 60秒内输出过 → 最多保留 40% urge；600秒后完全恢复
+            time_factor = min(1.0, elapsed / 600.0) * 0.6 + 0.4
+            urge *= time_factor
+        
+        return min(1.0, max(0.0, urge))
+    
+    def _generate_semantic_jump(self) -> str:
+        """
+        [动态化] 生成语义跳跃文本 —— 用海马体随机记忆作为思维偏移种子。
+        直接通过真实记忆内容引导思维偏移，而非固定字符串池。
+        """
+        # 1. 尝试从海马体召回随机记忆
+        if self.hippocampus:
+            try:
+                # 随机语义种子（不依赖关键词，而是用随机向量探测记忆）
+                random_query = torch.randn(1024) * 0.5
+                memories = self.hippocampus.recall(random_query, topk=1)
+                if memories:
+                    pointer = memories[0].get('semantic_pointer', '')
+                    if pointer and len(pointer) > 3:
+                        # 用记忆内容作为跳跃种子
+                        return f"……忽然想到：{pointer[:25]}……"
+            except Exception:
+                pass
+        
+        # 2. 回退：由模型当前主题衍生（而非固定字符串）
+        if self.current_theme and self.current_theme.keywords:
+            kw = random.choice(self.current_theme.keywords)
+            return f"……{kw}……也许这让我想到了别的……"
+        
+        # 3. 最终回退：使用会变化的状态描述（而非固定字符串）
+        jump_seeds = [
+            f"……思维跳跃（周期{self.cycle_count}）……",
+            f"……感知转移，重新聚焦……",
+            f"……切换视角……"
+        ]
+        return jump_seeds[self.cycle_count % len(jump_seeds)]
     
     # ==================== 快速响应 ====================
     

@@ -148,6 +148,24 @@ class GoalSystem:
         # 内在奖励历史
         self.reward_history: List[float] = []
         
+        # ========== [动态化] 自适应目标奖励权重（初始值与原硬编码一致）==========
+        # 由用户正/负反馈驱动 LTP/LTD 更新，而非永远固定
+        self.goal_type_reward_weights: Dict[GoalType, float] = {
+            GoalType.REMEMBER:      1.2,
+            GoalType.SOLVE:         1.0,
+            GoalType.UNDERSTAND:    0.9,
+            GoalType.ANSWER:        0.8,
+            GoalType.GENERATE:      0.7,
+            GoalType.EXPLORE:       0.6,
+            GoalType.RECALL:        0.9,
+            GoalType.SELF_REFLECT:  1.1,
+        }
+        # 权重上下限，防止极化
+        self._weight_min = 0.3
+        self._weight_max = 2.0
+        # 最近一次完成的目标类型（用于反馈关联）
+        self._last_completed_goal_type: Optional[GoalType] = None
+        
         # 关键词模式
         self.patterns = {
             GoalType.UNDERSTAND: ["什么", "为什么", "如何", "怎么", "解释"],
@@ -348,7 +366,7 @@ class GoalSystem:
     
     def get_reward_signal(self) -> float:
         """
-        获取内在奖励信号
+        获取内在奖励信号（使用自适应权重而非固定系数）
         
         Returns:
             reward: 奖励值 (0.0 - 1.0)
@@ -359,17 +377,12 @@ class GoalSystem:
         # 基于进度
         progress_reward = self.current_goal.get_progress()
         
-        # 基于目标类型
-        type_rewards = {
-            GoalType.REMEMBER: 1.2,    # 记忆目标高奖励
-            GoalType.SOLVE: 1.0,       # 解决问题标准奖励
-            GoalType.UNDERSTAND: 0.9,  # 理解类稍低
-            GoalType.ANSWER: 0.8,
-            GoalType.GENERATE: 0.7,
-            GoalType.EXPLORE: 0.6,
-            GoalType.SELF_REFLECT: 1.1  # 自我反思高奖励
-        }
-        type_factor = type_rewards.get(self.current_goal.goal_type, 1.0)
+        # [动态化] 基于目标类型：使用自适应权重（而非固定字典）
+        type_factor = self.goal_type_reward_weights.get(
+            self.current_goal.goal_type, 1.0
+        )
+        # 记录本次目标类型，用于后续反馈关联
+        self._last_completed_goal_type = self.current_goal.goal_type
         
         # 基于优先级
         priority_factor = self.current_goal.priority
@@ -381,6 +394,28 @@ class GoalSystem:
         self.reward_history.append(reward)
         
         return reward
+    
+    def update_reward_from_feedback(self, positive: bool):
+        """
+        [新增] 根据用户反馈动态调整当前目标类型的奖励权重。
+        正向反馈 → LTP（权重上涨5%）
+        负向反馈 → LTD（权重下降5%）
+        应在对话结束时由 interfaces.py 调用。
+        
+        Args:
+            positive: True=用户正向互动（继续、感谢等），False=负向（沉默、打断等）
+        """
+        goal_type = self._last_completed_goal_type
+        if goal_type is None:
+            return
+        
+        current_weight = self.goal_type_reward_weights.get(goal_type, 1.0)
+        if positive:
+            new_weight = min(self._weight_max, current_weight * 1.05)  # LTP
+        else:
+            new_weight = max(self._weight_min, current_weight * 0.95)  # LTD
+        
+        self.goal_type_reward_weights[goal_type] = new_weight
     
     def is_complete(self) -> bool:
         """检查当前目标是否完成"""
