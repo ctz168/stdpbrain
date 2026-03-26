@@ -28,3 +28,17 @@ QUANTIZATION = "INT4"
 # 设备 ("cuda", "cpu", "mps")
 # 留空则自动检测
 DEVICE = ""
+
+
+# ==================== 增强模块配置 ====================
+
+# 真正自指循环
+ENABLE_SELF_REFERENCE = True
+
+# 预测编码
+ENABLE_PREDICTIVE_CODING = True
+
+# 主动意图输出
+ENABLE_PROACTIVE_OUTPUT = True  # 开启主动输出
+PROACTIVE_MIN_INTERVAL = 300    # 最小间隔 5 分钟
+PROACTIVE_MAX_DAILY = 10        # 每日最多 10 次
