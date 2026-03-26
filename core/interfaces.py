@@ -924,8 +924,10 @@ class BrainAIInterface:
             'system': {'total_cycles': self.cycle_count, 'device': self.device, 'has_thought_state': self.current_thought_state is not None}
         }
 
-    def save_state(self, path: str):
+    def save_state(self, path: Optional[str] = None):
         """保存状态 - 优化版本：只保存动态权重，不重复保存基础模型"""
+        if path is None:
+            path = getattr(self, 'state_path', 'brain_state.pt')
         print(f"[BrainAI] 正在固化记忆与学习成果...")
         try:
             # 只保存动态权重部分
