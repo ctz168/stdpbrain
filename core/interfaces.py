@@ -1,7 +1,7 @@
 """
 类人脑双系统全闭环 AI架构 - 生产级核心接口
 
-集成真实的 Qwen3.5-0.8B 模型、海马体系统、STDP 引擎和自闭环优化器。
+集成真实的 Qwen3.5-2B 模型、海马体系统、STDP 引擎和自闭环优化器。
 实现真实的内心独白流（由模型隐藏状态驱动，自发推进）。
 """
 
@@ -86,8 +86,8 @@ class BrainAIInterface:
         
         # 特征维度适配器（模型 hidden_size -> 海马体输入维度）
         # 必须在使用 model_hidden_size 之前定义
-        self.model_hidden_size = 1024  # Qwen3.5-0.8B hidden_size
-        self.hippocampus_input_dim = 1024  # 海马体期望的输入维度
+        self.model_hidden_size = 2048  # Qwen3.5-2B hidden_size
+        self.hippocampus_input_dim = 2048  # 海马体期望的输入维度
         self.feature_adapter = nn.Linear(self.model_hidden_size, self.hippocampus_input_dim, bias=False)
         with torch.no_grad():
             self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
@@ -571,7 +571,7 @@ class BrainAIInterface:
                 logger.debug(f"准备记忆锚点失败: {e}")
         
         output = self.model.generate(
-            prompt, max_tokens=max_tokens, temperature=1.0, use_self_loop=True, memory_anchor=memory_anchor
+            prompt, max_tokens=max_tokens, temperature=0.6, use_self_loop=True, memory_anchor=memory_anchor
         )
         
         # 3.2 更新全局思维状态 (latent continuity)
@@ -832,7 +832,7 @@ class BrainAIInterface:
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             self.current_thought_state = embeddings.mean(dim=1)
         except:
-            self.current_thought_state = torch.randn(1, 1024, device=self.device) * 0.1
+            self.current_thought_state = torch.randn(1, 2048, device=self.device) * 0.1
 
     def _recall_memory_anchors(self) -> List[str]:
         anchors = []
@@ -1085,12 +1085,12 @@ class BrainAIInterface:
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         full_response = ""
         try:
-            async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=1.0):
+            async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.6):
                 full_response += chunk
                 yield {"type": "chunk", "content": chunk}
         except Exception as e:
             logger.error(f"流式生成失败: {e}")
-            output = self.model.generate(prompt, max_tokens=max_tokens, temperature=1.0)
+            output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.6)
             full_response = output.text
             yield {"type": "chunk", "content": full_response}
             
@@ -1174,14 +1174,15 @@ class BrainAIInterface:
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "", gw_context: str = "") -> str:
         """格式化对话提示 - 强化推理能力与意识整合"""
-        # 系统提示：简洁直接，专注回答问题
+        # 系统提示：平衡详细性与简洁性，确保回答质量
         system_content = (
-            "你是脑智（BrainAI），一个AI助手。\n"
+            "你是脑智（BrainAI），一个智能AI助手。\n"
             "**回答规则**：\n"
-            "1. 直接回答用户的问题，不要发散\n"
-            "2. 不要谈论自己的身份、意识或工作机制\n"
-            "3. 保持简洁，给出明确答案\n"
-            "4. 如果用户提供了个人信息，请记住并在后续对话中使用"
+            "1. 仔细理解用户问题的核心意图\n"
+            "2. 给出完整、准确、有逻辑的回答\n"
+            "3. 对于简单问题，简明扼要；对于复杂问题，详细解释\n"
+            "4. 使用具体的例子和数据支持观点\n"
+            "5. 如果用户提供了个人信息，请记住并在后续对话中使用"
         )
         
         # 1.5 添加 GW 全局工作空间整合上下文
@@ -1208,8 +1209,8 @@ class BrainAIInterface:
             system_content += f"\n（背景自感知：{brief}）"
 
         # 5. 添加当前思考状态（截断，仅作氛围参考）
-        # 6. 强制指令：专注回答问题
-        system_content += "\n\n**重要**：直接回答用户的问题，不要讨论自己。"
+        # 6. 质量保障指令
+        system_content += "\n\n**回答质量要求**：确保回答准确、完整、有帮助。"
             
         messages = [{"role": "system", "content": system_content}]
         
@@ -1243,9 +1244,117 @@ class BrainAIInterface:
         if not self.inner_thought_engine:
             raise RuntimeError("内心思维独白引擎未初始化")
         
+        # ========== 1. 海马体详细统计 ==========
+        hippocampus_stats = {}
+        try:
+            if hasattr(self.hippocampus, 'ca3_memory'):
+                ca3_stats = self.hippocampus.ca3_memory.get_stats()
+                hippocampus_stats = {
+                    'num_memories': ca3_stats.get('num_memories', 0),
+                    'memory_usage_mb': ca3_stats.get('memory_usage_mb', 0.0),
+                    'max_memory_mb': ca3_stats.get('max_memory_mb', 2.0),
+                    'avg_activation': ca3_stats.get('avg_activation', 0.0),
+                    'core_memory_count': ca3_stats.get('core_memory_count', 0),
+                    'recall_count': ca3_stats.get('recall_count', 0),
+                    'last_recall_time': ca3_stats.get('last_recall_time', 0.0),
+                }
+            # KV 记忆统计
+            if hasattr(self.hippocampus, '_kv_memories'):
+                hippocampus_stats['kv_memory_count'] = len(self.hippocampus._kv_memories)
+        except Exception as e:
+            logger.debug(f"获取海马体统计失败: {e}")
+        
+        # ========== 2. STDP 详细统计 ==========
+        stdp_stats = {}
+        try:
+            stdp_stats = {
+                'cycle_count': self.stdp_engine.cycle_count if hasattr(self.stdp_engine, 'cycle_count') else 0,
+                'total_updates': self.total_stdp_updates,
+                'dynamic_weight_norm': dynamic_weight_norm,
+                'last_update_magnitude': self.last_dynamic_weight_norm,
+                'ltp_count': getattr(self.stdp_engine, 'ltp_count', 0),
+                'ltd_count': getattr(self.stdp_engine, 'ltd_count', 0),
+                'learning_rate': getattr(self.stdp_engine, 'alpha_LTP', 0.0) if hasattr(self.stdp_engine, 'alpha_LTP') else self.config.stdp.alpha_LTP,
+            }
+        except Exception as e:
+            logger.debug(f"获取STDP统计失败: {e}")
+        
+        # ========== 3. 情绪状态 ==========
+        emotion_stats = {}
+        try:
+            if hasattr(self, 'self_encoder') and self.self_encoder:
+                emotion = self.self_encoder.get_emotional_state(self.current_thought_state)
+                emotion_stats = {
+                    'arousal': emotion.get('arousal', 0.5),
+                    'valence': emotion.get('valence', 0.5),
+                    'state': 'positive' if emotion.get('valence', 0.5) > 0.5 else 'negative',
+                    'energy': 'high' if emotion.get('arousal', 0.5) > 0.6 else 'low',
+                }
+        except Exception as e:
+            logger.debug(f"获取情绪状态失败: {e}")
+        
+        # ========== 4. 目标状态 ==========
+        goal_stats = {}
+        try:
+            if hasattr(self, 'goal_system') and self.goal_system:
+                current_goal = self.goal_system.current_goal
+                goal_stats = {
+                    'has_goal': current_goal is not None,
+                    'goal_type': current_goal.goal_type.value if current_goal else 'none',
+                    'goal_description': current_goal.description if current_goal else '',
+                    'goal_progress': current_goal.progress if current_goal else 0.0,
+                    'goal_priority': current_goal.priority if current_goal else 0.0,
+                    'sub_goals_count': len(current_goal.sub_goals) if current_goal else 0,
+                }
+        except Exception as e:
+            logger.debug(f"获取目标状态失败: {e}")
+        
+        # ========== 5. 全局工作空间状态 ==========
+        global_stats = {}
+        try:
+            if hasattr(self, 'global_workspace') and self.global_workspace:
+                global_stats = {
+                    'is_active': True,
+                    'competition_winner': getattr(self.global_workspace, 'last_winner', 'unknown'),
+                    'broadcast_count': getattr(self.global_workspace, 'broadcast_count', 0),
+                }
+        except Exception as e:
+            logger.debug(f"获取全局工作空间状态失败: {e}")
+        
+        # ========== 6. 注意力计算情况 ==========
+        attention_stats = {}
+        try:
+            if hasattr(self.model, 'model'):
+                # KV Cache 统计
+                cache_size = 0
+                if hasattr(self.model.model, 'past_key_values'):
+                    cache_size = 1  # 简化统计
+                
+                attention_stats = {
+                    'kv_cache_enabled': True,
+                    'window_size': self.config.hard_constraints.NARROW_WINDOW_SIZE if hasattr(self.config, 'hard_constraints') else 32,
+                    'max_anchors': self.config.hard_constraints.NUM_MEMORY_ANCHORS if hasattr(self.config, 'hard_constraints') else 5,
+                    'attention_complexity': self.config.hard_constraints.ATTENTION_COMPLEXITY if hasattr(self.config, 'hard_constraints') else 'O(n×(W+K))',
+                }
+        except Exception as e:
+            logger.debug(f"获取注意力统计失败: {e}")
+        
+        # ========== 7. KV 详细情况 ==========
+        kv_stats = {}
+        try:
+            if hasattr(self, '_current_kv_memories'):
+                kv_stats = {
+                    'active_kv_count': len(self._current_kv_memories) if self._current_kv_memories else 0,
+                    'kv_enabled': self.config.hard_constraints.ENABLE_KV_HIPPOCAMPUS_INTEGRATION if hasattr(self.config, 'hard_constraints') else True,
+                    'sliding_window': self.config.hard_constraints.ENABLE_KV_SLIDING_WINDOW if hasattr(self.config, 'hard_constraints') else True,
+                    'window_size': self.config.hard_constraints.KV_CACHE_WINDOW_SIZE if hasattr(self.config, 'hard_constraints') else 32,
+                }
+        except Exception as e:
+            logger.debug(f"获取KV统计失败: {e}")
+        
         return {
-            'hippocampus': self.hippocampus.ca3_memory.get_stats() if hasattr(self.hippocampus, 'ca3_memory') else {},
-            'stdp': {'cycle_count': self.stdp_engine.cycle_count, 'total_updates': self.total_stdp_updates, 'dynamic_weight_norm': dynamic_weight_norm, 'last_update_magnitude': self.last_dynamic_weight_norm},
+            'hippocampus': hippocampus_stats,
+            'stdp': stdp_stats,
             'self_loop': self.self_loop.get_stats() if self.self_loop else {},
             'monologue': {
                 'thought_state': self._internal_thought_state.value if hasattr(self, '_internal_thought_state') else 'unknown',
@@ -1253,7 +1362,17 @@ class BrainAIInterface:
                 'history_count': len(self.monologue_history),
                 'engine_active': True
             },
-            'system': {'total_cycles': self.cycle_count, 'device': self.device, 'has_thought_state': self.current_thought_state is not None}
+            'emotion': emotion_stats,
+            'goal': goal_stats,
+            'global_workspace': global_stats,
+            'attention': attention_stats,
+            'kv': kv_stats,
+            'system': {
+                'total_cycles': self.cycle_count,
+                'device': self.device,
+                'has_thought_state': self.current_thought_state is not None,
+                'uptime_seconds': time.time() - getattr(self, '_start_time', time.time()),
+            }
         }
 
     def save_state(self, path: Optional[str] = None):
@@ -1474,7 +1593,7 @@ class BrainAIInterface:
             clarification = self.model.generate(
                 prompt,
                 max_tokens=max_tokens,
-                temperature=1.0,
+                temperature=0.7,
                 repetition_penalty=1.0
             ).text.strip()
             
@@ -1637,7 +1756,7 @@ class BrainAIInterface:
             response = self.model.generate(
                 full_prompt, 
                 max_tokens=60, 
-                temperature=1.0, 
+                temperature=0.8, 
                 repetition_penalty=1.0,
                 enable_thinking=False # 外部输出不再显示 <think>，直接结果
             ).text.strip()

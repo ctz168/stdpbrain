@@ -23,15 +23,15 @@ class SelfStateEncoder(nn.Module):
     """
     自我状态编码器
     
-    将底层隐藏状态 (1024-dim) 投影为"自我感知"向量 (256-dim)，
-    然后再投影回 1024-dim 以便注入生成上下文。
+    将底层隐藏状态 (2048-dim) 投影为"自我感知"向量 (256-dim)，
+    然后再投影回 2048-dim 以便注入生成上下文。
     
     这模拟了大脑皮层的"自我参照处理" (Self-referential processing)。
     """
     
     SELF_DIM = 256  # 自我感知空间维度
     
-    def __init__(self, hidden_size: int = 1024, device: str = "cpu"):
+    def __init__(self, hidden_size: int = 2048, device: str = "cpu"):
         super().__init__()
         self.hidden_size = hidden_size
         self.device = device

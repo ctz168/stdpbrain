@@ -37,7 +37,7 @@ class CA1AttentionGate(nn.Module):
     def __init__(
         self,
         feature_dim: int = 128,        # DG 特征维度
-        hidden_size: int = 1024,       # 模型 hidden size
+        hidden_size: int = 2048,       # 模型 hidden size
         recall_topk: int = 2,          # 召回 TopK
         temporal_encoding: bool = True, # 启用时序编码
         gate_type: str = "additive"    # 门控类型："additive" | "multiplicative"

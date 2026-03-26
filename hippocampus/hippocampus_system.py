@@ -7,7 +7,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import time
 
 from .ec_encoder import EntorhinalEncoder
@@ -42,7 +42,7 @@ class HippocampusSystem(nn.Module):
         
         # ========== 1. EC 内嗅皮层 - 特征编码 ==========
         self.ec_encoder = EntorhinalEncoder(
-            input_dim=1024,              # Qwen3.5-0.8B hidden size (1024 for this variant)
+            input_dim=2048,              # Qwen3.5-2B hidden size (2048 for this variant)
             output_dim=hc_config.EC_feature_dim,
             sparsity=hc_config.DG_sparsity,
             freeze_encoder=True
@@ -68,7 +68,7 @@ class HippocampusSystem(nn.Module):
         # ========== 4. CA1 注意力 gate ==========
         self.ca1_gate = CA1AttentionGate(
             feature_dim=hc_config.EC_feature_dim * 2,
-            hidden_size=1024,             # Qwen3.5-0.8B hidden size
+            hidden_size=2048,             # Qwen3.5-2B hidden size
             recall_topk=hc_config.recall_topk,
             temporal_encoding=hc_config.CA1_temporal_encoding,
             gate_type="additive"

@@ -19,7 +19,7 @@ PROXY_URL = None
 # ==================== 模型与架构配置 ====================
 
 # 模型路径 (本地)
-MODEL_PATH = "./models/Qwen3.5-0.8B"
+MODEL_PATH = "./models/Qwen3.5-2B"
 
 # 量化类型 ("INT4", "INT8", "FP16", "FP32")
 # 在 macOS/CPU 上，INT4/INT8 会被自动优化或回退

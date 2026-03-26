@@ -1,6 +1,6 @@
 """
 类人脑双系统全闭环 AI架构 - 核心配置文件
-基于Qwen3.5-0.8B 底座模型
+基于Qwen3.5-2B 底座模型
 """
 
 from dataclasses import dataclass, field
@@ -233,8 +233,8 @@ class DeploymentConfig:
 @dataclass
 class BrainAIConfig:
     """类人脑双系统全闭环 AI架构全局配置"""
-    model_name: str = "Qwen3.5-0.8B"
-    model_path: str = "./models/Qwen3.5-0.8B"
+    model_name: str = "Qwen3.5-2B"
+    model_path: str = "./models/Qwen3.5-2B"
     
     hard_constraints: HardConstraints = field(default_factory=HardConstraints)
     stdp: STDPConfig = field(default_factory=STDPConfig)

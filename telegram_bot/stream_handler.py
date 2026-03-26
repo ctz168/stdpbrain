@@ -121,7 +121,7 @@ class StreamHandler:
     def _generate_simple_response(self, input_text: str) -> str:
         """生成简单响应 (无模型时使用)"""
         responses = {
-            "你好": "你好！我是类人脑 AI 助手，基于 Qwen3.5-0.8B 模型。我有什么可以帮助你的吗？",
+            "你好": "你好！我是类人脑 AI 助手，基于 Qwen3.5-2B 模型。我有什么可以帮助你的吗？",
             "介绍": "我是基于海马体 - 新皮层双系统架构的类人脑 AI，具有 100Hz 高刷新推理、STDP 在线学习等特性。",
             "默认": "收到你的消息了！我正在使用类人脑架构进行处理，支持流式输出和实时交互。"
         }
@@ -130,7 +130,7 @@ class StreamHandler:
             if key in input_text:
                 return value
         
-        return f"测试回复：{input_text}。实际使用时会连接真实的 Qwen3.5-0.8B 模型。"
+        return f"测试回复：{input_text}。实际使用时会连接真实的 Qwen3.5-2B 模型。"
 
     def get_stats(self) -> dict:
         """获取统计信息"""

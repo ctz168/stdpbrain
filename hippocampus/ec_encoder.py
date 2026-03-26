@@ -22,7 +22,7 @@ class EntorhinalEncoder(nn.Module):
     """
     def __init__(
         self,
-        input_dim: int = 1024,  # Qwen3.5-0.8B hidden size
+        input_dim: int = 2048,  # Qwen3.5-2B hidden size
         output_dim: int = 64,   # EC 编码维度 (固定 64 维)
         sparsity: float = 0.8,  # 稀疏度
         freeze_encoder: bool = True  # 冻结编码器 (避免影响主模型)

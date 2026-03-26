@@ -72,18 +72,19 @@ class KVCacheManager:
     
     def trim_kv_cache(
         self,
-        past_key_values: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor], ...]],
+        past_key_values: Optional[Any],
         current_token_text: Optional[str] = None,
         hippocampus: Optional[Any] = None
-    ) -> Tuple[
-        Optional[Tuple[Tuple[torch.Tensor, torch.Tensor], ...]],
-        Optional[List[Tuple[torch.Tensor, torch.Tensor]]]
-    ]:
+    ) -> Tuple[Optional[Any], Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
         """
         修剪KV cache，只保留窗口大小
         
+        支持两种格式:
+        1. Legacy tuple format: ((K, V), (K, V), ...)
+        2. DynamicCache format: Qwen3_5DynamicCache object
+        
         Args:
-            past_key_values: KV cache元组 ((K, V), (K, V), ...)
+            past_key_values: KV cache (tuple 或 DynamicCache)
             current_token_text: 当前token文本（用于海马体存储）
             hippocampus: 海马体实例（用于存储释放的KV）
         
@@ -94,9 +95,21 @@ class KVCacheManager:
         if past_key_values is None:
             return None, None
         
-        # 获取当前KV长度
-        first_layer_k = past_key_values[0][0]
-        current_len = first_layer_k.shape[2]
+        # ========== 兼容 DynamicCache 格式 ==========
+        # 检测是否是 DynamicCache 对象
+        is_dynamic_cache = hasattr(past_key_values, 'get_seq_length')
+        
+        try:
+            # 获取当前KV长度
+            if is_dynamic_cache:
+                current_len = past_key_values.get_seq_length()
+            else:
+                # Legacy tuple format
+                first_layer_k = past_key_values[0][0]
+                current_len = first_layer_k.shape[2]
+        except Exception as e:
+            logger.warning(f"[KVCacheManager] 无法获取KV长度: {e}")
+            return past_key_values, None
         
         self.total_tokens_processed += 1
         
@@ -109,29 +122,185 @@ class KVCacheManager:
             f"窗口大小={self.window_size}, 触发滑动窗口"
         )
         
-        # 提取被释放的KV
-        evicted_kv = self._extract_evicted_kv(past_key_values, self.window_size)
-        
-        # 只保留窗口内的KV
-        trimmed_kv = self._keep_window_kv(past_key_values, self.window_size)
-        
-        self.total_kv_evicted += current_len - self.window_size
-        
-        # 存储到海马体（如果启用）
-        if self.enable_hippocampus and hippocampus is not None and evicted_kv:
-            self._store_evicted_kv_to_hippocampus(
-                evicted_kv, 
-                current_token_text or "", 
-                hippocampus
+        # ========== 根据缓存格式选择处理方法 ==========
+        if is_dynamic_cache:
+            # 使用 DynamicCache 的 API
+            return self._trim_dynamic_cache(
+                past_key_values, current_len, current_token_text, hippocampus
             )
+        else:
+            # 使用传统的 tuple 格式处理
+            evicted_kv = self._extract_evicted_kv(past_key_values, self.window_size)
+            trimmed_kv = self._keep_window_kv(past_key_values, self.window_size)
+            
+            self.total_kv_evicted += current_len - self.window_size
+            
+            # 存储到海马体（如果启用）
+            if self.enable_hippocampus and hippocampus is not None and evicted_kv:
+                self._store_evicted_kv_to_hippocampus(
+                    evicted_kv, 
+                    current_token_text or "", 
+                    hippocampus
+                )
+            
+            logger.info(
+                f"[KVCacheManager] KV滑动窗口完成: "
+                f"{current_len} -> {self.window_size} tokens"
+            )
+            
+            return trimmed_kv, evicted_kv
+    
+    def _trim_dynamic_cache(
+        self,
+        cache: Any,
+        current_len: int,
+        current_token_text: Optional[str],
+        hippocampus: Optional[Any]
+    ) -> Tuple[Any, Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
+        """
+        处理 DynamicCache 格式的修剪
         
-        logger.info(
-            f"[KVCacheManager] KV滑动窗口完成: "
-            f"{current_len} -> {self.window_size} tokens, "
-            f"释放{current_len - self.window_size}个KV"
-        )
+        Args:
+            cache: DynamicCache 对象
+            current_len: 当前长度
+            current_token_text: 当前token文本
+            hippocampus: 海马体实例
         
-        return trimmed_kv, evicted_kv
+        Returns:
+            trimmed_cache: 修剪后的缓存
+            evicted_kv: 被释放的KV列表
+        """
+        try:
+            # 方法1: 尝试转换为 legacy format 进行处理
+            if hasattr(cache, 'to_legacy_cache'):
+                legacy_cache = cache.to_legacy_cache()
+                
+                # 检查转换结果是否有效
+                if legacy_cache is None:
+                    logger.debug("[KVCacheManager] to_legacy_cache()返回None，尝试其他方法")
+                else:
+                    evicted_kv = self._extract_evicted_kv(legacy_cache, self.window_size)
+                    trimmed_legacy = self._keep_window_kv(legacy_cache, self.window_size)
+                    
+                    # 重新构建 DynamicCache
+                    # 注意：某些版本的 DynamicCache 可能不支持直接从 tuple 构建
+                    # 这里我们返回 legacy format，因为模型可以处理两种格式
+                    trimmed_cache = trimmed_legacy
+                    
+                    self.total_kv_evicted += current_len - self.window_size
+                    
+                    # 存储到海马体
+                    if self.enable_hippocampus and hippocampus is not None and evicted_kv:
+                        self._store_evicted_kv_to_hippocampus(
+                            evicted_kv, 
+                            current_token_text or "", 
+                            hippocampus
+                        )
+                    
+                    logger.info(
+                        f"[KVCacheManager] DynamicCache修剪完成(to_legacy): "
+                        f"{current_len} -> {self.window_size} tokens"
+                    )
+                    
+                    return trimmed_cache, evicted_kv
+            
+            # 方法2: 直接操作 DynamicCache 对象
+            elif hasattr(cache, 'key_cache') and hasattr(cache, 'value_cache'):
+                # DynamicCache 内部使用 key_cache 和 value_cache 列表
+                # 安全检查：确保 key_cache 和 value_cache 不为 None
+                if cache.key_cache is None or cache.value_cache is None:
+                    logger.debug("[KVCacheManager] DynamicCache的key_cache/value_cache为None，跳过修剪")
+                    return cache, None
+                
+                evicted_kv = []
+                
+                try:
+                    num_layers = len(cache.key_cache)
+                except (TypeError, AttributeError):
+                    logger.debug("[KVCacheManager] 无法获取DynamicCache层数，跳过修剪")
+                    return cache, None
+                
+                for layer_idx in range(num_layers):
+                    try:
+                        k = cache.key_cache[layer_idx]  # [batch, num_heads, seq_len, head_dim]
+                        v = cache.value_cache[layer_idx]
+                        
+                        if k is None or v is None:
+                            logger.debug(f"[KVCacheManager] 层{layer_idx}的KV为None，跳过")
+                            continue
+                        
+                        # 提取被释放的 KV
+                        evicted_k = k[:, :, :-self.window_size, :].clone()
+                        evicted_v = v[:, :, :-self.window_size, :].clone()
+                        evicted_kv.append((evicted_k, evicted_v))
+                        
+                        # 修剪到窗口大小
+                        cache.key_cache[layer_idx] = k[:, :, -self.window_size:, :].clone()
+                        cache.value_cache[layer_idx] = v[:, :, -self.window_size:, :].clone()
+                    except (IndexError, TypeError, RuntimeError) as e:
+                        logger.debug(f"[KVCacheManager] 处理层{layer_idx}失败: {e}，跳过该层")
+                        continue
+                
+                self.total_kv_evicted += current_len - self.window_size
+                
+                # 存储到海马体
+                if self.enable_hippocampus and hippocampus is not None and evicted_kv:
+                    self._store_evicted_kv_to_hippocampus(
+                        evicted_kv, 
+                        current_token_text or "", 
+                        hippocampus
+                    )
+                
+                logger.info(
+                    f"[KVCacheManager] DynamicCache修剪完成(direct): "
+                    f"{current_len} -> {self.window_size} tokens"
+                )
+                
+                return cache, evicted_kv
+            
+            # 方法3: 尝试使用 to_legacy_cache 的替代方法
+            else:
+                # 尝试手动提取 KV（适用于其他类型的 DynamicCache）
+                logger.debug(
+                    "[KVCacheManager] 尝试手动提取DynamicCache的KV"
+                )
+                
+                # 尝试通过迭代或其他方式获取 KV
+                try:
+                    # 某些实现可能支持 __getitem__
+                    if hasattr(cache, '__getitem__'):
+                        legacy_cache = tuple(cache[layer_idx] for layer_idx in range(len(cache)))
+                        evicted_kv = self._extract_evicted_kv(legacy_cache, self.window_size)
+                        trimmed_legacy = self._keep_window_kv(legacy_cache, self.window_size)
+                        
+                        self.total_kv_evicted += current_len - self.window_size
+                        
+                        # 存储到海马体
+                        if self.enable_hippocampus and hippocampus is not None and evicted_kv:
+                            self._store_evicted_kv_to_hippocampus(
+                                evicted_kv, 
+                                current_token_text or "", 
+                                hippocampus
+                            )
+                        
+                        logger.info(
+                            f"[KVCacheManager] DynamicCache修剪完成(manual): "
+                            f"{current_len} -> {self.window_size} tokens"
+                        )
+                        
+                        return trimmed_legacy, evicted_kv
+                except Exception as inner_e:
+                    logger.debug(f"[KVCacheManager] 手动提取失败: {inner_e}")
+                
+                # 如果所有方法都失败，记录调试信息并跳过修剪
+                logger.debug(
+                    f"[KVCacheManager] DynamicCache类型{type(cache).__name__}不支持修剪，跳过"
+                )
+                return cache, None
+                
+        except Exception as e:
+            logger.debug(f"[KVCacheManager] DynamicCache修剪失败: {e}，跳过修剪")
+            return cache, None
     
     def _extract_evicted_kv(
         self,

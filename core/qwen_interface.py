@@ -41,7 +41,7 @@ except Exception as e:
 
 class QwenModelWrapper(nn.Module):
     """
-    Qwen3.5-0.8B 模型包装器
+    Qwen3.5-2B 模型包装器
     
     将双权重层集成到真实 Qwen 模型中
     """
@@ -308,11 +308,11 @@ class QwenModelWrapper(nn.Module):
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 100,
-        temperature: float = 1.0,
+        temperature: float = 0.6,
         do_sample: bool = True,
-        top_p: float = 0.95,
-        top_k: int = 20,
-        presence_penalty: float = 1.5,
+        top_p: float = 0.9,
+        top_k: int = 40,
+        presence_penalty: float = 0.8,
         **kwargs
     ):
         """

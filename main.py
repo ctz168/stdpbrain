@@ -2,7 +2,7 @@
 """
 类人脑双系统全闭环 AI架构 - 主入口
 
-基于Qwen3.5-0.8B 底座模型
+基于Qwen3.5-2B 底座模型
 实现海马体 - 新皮层双系统类人脑架构
 
 使用示例:
@@ -63,7 +63,7 @@ def parse_args():
         "--model-path",
         type=str,
         default=secret_config.MODEL_PATH,
-        help="Qwen3.5-0.8B 模型路径"
+        help="Qwen3.5-2B 模型路径"
     )
     
     parser.add_argument(
@@ -304,7 +304,7 @@ def main():
     
     print("=" * 60)
     print("类人脑双系统全闭环 AI架构")
-    print("底座模型：Qwen3.5-0.8B")
+    print("底座模型：Qwen3.5-2B")
     print("=" * 60)
     
     # ========== 1. 初始化配置 ==========
@@ -324,9 +324,10 @@ def main():
         
     except Exception as e:
         print(f"[错误] 初始化失败：{e}")
-        print("\n提示：请确保已下载 Qwen3.5-0.8B 模型到指定路径")
+        print("\n提示：请确保已下载 Qwen3.5-2B 模型到指定路径")
         print("可使用以下命令下载:")
-        print("  huggingface-cli download Qwen/Qwen3.5-0.8B --local-dir ./models/Qwen3.5-0.8B")
+        print("  python download_model.py")
+        print("  或手动下载: huggingface-cli download Qwen/Qwen3.5-2B --local-dir ./models/Qwen3.5-2B")
         sys.exit(1)
     
     # ========== 3. 执行对应模式 ==========
