@@ -147,8 +147,50 @@ class ContinuousThoughtFlowSession:
                 print(f"\n[思维生成异常: {e}]")
                 time.sleep(1)
             
-            # 等待下一个周期
-            time.sleep(3)
+            # --- 类人特征 3: 动态决策与开口说话 ---
+            # 检查是否有开启外部对话的强烈欲望
+            if hasattr(self.ai.inner_thought_engine, '_last_urge_to_speak'):
+                urge = self.ai.inner_thought_engine._last_urge_to_speak
+                
+                # 如果欲望极高 ( > 0.85)，且距离上次说话已经有一段时间，主动开启输出
+                if urge > 0.85 and (time.time() - self.ai.last_output_time) > 45:
+                    self._proactive_speak()
+            
+            # --- 类人特征 4: 动态思维周期 (非恒定心跳) ---
+            # 根据当前的思维“压力”决定下次思考的间隔
+            # 压力大（欲望高/专注）则思考快，压力小（闲散）则思考慢
+            urge = getattr(self.ai.inner_thought_engine, '_last_urge_to_speak', 0.5)
+            # 映射到 1.5s - 8s 之间
+            sleep_time = 8.0 - (urge * 6.5)
+            time.sleep(max(1.5, sleep_time))
+    
+    def _proactive_speak(self):
+        """主动开口说话 (意识外化)"""
+        try:
+            # 检查主动意图生成器
+            if hasattr(self.ai, 'proactive_generator') and self.ai.proactive_generator:
+                # 构造上下文
+                context = self.ai._build_proactive_context() # 我们稍后在 interface 定义
+                intent, confidence, debug = self.ai.proactive_generator(
+                    self.ai.current_thought_state,
+                    context
+                )
+                
+                if intent != self.ai.proactive_generator.intent_enum.SILENCE:
+                    content = self.ai._generate_proactive_content(intent, context)
+                    
+                    with self._terminal_lock:
+                        print(f"\n\033[93mAI (自发): \033[0m", end="", flush=True)
+                        for char in content:
+                            print(char, end="", flush=True)
+                            time.sleep(random.uniform(0.01, 0.03))
+                        print("\n")
+                    
+                    # 记录输出时间
+                    self.ai.last_output_time = time.time()
+                    self.chat_history.append({"role": "assistant", "content": f"[自发] {content}"})
+        except Exception as e:
+            pass # 主动说话失败不影响思维主循环
     
     def _display_inner_thought(self):
         """显示内心思维独白"""

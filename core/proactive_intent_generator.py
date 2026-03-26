@@ -92,18 +92,22 @@ class ProactiveIntentGenerator(nn.Module):
         time_silence = context.time_silence_seconds
         time_since_output = context.time_since_output
         
-        # 1.1 最小间隔检查
-        if time_since_output < self.min_interval:
-            debug_info["throttle_reason"] = f"interval too short ({time_since_output:.0f}s < {self.min_interval}s)"
+        # 1.1 动态最小间隔检查（置信度高时允许更频繁）
+        dynamic_min_interval = self.min_interval
+        if hasattr(self, 'last_confidence') and self.last_confidence > 0.8:
+            dynamic_min_interval = self.min_interval // 3  # 高置信度下允许更频繁地表达
+            
+        if time_since_output < dynamic_min_interval:
+            debug_info["throttle_reason"] = f"interval too short ({time_since_output:.0f}s < {dynamic_min_interval}s)"
             return ProactiveIntent.SILENCE, 0.0, debug_info
         
-        # 1.2 每日上限检查
-        if self.daily_count >= self.max_daily:
-            debug_info["throttle_reason"] = f"daily limit reached ({self.daily_count}/{self.max_daily})"
+        # 1.2 每日上限检查 (宽松处理)
+        if self.daily_count >= self.max_daily * 3: # 提升实际限制
+            debug_info["throttle_reason"] = f"daily limit reached ({self.daily_count}/{self.max_daily * 3})"
             return ProactiveIntent.SILENCE, 0.0, debug_info
         
-        # 1.3 近期澄清过多检查（避免主动+澄清双重打扰）
-        if context.recent_clarifications > 2:
+        # 1.3 近期澄清过多检查
+        if context.recent_clarifications > 4: # 稍微提高容忍度
             debug_info["throttle_reason"] = f"too many clarifications ({context.recent_clarifications})"
             return ProactiveIntent.SILENCE, 0.0, debug_info
         
@@ -130,23 +134,24 @@ class ProactiveIntentGenerator(nn.Module):
         
         # 获取最高概率的意图
         top_intent_idx = torch.argmax(intent_probs).item()
-        top_intent = ProactiveIntent(top_intent_idx)
+        top_intent = ProactiveIntent(list(ProactiveIntent)[top_intent_idx])
         top_confidence = intent_probs[top_intent_idx].item()
+        self.last_confidence = top_confidence
         
         # ========== 4. 质量评估 ==========
         quality_score = self.quality_scorer(state_vec.unsqueeze(0)).item()
         
         debug_info.update({
-            "intent_probs": {intent.value: prob.item() for intent, prob in zip(ProactiveIntent, intent_probs)},
+            "intent_probs": {intent.value: intent_probs[i].item() for i, intent in enumerate(ProactiveIntent)},
             "quality_score": quality_score,
             "time_silence": time_silence,
             "mind_state": context.mind_state
         })
         
         # ========== 5. 决策 ==========
-        # 需要同时满足：意图置信度高 + 质量评分高 + 时间条件
-        confidence_threshold = 0.4  # 意图置信度阈值
-        quality_threshold = 0.6     # 质量阈值
+        # 降低阈值，让 AI 更“活跃”
+        confidence_threshold = 0.35  # 从 0.4 降到 0.35
+        quality_threshold = 0.5      # 从 0.6 降到 0.5
         
         if (top_confidence > confidence_threshold and 
             quality_score > quality_threshold and

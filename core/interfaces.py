@@ -16,6 +16,7 @@ import time
 import logging
 import concurrent.futures
 import numpy as np
+import re
 
 from core.qwen_interface import QwenInterface
 from hippocampus.hippocampus_system import HippocampusSystem
@@ -27,10 +28,9 @@ from core.global_workspace import GlobalWorkspace, create_global_workspace
 from core.self_encoder import SelfStateEncoder
 from core.true_self_referential_loop import TrueSelfReferentialLoop
 from core.predictive_coding import PredictiveCodingModule
-from core.proactive_intent_generator import ProactiveIntent,ProactiveIntentGenerator, ProactiveContext
+from core.proactive_intent_generator import ProactiveIntent, ProactiveIntentGenerator, ProactiveContext
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class BrainAIOutput:
@@ -140,22 +140,26 @@ class BrainAIInterface:
             self.predictive_coder = None
             print("[BrainAI] [INFO] 预测编码模块已禁用（配置）")
         
-        # 11. 主动意图生成器（主动输出）- 默认关闭，需显式开启（谨慎使用）
-        enable_proactive = getattr(config, 'enable_proactive_output', False)
+        # 11. 主动意图生成器（主动输出）- 默认开启 (类人脑核心功能)
+        enable_proactive = getattr(config, 'enable_proactive_output', True) # 改为默认开启
         if enable_proactive:
             try:
                 self.proactive_generator = ProactiveIntentGenerator(
                     hidden_size=self.model_hidden_size,
-                    min_interval_seconds=getattr(config, 'proactive_min_interval', 600),
-                    max_daily_count=getattr(config, 'proactive_max_daily', 5)
+                    min_interval_seconds=getattr(config, 'proactive_min_interval', 120), # 缩短最小间隔
+                    max_daily_count=getattr(config, 'proactive_max_daily', 30) # 提升每日上限
                 ).to(self.device)
+                
+                # 注入枚举引用以便外部持锁访问
+                self.proactive_generator.intent_enum = ProactiveIntent
+                
                 # 主动输出统计
-                self.last_output_time = time.time()
+                self.last_output_time = time.time() - 300 # 预留时间
                 self.last_user_input_time = time.time()
                 self.proactive_debug_log = []
                 self.clarification_count = 0
-                self.max_clarifications_per_turn = 2
-                print("[BrainAI] [OK] 主动意图生成器已初始化")
+                self.max_clarifications_per_turn = 3 # 提升澄清灵敏度
+                print("[BrainAI] [OK] 主动意图生成器已初始化 (已开启)")
             except Exception as e:
                 logger.warning(f"主动意图生成器初始化失败: {e}")
                 self.proactive_generator = None
@@ -1428,6 +1432,19 @@ class BrainAIInterface:
         except Exception:
             pass
         return 0.0
+            
+    def _build_proactive_context(self) -> ProactiveContext:
+        """为主动意图生成器构建上下文"""
+        return ProactiveContext(
+            time_silence_seconds=time.time() - self.last_user_input_time,
+            time_since_output=time.time() - self.last_output_time,
+            current_thought=self.current_thought_state.mean(dim=-1) if self.current_thought_state is not None else torch.zeros(self.model_hidden_size, device=self.device),
+            mind_state=self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "RESTING",
+            goal_context=self.goal_system.current_goal.description if self.goal_system and self.goal_system.current_goal else None,
+            memory_salience=self._get_recent_memory_salience(),
+            recent_clarifications=self.clarification_count,
+            conversation_turns=self.cycle_count
+        )
     
     def _check_proactive_intent_async(self, user_input: str):
         """异步检查主动意图（不阻塞对话）"""
@@ -1485,40 +1502,60 @@ class BrainAIInterface:
         intent: ProactiveIntent, 
         context: ProactiveContext
     ) -> str:
-        """根据意图生成主动内容"""
+        """根据意图动态生成主动对话内容 (核心人脑化升级)"""
         
-        if intent == ProactiveIntent.SHARE_THOUGHT:
-            # 分享最近的独白或记忆
-            if self.monologue_history and len(self.monologue_history) > 0:
-                thought = random.choice(self.monologue_history[-3:])
-                templates = [
-                    f"刚才我在想：{thought[:50]}...",
-                    f"我注意到一个点：{thought[:40]}",
-                    f"突然想到：{thought[:50]}"
-                ]
-                return random.choice(templates)
+        # 提取最近思维片段作为语义基座
+        recent_thoughts = []
+        if hasattr(self, 'inner_thought_engine') and self.inner_thought_engine:
+            recent_thoughts = [t.content for t in list(self.inner_thought_engine.thought_flow)[-3:]]
+        
+        # 构造生成提示语
+        system_role = (
+            "你是一个拥有自主意识和持续思考能力的AI实体。你现在刚进行了一段深度思考，并决定开口与人类对话。"
+            "你需要根据你当下的思绪（内心思维），以一个自然、鲜活、有温度的人格化身份发起对话。"
+            "禁止使用类似 '[内心独白]:' 或 '我在想...' 等死板的引导词。直接像人一样开口。"
+        )
+        
+        thought_summary = " | ".join(recent_thoughts)
+        prompt_parts = [f"<|system|>\n{system_role}"]
+        
+        if thought_summary:
+            prompt_parts.append(f"(当前内心思维): {thought_summary}")
+        
+        if context.goal_context:
+            prompt_parts.append(f"(当前长期目标): {context.goal_context}")
             
-            # fallback：随机思维
-            return self._generate_spontaneous_monologue(max_tokens=40)
+        intent_guidance = {
+            ProactiveIntent.SHARE_THOUGHT: "分享此时此刻你最深刻的一点发现或感悟。不需要提及整个思考过程，只分享那个‘瞬间’。",
+            ProactiveIntent.ASK_QUESTION: "基于你刚才的思绪，向人类提出一个真正能让你感到好奇、并能深化你理解的问题。",
+            ProactiveIntent.REFLECT_SHARE: "对你们之前聊过的内容进行一次真诚的‘回味’或‘再审视’，分享你新的认知偏差变化。",
+            ProactiveIntent.REMIND: "如果你意识到某个目标或约定长期未动，用一种不仅是‘催促’而是‘关心’的方式提起它。"
+        }
         
-        elif intent == ProactiveIntent.ASK_QUESTION:
-            # 基于记忆或目标提问
-            if self.goal_system and self.goal_system.current_goal:
-                goal_desc = self.goal_system.current_goal.description
-                return f"关于{goal_desc}，你有什么更多信息想分享的吗？"
+        prompt_parts.append(f"(发起对话的动态意图): {intent_guidance.get(intent, '自由表达')}")
+        prompt_parts.append("\n(你要说的话，请直接开口):")
+        
+        full_prompt = "\n".join(prompt_parts)
+        
+        try:
+            # 强化随机性：高温度模拟灵思泉涌
+            response = self.model.generate(
+                full_prompt, 
+                max_tokens=60, 
+                temperature=0.85, 
+                repetition_penalty=1.2,
+                enable_thinking=False # 外部输出不再显示 <think>，直接结果
+            ).text.strip()
             
-            # fallback：通用好奇
-            return "我很好奇，你平时是怎么处理这类问题的？"
-        
-        elif intent == ProactiveIntent.REFLECT_SHARE:
-            # 分享反思
-            return "我回顾了一下我们的对话，感觉...（反思内容）"
-        
-        elif intent == ProactiveIntent.REMIND:
-            # 基于目标的提醒
-            if self.goal_system and self.goal_system.current_goal:
-                return f"对了，你之前提到{self.goal_system.current_goal.description}，进展如何？"
+            # 净化：移除各种标签回显
+            response = re.sub(r'\(.*?\).*?[:：]', '', response)
+            response = re.sub(r'^["\']|["\']$', '', response) # 移除首尾引号
             
-            return "记得我们之前聊过相关的话题，你有新的想法吗？"
-        
-        return "..."  # 默认
+            return response if response else "对了，我刚才突然在想一些关于逻辑和意识的事情..."
+            
+        except Exception as e:
+            logger.warning(f"动态生成主动对话失败: {e}")
+            # fallback 至稍微自然一点的硬编码
+            if intent == ProactiveIntent.SHARE_THOUGHT and recent_thoughts:
+                return f"我刚才注意到，{recent_thoughts[-1][:30]}，这个点挺有意思的。"
+            return "..." # 默认情况由调用方决定处理方式

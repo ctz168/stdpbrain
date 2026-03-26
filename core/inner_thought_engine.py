@@ -120,6 +120,7 @@ class InnerThoughtEngine:
         # ========== 统计 ==========
         self.cycle_count = 0
         self.total_output_chars = 0
+        self._last_urge_to_speak = 0.0  # 开口欲望评分 (0-1)
         
         # ========== 自我编码器接口（由 BrainAIInterface 注入）==========
         self._self_encoder = None  # 注入后提供真实的自我感知
@@ -373,6 +374,19 @@ class InnerThoughtEngine:
                 for char in token:
                     yield char
                     time.sleep(random.uniform(*self.char_interval))
+                
+                # --- 类人特征 1: 自然停顿与完结感 ---
+                # 如果检测到完整的句子结束，且长度已经达到一定程度，则根据“完结感”提前退出
+                if any(p in token for p in ['。', '！', '？', '...']):
+                    if len(generated_text) > 15:
+                        # 计算完结感 (越长越容易完结)
+                        completion_prob = min(0.1 + (len(generated_text) / 100), 0.8)
+                        if random.random() < completion_prob:
+                            break
+            
+            # --- 类人特征 2: 评估“开口欲望” (Urge to Speak) ---
+            # 根据思维状态和内容重要性计算是否应该转为外部输出
+            self._last_urge_to_speak = self._calculate_urge(generated_text)
             
             # --- 智能上下文管理 (无限上下文模拟) ---
             if len(self.thought_flow) > 15:
@@ -607,6 +621,30 @@ class InnerThoughtEngine:
         
         if keywords:
             self.current_concept = keywords[0]
+    
+    def _calculate_urge(self, content: str) -> float:
+        """计算开启外部对话的欲望程度"""
+        if not content or len(content) < 10:
+            return 0.1
+            
+        urge = 0.2
+        
+        # 1. 基于思维状态
+        if self.mind_state == MindState.FOCUSED:
+            urge += 0.3
+        elif self.mind_state == MindState.REFLECTING:
+            urge += 0.4
+            
+        # 2. 基于内容情感/重要性关键词
+        strong_keywords = ["必须", "重要", "发现", "确定", "原来", "回答", "告诉", "警告"]
+        if any(kw in content for kw in strong_keywords):
+            urge += 0.3
+            
+        # 3. 基于标点符号 (语气)
+        if "！" in content: urge += 0.1
+        if "？" in content: urge += 0.2
+        
+        return min(1.0, urge)
     
     # ==================== 快速响应 ====================
     
