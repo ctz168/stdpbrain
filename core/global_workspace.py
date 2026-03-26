@@ -179,6 +179,16 @@ class GlobalWorkspace:
         self.competition = CompetitionMechanism(hidden_size).to(device)
         self.broadcast = BroadcastMechanism(hidden_size).to(device)
         
+        # 维度适配器：将不同维度映射到 hidden_size
+        self._dimension_adapters = nn.ModuleDict({
+            'memory': nn.Linear(512, hidden_size, bias=False),  # 海马体 dg_features: 512 -> 1024
+            'goal': nn.Linear(512, hidden_size, bias=False),     # 目标向量：假设512
+        }).to(device)
+        
+        # 初始化适配器为单位矩阵（保持语义）
+        for name, adapter in self._dimension_adapters.items():
+            nn.init.xavier_uniform_(adapter.weight, gain=0.5)
+        
         # 模块注册表
         self.registered_modules: Dict[str, ModuleOutput] = OrderedDict()
         
@@ -235,9 +245,31 @@ class GlobalWorkspace:
             confidence: 置信度
             metadata: 元数据
         """
+        # 维度适配：如果输出维度与 hidden_size 不匹配，使用适配器
+        if output.dim() == 1:
+            output = output.unsqueeze(0)  # [D] -> [1, D]
+        
+        if output.shape[-1] != self.hidden_size:
+            # 检查是否有对应的适配器
+            if module_name in self._dimension_adapters:
+                try:
+                    output = self._dimension_adapters[module_name](output)
+                except Exception as e:
+                    print(f"[GW] 维度适配失败 ({module_name}): {e}, 使用零填充")
+                    # 零填充到 hidden_size
+                    padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device)
+                    padded[:, :output.shape[-1]] = output
+                    output = padded
+            else:
+                # 没有适配器，使用零填充
+                padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device)
+                min_dim = min(output.shape[-1], self.hidden_size)
+                padded[:, :min_dim] = output[:, :min_dim]
+                output = padded
+        
         self.registered_modules[module_name] = ModuleOutput(
             module_name=module_name,
-            output=output,
+            output=output.squeeze(0) if output.shape[0] == 1 else output,
             confidence=confidence,
             metadata=metadata or {}
         )

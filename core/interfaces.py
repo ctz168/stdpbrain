@@ -269,7 +269,11 @@ class BrainAIInterface:
         
         # 设置海马体门控函数（连接CA1到注意力层）
         self._setup_hippocampus_gate()
-        
+
+        # KV cache预热（加速首token）
+        if getattr(config.hard_constraints, 'KV_CACHE_WARMUP', True):
+            self._warmup_kv_cache()
+
         print("[BrainAI] [OK] 高级实现模块集成完成\n")
     
     # ==================== 兼容性属性 ====================
@@ -287,6 +291,56 @@ class BrainAIInterface:
     def _setup_hippocampus_gate(self):
         """设置海马体门控，让CA1门控信号影响注意力"""
         def hippocampus_gate_fn(query, key, memory_anchors):
+            """CA1门控函数"""
+            try:
+                if memory_anchors and len(memory_anchors) > 0:
+                    # 计算注意力门控信号
+                    gate_signal = self.hippocampus.ca1_gate.compute_gate(
+                        query_features=query,
+                        memory_anchors=memory_anchors
+                    )
+                    return gate_signal
+            except:
+                pass
+            return None
+
+        # 注入到模型
+        try:
+            self.model.set_hippocampus_gate(hippocampus_gate_fn)
+            print("[OK] 已设置海马体门控函数")
+        except Exception as e:
+            logger.warning(f"海马体门控设置失败: {e}")
+
+    def _warmup_kv_cache(self):
+        """
+        KV cache预热 - 加速首token生成
+
+        原理：
+        - 首个token生成需要prefill整个输入序列，计算O(n²)
+        - 提前处理系统prompt，缓存KV，减少首token时间
+        """
+        try:
+            print("[BrainAI] 正在预热KV cache...")
+            warmup_prompts = [
+                "系统初始化",
+                "你是一个AI助手"
+            ]
+
+            # 快速生成，缓存KV（不输出）
+            for prompt in warmup_prompts:
+                try:
+                    _ = self.model.generate(
+                        prompt,
+                        max_tokens=1,
+                        temperature=1.0,
+                        use_cache=True
+                    )
+                except:
+                    pass
+
+            print("[BrainAI] [OK] KV cache预热完成")
+        except Exception as e:
+            print(f"[BrainAI] [WARN] KV cache预热失败（不影响使用）: {e}")
             # 使用保存的完整记忆字典，而不是传入的tensor
             recalled_memories = getattr(self, '_current_recalled_memories', None)
             if not recalled_memories:
@@ -352,10 +406,11 @@ class BrainAIInterface:
             """并行记忆召回（优化版）"""
             memory_context = ""
             recalled_memories = []
-            identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
+            identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史", "名字", "我叫什么", "记得"]
             # 强化检查：如果包含数学符号或非常短，跳过身份偏差
             is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
             is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
+            is_memory_question = any(kw in user_input for kw in ["记得", "记住", "我叫什么", "我的名字", "来自", "还记"])
             
             try:
                 # 优化: 复用缓存或创建新的
@@ -370,14 +425,27 @@ class BrainAIInterface:
                 if query_features.shape[0] != 1024:
                     query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
                 
-                topk = 3 if is_identity_question else 2
-                query_semantic = user_input if is_identity_question else None
+                # 改进：增加召回数量，确保找到相关记忆
+                topk = 5 if is_memory_question else 3
+                query_semantic = user_input if (is_identity_question or is_memory_question) else None
                 recalled_memories = self.hippocampus.recall(query_features, topk=topk, query_semantic=query_semantic)
                 
+                # 改进：构建更详细的记忆上下文
                 if recalled_memories:
-                    memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
-                    if memory_pointers:
-                        memory_context = " | ".join(memory_pointers[:3])
+                    memory_parts = []
+                    for m in recalled_memories[:3]:  # 最多3条
+                        # 优先使用 semantic_pointer
+                        if m.get('semantic_pointer'):
+                            memory_parts.append(m['semantic_pointer'])
+                        # 如果有context，也加入
+                        elif m.get('context'):
+                            ctx = m['context']
+                            if isinstance(ctx, list) and len(ctx) > 0:
+                                memory_parts.append(ctx[0].get('content', '')[:50])
+                    
+                    if memory_parts:
+                        memory_context = " | ".join(memory_parts)
+                        
             except Exception as e:
                 logger.debug(f"并行记忆召回失败: {e}")
                 
@@ -403,7 +471,15 @@ class BrainAIInterface:
                 # 获取记忆特征向量
                 mem_tensor = None
                 if recalled_memories:
-                    mem_feats = [m['dg_features'] for m in recalled_memories[:2] if m.get('dg_features') is not None]
+                    mem_feats = []
+                    for m in recalled_memories[:2]:
+                        if m.get('dg_features') is not None:
+                            # 修复：dg_features 可能是 list，需要转换为 Tensor
+                            dg_feat = m['dg_features']
+                            if isinstance(dg_feat, list):
+                                dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
+                            if isinstance(dg_feat, torch.Tensor):
+                                mem_feats.append(dg_feat)
                     if mem_feats:
                         mem_tensor = torch.stack(mem_feats).mean(0).to(self.device)
                 
@@ -452,7 +528,12 @@ class BrainAIInterface:
                 mem_features = []
                 for mem in recalled_memories[:2]:
                     if 'dg_features' in mem and mem['dg_features'] is not None:
-                        mem_features.append(mem['dg_features'])
+                        # 修复：dg_features 可能是 list，需要转换为 Tensor
+                        dg_feat = mem['dg_features']
+                        if isinstance(dg_feat, list):
+                            dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
+                        if isinstance(dg_feat, torch.Tensor):
+                            mem_features.append(dg_feat)
                 if mem_features:
                     memory_anchor = torch.stack(mem_features).mean(dim=0).unsqueeze(0).to(self.device)
             except Exception as e:
@@ -497,7 +578,7 @@ class BrainAIInterface:
         
         # 3.5 预测编码：计算预测误差（如果启用了预测模块）
         prediction_error = 0.0
-        if hasattr(self, 'predictive_coder') and self.predictive_coder and self.last_output_embedding is not None:
+        if hasattr(self, 'predictive_coder') and self.predictive_coder and self.last_output_embedding is not None and self.current_thought_state is not None:
             try:
                 # 预测下一状态和 token
                 pred_next_state, pred_token_logits = self.predictive_coder.predict_next(
@@ -589,35 +670,51 @@ class BrainAIInterface:
         identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住"]
         is_core_memory = any(pattern in user_input for pattern in identity_patterns)
         
-        # 提取实体信息增强semantic_pointer
+        # 提取实体信息增强semantic_pointer - 改进：存储结构化信息
         enhanced_pointer = f"用户: {user_input[:30]} | 回复: {output.text[:30]}"
+        
+        # 提取关键实体并构建记忆内容
+        memory_content = f"{user_input} -> {output.text}"
         if is_core_memory:
-            # 提取关键实体
+            # 提取关键实体 - 改进：更精确的正则表达式
             import re
-            name_match = re.search(r"我叫(.{2,6})|我的名字(是|叫)(.{2,6})", user_input)
+            # 名字：只匹配中文字符或字母，不包括标点
+            name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
             age_match = re.search(r"我今年(\d+)", user_input)
             job_match = re.search(r"我是(.{2,10})(工程师|医生|老师|学生|设计师|程序员)", user_input)
-            hobby_match = re.search(r"我喜欢(.{2,20})", user_input)
+            # 地点：匹配"来自XX"或"在XX工作/生活"
+            location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10})(工作|生活)", user_input)
+            hobby_match = re.search(r"我喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
             
             entities = []
             if name_match:
-                entities.append(f"名字:{name_match.group(1) or name_match.group(3)}")
+                name = name_match.group(1) or name_match.group(3)
+                entities.append(f"用户名字:{name}")
+                enhanced_pointer = f"名字:{name} | " + enhanced_pointer
             if age_match:
                 entities.append(f"年龄:{age_match.group(1)}岁")
+                enhanced_pointer = f"年龄:{age_match.group(1)}岁 | " + enhanced_pointer
             if job_match:
                 entities.append(f"职业:{job_match.group(0)}")
+                enhanced_pointer = f"职业:{job_match.group(0)} | " + enhanced_pointer
+            if location_match:
+                location = location_match.group(1) or location_match.group(2)
+                entities.append(f"地点:{location}")
+                enhanced_pointer = f"地点:{location} | " + enhanced_pointer
             if hobby_match:
                 entities.append(f"爱好:{hobby_match.group(1)}")
             
             if entities:
-                enhanced_pointer = " | ".join(entities) + " | " + enhanced_pointer
+                # 改进：存储结构化实体信息，而不是整个对话
+                memory_content = " | ".join(entities)
+                enhanced_pointer = " | ".join(entities)
         
         thought_state_snapshot = self.current_thought_state
         
         def post_processing():
             try:
                 self._store_with_real_features(
-                    f"{user_input} -> {output.text}", 
+                    memory_content,  # 使用改进后的结构化内容
                     thought_state_snapshot, 
                     is_core=is_core_memory,
                     semantic_pointer=enhanced_pointer
@@ -1052,7 +1149,8 @@ class BrainAIInterface:
             "**回答规则**：\n"
             "1. 直接回答用户的问题，不要发散\n"
             "2. 不要谈论自己的身份、意识或工作机制\n"
-            "3. 保持简洁，给出明确答案"
+            "3. 保持简洁，给出明确答案\n"
+            "4. 如果用户提供了个人信息，请记住并在后续对话中使用"
         )
         
         # 1.5 添加 GW 全局工作空间整合上下文
@@ -1068,9 +1166,9 @@ class BrainAIInterface:
             elif "recall" in goal_context.lower():
                 system_content += "\n- 用户在询问记忆，请回忆之前的对话内容\n- 如果记得，直接回答；如果不记得，诚实说明"
         
-        # 3. 添加记忆上下文
+        # 3. 添加记忆上下文 - 强化注入
         if memory_context:
-            system_content += f"\n\n[重要记忆 - 请务必参考]\n{memory_context}\n[请根据记忆内容回答用户问题]"
+            system_content += f"\n\n**[重要记忆 - 必须参考]**\n{memory_context}\n**注意：如果用户询问关于记忆的信息，请直接从以上记忆中提取并回答。不要说'无法记住'或'我不记得'，记忆已经在上面提供了。**"
         
         # 4. 自我感知注入：简短附注，不触发推理模式
         if self_context_str:
@@ -1601,3 +1699,91 @@ class BrainAIInterface:
             if intent == ProactiveIntent.SHARE_THOUGHT and recent_thoughts:
                 return f"我刚才注意到，{recent_thoughts[-1][:30]}，这个点挺有意思的。"
             return "..." # 默认情况由调用方决定处理方式
+    
+    # ==================== 用户反馈学习机制 ====================
+    
+    def apply_user_feedback(
+        self,
+        is_positive: bool,
+        intensity: float,
+        reward: float
+    ):
+        """
+        应用用户反馈到 STDP 学习系统
+        
+        这是 STDP 学习闭环的关键：用户反馈 → 奖励信号 → 权重更新
+        
+        Args:
+            is_positive: 是否是正面反馈
+            intensity: 反馈强度 (0.0-1.0)
+            reward: STDP 奖励值 (0.0-2.0)
+        
+        类人脑对应:
+        - 正反馈 → 多巴胺释放 → LTP 增强
+        - 负反馈 → 杏仁核激活 → LTD 抑制
+        """
+        try:
+            logger.info(f"[用户反馈学习] 类型={'正面' if is_positive else '负面'}, "
+                       f"强度={intensity:.2f}, reward={reward:.2f}")
+            
+            # 1. 更新目标系统的奖励权重
+            if hasattr(self, 'goal_system') and self.goal_system:
+                self.goal_system.update_reward_from_feedback(is_positive)
+                logger.debug(f"[用户反馈学习] 已更新目标奖励权重")
+            
+            # 2. 应用 STDP 更新
+            # 根据反馈类型和强度调整奖励
+            if not is_positive:
+                # 负反馈：触发 LTD（长期抑制）
+                # 强化惩罚效果
+                effective_reward = reward * 0.5  # 进一步降低
+                
+                # 更新所有动态权重的贡献度
+                for name, module in self.model.model.base_model.named_modules():
+                    if hasattr(module, 'dynamic_weight') and hasattr(module, 'set_contribution'):
+                        # 设置负贡献度，触发 LTD
+                        module.set_contribution(-intensity)
+                
+                logger.info(f"[用户反馈学习] 已应用 LTD 惩罚: effective_reward={effective_reward:.2f}")
+            else:
+                # 正反馈：触发 LTP（长期增强）
+                effective_reward = reward
+                
+                # 更新所有动态权重的贡献度
+                for name, module in self.model.model.base_model.named_modules():
+                    if hasattr(module, 'dynamic_weight') and hasattr(module, 'set_contribution'):
+                        # 设置正贡献度，触发 LTP
+                        module.set_contribution(intensity)
+                
+                logger.info(f"[用户反馈学习] 已应用 LTP 奖励: effective_reward={effective_reward:.2f}")
+            
+            # 3. 更新模型的奖励缓存
+            if hasattr(self.model, 'set_reward'):
+                self.model.set_reward(effective_reward)
+            
+            # 4. 记录学习事件
+            self.total_stdp_updates += 1
+            self.last_feedback = {
+                'is_positive': is_positive,
+                'intensity': intensity,
+                'reward': reward,
+                'timestamp': time.time()
+            }
+            
+            logger.info(f"[用户反馈学习] 学习闭环完成 (总更新次数: {self.total_stdp_updates})")
+            
+        except Exception as e:
+            logger.error(f"[用户反馈学习] 应用失败: {e}")
+    
+    def get_feedback_learning_stats(self) -> dict:
+        """获取反馈学习统计"""
+        return {
+            'total_stdp_updates': self.total_stdp_updates,
+            'last_feedback': getattr(self, 'last_feedback', None),
+            'goal_reward_weights': (
+                self.goal_system.goal_type_reward_weights 
+                if hasattr(self, 'goal_system') and self.goal_system 
+                else {}
+            )
+        }
+

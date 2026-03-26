@@ -22,6 +22,9 @@ from telegram.request import HTTPXRequest
 
 from .stream_handler import StreamHandler, TypingSimulator
 
+# 导入用户反馈处理器
+from core.user_feedback_handler import get_feedback_handler
+
 
 # 配置日志
 logging.basicConfig(
@@ -197,12 +200,12 @@ class BrainAIBot:
         
         welcome_message = (
             "🤖 欢迎使用类人脑AI助手！\n\n"
-            "✨ 特性:\n"
+            "[*] 特性:\n"
             "• 基于Qwen3.5-0.8B 模型\n"
             "• 海马体 - 新皮层双系统架构\n"
             "• 100Hz 高刷新推理\n"
             "• STDP 在线学习\n\n"
-            "💡 直接发送消息即可与我对话！\n"
+            "[*] 直接发送消息即可与我对话！\n"
             "使用 /help 查看更多帮助"
         )
         
@@ -237,17 +240,17 @@ class BrainAIBot:
         try:
             stats = self.ai.get_stats()
             stats_text = (
-                "📊 系统统计\n\n"
-                f"🧠 海马体记忆数：{stats['hippocampus']['num_memories']}\n"
-                f"💾 内存使用：{stats['hippocampus']['memory_usage_mb']:.2f}MB\n"
-                f"⚡ STDP 周期：{stats['stdp']['cycle_count']}\n"
+                "[*] 系统统计\n\n"
+                f"[*] 海马体记忆数：{stats['hippocampus']['num_memories']}\n"
+                f"[*] 内存使用：{stats['hippocampus']['memory_usage_mb']:.2f}MB\n"
+                f"[*] STDP 周期：{stats['stdp']['cycle_count']}\n"
                 f"🔄 推理周期：{stats['refresh_engine']['total_cycles']}\n"
                 f"⏱️ 平均延迟：{stats['refresh_engine']['avg_cycle_time_ms']:.2f}ms\n"
                 f"🎯 自环周期：{stats['self_loop']['cycle_count']}"
             )
             await update.message.reply_text(stats_text)
         except Exception as e:
-            await update.message.reply_text(f"❌ 获取统计失败：{e}")
+            await update.message.reply_text(f"[FAIL] 获取统计失败：{e}")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -260,6 +263,20 @@ class BrainAIBot:
             return
         
         logger.info(f"收到用户 {user_id} 消息：{user_message[:50]}...")
+        
+        # ========== 新增: 检测用户反馈 ==========
+        feedback_handler = get_feedback_handler()
+        feedback = feedback_handler.detect_feedback(user_message)
+        
+        if feedback.is_feedback:
+            logger.info(f"[用户反馈] 类型={'正面' if feedback.is_positive else '负面'}, "
+                       f"强度={feedback.intensity:.2f}, 关键词={feedback.keywords_matched}")
+            
+            # 如果是负面反馈，标记上一个回复需要惩罚
+            if not feedback.is_positive and feedback.intensity >= 0.7:
+                logger.warning(f"[用户反馈] 检测到强负面反馈，将触发 STDP LTD 学习")
+        
+        # ========== 新增: 检测用户反馈 ==========
         
         if chat_id not in self.typing_simulators:
             self.typing_simulators[chat_id] = TypingSimulator(context.bot, chat_id)
@@ -300,13 +317,14 @@ class BrainAIBot:
                 input_text=full_input,
                 typing=typing,
                 user_id=user_id,
-                user_message=user_message
+                user_message=user_message,
+                feedback=feedback  # 传递反馈信息
             )
             
         except Exception as e:
             logger.error(f"处理消息失败：{e}", exc_info=True)
             await typing.stop_typing()
-            await update.message.reply_text(f"❌ 处理失败：{str(e)}")
+            await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
     
     async def _handle_stream_generation(
         self,
@@ -314,7 +332,8 @@ class BrainAIBot:
         input_text: str,
         typing: TypingSimulator,
         user_id: int,
-        user_message: str
+        user_message: str,
+        feedback=None  # 新增: 反馈信息
     ):
         try:
             # 初始状态消息
@@ -335,7 +354,7 @@ class BrainAIBot:
                 if event["type"] == "monologue":
                     monologue = event["content"]
                     # 立即显示潜意识
-                    display_text = f"💭 *[潜意识]*\n_{monologue}_\n\n✨ *[准备回复...]*"
+                    display_text = f"💭 *[潜意识]*\n_{monologue}_\n\n[*] *[准备回复...]*"
                     try:
                         await initial_message.edit_text(display_text, parse_mode='Markdown')
                         last_sent_text = display_text
@@ -347,7 +366,7 @@ class BrainAIBot:
                     
                     current_time = time.time()
                     if current_time - last_update_time > update_interval:
-                        display_text = f"💭 *[潜意识]*\n_{monologue}_\n\n✨ **回复:**\n{full_response}▌"
+                        display_text = f"💭 *[潜意识]*\n_{monologue}_\n\n[*] **回复:**\n{full_response}▌"
                         if display_text != last_sent_text:
                             try:
                                 await initial_message.edit_text(display_text, parse_mode='Markdown')
@@ -367,7 +386,7 @@ class BrainAIBot:
             await typing.stop_typing()
             
             # 最终显示
-            final_display = f"💭 *[潜意识]*\n_{monologue}_\n\n✨ **回复:**\n{full_response}"
+            final_display = f"💭 *[潜意识]*\n_{monologue}_\n\n[*] **回复:**\n{full_response}"
             for attempt in range(3):
                 try:
                     await initial_message.edit_text(final_display, parse_mode='Markdown')
@@ -382,10 +401,32 @@ class BrainAIBot:
             self._update_history(user_id, user_message, full_response)
             logger.info(f"回复用户 {user_id} 完成 (长度: {len(full_response)})")
             
+            # ========== 新增: 应用用户反馈到 STDP 学习 ==========
+            if feedback and feedback.is_feedback and hasattr(self.ai, 'apply_user_feedback'):
+                try:
+                    stdp_reward = feedback_handler.compute_stdp_reward(feedback)
+                    logger.info(f"[STDP学习] 应用用户反馈: reward={stdp_reward:.2f}, "
+                               f"feedback={'正面' if feedback.is_positive else '负面'}")
+                    
+                    # 调用 AI 接口应用反馈
+                    self.ai.apply_user_feedback(
+                        is_positive=feedback.is_positive,
+                        intensity=feedback.intensity,
+                        reward=stdp_reward
+                    )
+                    
+                    # 如果是强负面反馈，存储为负样本
+                    if feedback_handler.should_store_as_negative_sample(feedback):
+                        logger.warning(f"[STDP学习] 标记上一个回复为负样本")
+                        # TODO: 可以在这里存储到负样本数据库
+                        
+                except Exception as e:
+                    logger.error(f"[STDP学习] 应用反馈失败: {e}")
+            
         except Exception as e:
             logger.error(f"流式生成失败: {e}", exc_info=True)
             await typing.stop_typing()
-            await update.message.reply_text(f"❌ 生成失败: {str(e)}")
+            await update.message.reply_text(f"[FAIL] 生成失败: {str(e)}")
     
     def _update_history(self, user_id: int, user_message: str, assistant_response: str):
         if user_id not in self.user_history:

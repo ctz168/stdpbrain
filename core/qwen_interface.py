@@ -224,7 +224,7 @@ class QwenModelWrapper(nn.Module):
         
         # ========== 后置优化：如果是 CPU，执行动态量化 ==========
         if self.device == "cpu" and self.quantization == "INT8":
-            print(f"  ⚡ 正在对基础模型执行动态量化 (INT8)...")
+            print(f"  [*] 正在对基础模型执行动态量化 (INT8)...")
             # 动态量化会寻找 nn.Linear。注意：DualWeightLinear 默认不被识别，这很好，
             # 因为我们需要动态权重保持浮点高精度以进行 STDP 学习。
             self.base_model = torch.quantization.quantize_dynamic(
@@ -235,7 +235,7 @@ class QwenModelWrapper(nn.Module):
         # ========== 后置优化：如果是 CPU，执行动态量化 ==========
         # 注意：我们只量化非 DualWeight 的部分，或者直接对整个模型尝试
         if self.device == "cpu" and self.quantization == "INT8":
-            print(f"  ⚡ 正在对基础模型执行动态量化 (INT8)...")
+            print(f"  [*] 正在对基础模型执行动态量化 (INT8)...")
             # 仅量化 nn.Linear 层，回避我们的 DualWeight 模块
             self.base_model = torch.quantization.quantize_dynamic(
                 self.base_model, {torch.nn.Linear}, dtype=torch.qint8
