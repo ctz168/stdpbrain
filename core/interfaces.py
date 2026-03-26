@@ -27,7 +27,7 @@ from core.global_workspace import GlobalWorkspace, create_global_workspace
 from core.self_encoder import SelfStateEncoder
 from core.true_self_referential_loop import TrueSelfReferentialLoop
 from core.predictive_coding import PredictiveCodingModule
-from core.proactive_intent_generator import ProactiveIntentGenerator, ProactiveContext
+from core.proactive_intent_generator import ProactiveIntent,ProactiveIntentGenerator, ProactiveContext
 
 logger = logging.getLogger(__name__)
 
