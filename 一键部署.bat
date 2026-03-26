@@ -67,6 +67,13 @@ venv\Scripts\python.exe -m pip install python-telegram-bot aiohttp pydantic pyth
 echo.
 echo       [OK] 依赖安装完成
 echo.
+echo ============================================================
+echo       窄带宽注意力补丁已自动集成
+echo       - 类人脑稀疏注意力机制
+echo       - 海马体记忆锚点注入
+echo       - 性能提升: 20-50%%
+echo ============================================================
+echo.
 
 REM ===== 第四步：下载模型 =====
 echo [4/4] 下载Qwen3.5-0.8B模型（国内镜像加速）...

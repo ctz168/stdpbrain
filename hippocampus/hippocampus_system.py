@@ -86,6 +86,10 @@ class HippocampusSystem(nn.Module):
         self.max_memory_bytes = hc_config.max_memory_bytes
         self.memory_usage_bytes = 0
         
+        # ========== 性能优化: 缓存 ==========
+        self._query_encoding_cache = {}  # 查询特征编码缓存
+        self._memory_size_cache = 0  # 增量内存统计
+        
         # ========== 周期计数器 ==========
         self.cycle_count = 0
     
@@ -94,7 +98,8 @@ class HippocampusSystem(nn.Module):
         features: torch.Tensor,
         token_id: int,
         timestamp: int,
-        context: Optional[List[dict]] = None
+        context: Optional[List[dict]] = None,
+        kv_features: Optional[Dict[str, torch.Tensor]] = None  # 新增: 用于窄带宽注意力的 KV 特征
     ) -> str:
         """
         记忆编码流程
@@ -106,6 +111,7 @@ class HippocampusSystem(nn.Module):
             token_id: Token ID
             timestamp: 时间戳 (ms)
             context: 上下文信息
+            kv_features: KV 特征字典 {'key': tensor, 'value': tensor}，用于窄带宽注意力
         
         Returns:
             memory_id: 生成的唯一记忆 ID
@@ -151,6 +157,17 @@ class HippocampusSystem(nn.Module):
                     semantic_pointer = ctx['semantic_pointer']
                     break
         
+        # ========== 5.5 提取 KV 特征（如果提供）==========
+        key_features = None
+        value_features = None
+        if kv_features:
+            key_features = kv_features.get('key', None)
+            value_features = kv_features.get('value', None)
+            if key_features is not None:
+                key_features = key_features.detach().cpu()
+            if value_features is not None:
+                value_features = value_features.detach().cpu()
+        
         self.ca3_memory.store(
             memory_id=memory_id,
             timestamp=timestamp,
@@ -159,7 +176,9 @@ class HippocampusSystem(nn.Module):
             causal_links=causal_links,
             dg_features=dg_output.detach().cpu(),
             is_core=is_core,
-            content=content
+            content=content,
+            key_features=key_features,    # 新增
+            value_features=value_features  # 新增
         )
         
         # ========== 6. 更新内存使用 ==========
@@ -177,31 +196,32 @@ class HippocampusSystem(nn.Module):
         query_timestamp: Optional[int] = None
     ) -> List[dict]:
         """
-        记忆召回流程
+        记忆召回流程（性能优化版）
         
-        完整流程：查询特征 → CA3 模式补全 → CA1 时序排序 → 返回锚点
-        
-        Args:
-            query_features: 查询特征 [hidden_size] 或 [1, hidden_size]
-            topk: 返回数量
-            query_semantic: 语义线索 (可选)
-            query_timestamp: 时间线索 (可选)
-        
-        Returns:
-            memory_anchors: 召回的记忆锚点列表
+        优化点:
+        - 缓存查询特征编码结果
+        - 减少不必要的拷贝和转换
         """
         # ========== 1. 特征预处理 ==========
         if query_features.dim() == 1:
             query_features = query_features.unsqueeze(0)
         
-        # ========== 1. EC 编码 (复用编码路径) ==========
-        ec_code = self.ec_encoder.encode_single(query_features.squeeze(0))
+        # ========== 优化: 检查编码缓存 ==========
+        # 使用特征哈希作为缓存键
+        cache_key = hash(query_features.tobytes() if hasattr(query_features, 'tobytes') else str(query_features.mean().item()))
         
-        # ========== 2. DG 分离 ==========
-        dg_features = self.dg_separator.forward(ec_code)
+        if cache_key in self._query_encoding_cache:
+            ec_code, dg_features = self._query_encoding_cache[cache_key]
+        else:
+            # EC 编码
+            ec_code = self.ec_encoder.encode_single(query_features.squeeze(0))
+            # DG 分离
+            dg_features = self.dg_separator.forward(ec_code)
+            # 缓存结果（限制缓存大小）
+            if len(self._query_encoding_cache) < 100:
+                self._query_encoding_cache[cache_key] = (ec_code, dg_features)
         
         # ========== 3. CA3 模式补全召回 ==========
-        # 优化召回策略：提升召回质量
         recall_threshold = getattr(self.config.hippocampus, 'recall_threshold', 0.75)
         
         memories = self.ca3_memory.complete_pattern(
@@ -217,11 +237,10 @@ class HippocampusSystem(nn.Module):
         if hasattr(self.config.hippocampus, 'recall_threshold'):
             filtered_memories = []
             for mem in memories:
-                # 计算相似度（如果有存储）
                 if hasattr(mem, 'activation_strength') and mem.activation_strength < recall_threshold:
                     continue
                 filtered_memories.append(mem)
-            memories = filtered_memories[:topk * 2]  # 保留前topk*2个
+            memories = filtered_memories[:topk * 2]
         
         # ========== 5. CA1 时序排序 ==========
         current_timestamp = int(time.time() * 1000)
@@ -231,29 +250,44 @@ class HippocampusSystem(nn.Module):
             topk=topk
         )
         
-        # ========== 6. 添加记忆本身的 DG 特征到返回结果 ==========
-        # 创建memory_id到dg_features的映射
-        memory_features = {}
+        # ========== 6. 添加记忆本身的 DG 和 KV 特征到返回结果 ==========
+        memory_dg_features = {}
+        memory_kv_features = {}
         for mem in memories:
             if hasattr(mem, 'dg_features') and mem.dg_features is not None:
-                memory_features[mem.memory_id] = mem.dg_features
+                memory_dg_features[mem.memory_id] = mem.dg_features
+            # 提取 KV 特征（用于窄带宽注意力）
+            if hasattr(mem, 'key_features') and mem.key_features is not None:
+                memory_kv_features[mem.memory_id] = {
+                    'key': mem.key_features,
+                    'value': mem.value_features
+                }
         
         for mem_dict in sorted_memories:
             mem_id = mem_dict.get('memory_id', '')
-            if mem_id in memory_features:
-                # 安全转换tensor到list，避免序列化问题
+            
+            # DG 特征
+            if mem_id in memory_dg_features:
                 try:
-                    mem_dict['dg_features'] = memory_features[mem_id].detach().cpu().numpy().tolist()
+                    mem_dict['dg_features'] = memory_dg_features[mem_id].detach().cpu().numpy().tolist()
                 except:
                     mem_dict['dg_features'] = None
             else:
-                # 如果没有找到，使用查询的dg_features作为回退
                 try:
                     mem_dict['dg_features'] = dg_features.detach().cpu().numpy().tolist()
                 except:
                     mem_dict['dg_features'] = None
             
-            # 确保包含 content 和 is_core 字段
+            # KV 特征（用于窄带宽注意力）
+            if mem_id in memory_kv_features:
+                try:
+                    kv = memory_kv_features[mem_id]
+                    mem_dict['key_features'] = kv['key'].detach().cpu().numpy().tolist() if kv['key'] is not None else None
+                    mem_dict['value_features'] = kv['value'].detach().cpu().numpy().tolist() if kv['value'] is not None else None
+                except:
+                    mem_dict['key_features'] = None
+                    mem_dict['value_features'] = None
+            
             if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:
                 mem_dict['content'] = self.ca3_memory.memories[mem_id].content
             if 'is_core' not in mem_dict and mem_id in self.ca3_memory.memories:
@@ -360,19 +394,30 @@ class HippocampusSystem(nn.Module):
         return total_size
 
     def _update_memory_usage(self):
-        """更新内存使用统计，并执行修剪（避免递归）"""
-        self.memory_usage_bytes = self._calculate_current_usage()
+        """增量更新内存使用统计"""
+        # 只在有新记忆时才更新
+        current_count = len(self.ca3_memory.memories)
+        if not hasattr(self, '_last_memory_count'):
+            self._last_memory_count = 0
+        
+        if current_count > self._last_memory_count:
+            # 增量计算新增记忆的大小
+            delta = current_count - self._last_memory_count
+            avg_size = 1000  # 估算每个记忆的平均大小（字节）
+            self.memory_usage_bytes += delta * avg_size
+            self._last_memory_count = current_count
+        
+        # 每 100 次操作后做一次精确统计
+        if self.cycle_count % 100 == 0:
+            self.memory_usage_bytes = self._calculate_current_usage()
         
         # 检查是否超出限制
         if self.memory_usage_bytes > self.max_memory_bytes:
-            # 自动修剪
             excess_ratio = 1 - (self.max_memory_bytes / self.memory_usage_bytes)
             threshold = 0.3 + excess_ratio * 0.5
-            # 调用修剪，但 prune_weak_memories 不再反向调用 _update_memory_usage
             self.prune_weak_memories(threshold)
-            
-            # 修剪后再更新一次统计信息，确保 self.memory_usage_bytes 是最新的
             self.memory_usage_bytes = self._calculate_current_usage()
+            self._last_memory_count = len(self.ca3_memory.memories)
     
     def start_swr_monitoring(self):
         """启动 SWR 离线回放监控"""

@@ -29,6 +29,9 @@ class EpisodicMemory:
     is_core: bool = False             # 核心记忆标记
     content: str = ""                 # 完整内容
     dg_features: Optional[torch.Tensor] = None  # DG 分离后的特征
+    # ========== 新增: 用于窄带宽注意力的 KV 特征 ==========
+    key_features: Optional[torch.Tensor] = None    # [num_heads, head_dim]
+    value_features: Optional[torch.Tensor] = None  # [num_heads, head_dim]
     
     def to_dict(self) -> dict:
         """转换为字典 - 避免序列化torch.Tensor"""
@@ -49,6 +52,19 @@ class EpisodicMemory:
                 result['dg_features'] = self.dg_features.detach().cpu().numpy().tolist()
             except:
                 result['dg_features'] = None
+        
+        # 序列化 KV 特征
+        if self.key_features is not None:
+            try:
+                result['key_features'] = self.key_features.detach().cpu().numpy().tolist()
+            except:
+                result['key_features'] = None
+        
+        if self.value_features is not None:
+            try:
+                result['value_features'] = self.value_features.detach().cpu().numpy().tolist()
+            except:
+                result['value_features'] = None
         
         return result
 
@@ -100,7 +116,9 @@ class CA3EpisodicMemory(nn.Module):
         causal_links: List[str] = None,
         dg_features: Optional[torch.Tensor] = None,
         is_core: bool = False,
-        content: str = ""
+        content: str = "",
+        key_features: Optional[torch.Tensor] = None,      # 新增: 用于窄带宽注意力
+        value_features: Optional[torch.Tensor] = None     # 新增: 用于窄带宽注意力
     ) -> EpisodicMemory:
         """
         存储情景记忆
@@ -114,6 +132,8 @@ class CA3EpisodicMemory(nn.Module):
             dg_features: DG 特征
             is_core: 是否为核心记忆
             content: 完整内容
+            key_features: 注意力 Key 特征 [num_heads, head_dim]
+            value_features: 注意力 Value 特征 [num_heads, head_dim]
         
         Returns:
             memory: 存储的记忆对象
@@ -128,7 +148,9 @@ class CA3EpisodicMemory(nn.Module):
             dg_features=dg_features,
             is_core=is_core,
             content=content,
-            activation_strength=10.0 if is_core else 1.0  # 核心记忆初始激活强度更高
+            activation_strength=10.0 if is_core else 1.0,  # 核心记忆初始激活强度更高
+            key_features=key_features,      # 新增
+            value_features=value_features   # 新增
         )
         
         # ========== 2. 检查容量，必要时删除最旧记忆 ==========

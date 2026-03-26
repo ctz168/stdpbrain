@@ -169,12 +169,16 @@ class BrainAIInterface:
             self.proactive_generator = None
             print("[BrainAI] [INFO] 主动意图生成器已禁用（配置）")
         
-        # 统计：主动输出相关（即使禁用也初始化变量，避免后续检查失败）
+        # ========== 统计：主动输出相关（即使禁用也初始化变量，避免后续检查失败）==========
         self.last_output_time = time.time()
         self.last_user_input_time = time.time()
         self.proactive_debug_log = []
         self.clarification_count = 0
         self.max_clarifications_per_turn = 2
+        
+        # ========== 新增: 性能优化缓存 ==========
+        self._embedding_cache = {}  # token_id -> embedding 缓存
+        self._last_input_ids = None  # 缓存上次输入，避免重复编码
         
         # 周期计数
         self.cycle_count = 0
@@ -345,6 +349,7 @@ class BrainAIInterface:
         
         # 2. 并行执行：记忆召回 和 潜意识独白生成
         def parallel_recall():
+            """并行记忆召回（优化版）"""
             memory_context = ""
             recalled_memories = []
             identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
@@ -353,12 +358,15 @@ class BrainAIInterface:
             is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
             
             try:
-                # 使用线程安全的 tokenize_safe
+                # 优化: 复用缓存或创建新的
                 inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
                 input_ids = inputs.input_ids
+                
+                # 获取 embedding（优化：缓存）
                 with torch.no_grad():
                     embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
                 query_features = embeddings.mean(dim=1).squeeze(0)
+                
                 if query_features.shape[0] != 1024:
                     query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
                 
@@ -777,21 +785,21 @@ class BrainAIInterface:
                     eos_token_id=stop_token_ids
                 )
             generated_ids = outputs.sequences[0][input_ids.shape[1]:]
-            generated_text = self.model.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            generated_text = self.model.decode_safe(generated_ids, skip_special_tokens=True)
             hidden_state = outputs.hidden_states[-1][0][-1].unsqueeze(0) if outputs.hidden_states else None
             return generated_text, hidden_state
         except Exception as e:
             logger.error(f"生成失败: {e}")
             return "...", None
 
-    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None):
-        """存储记忆到海马体 - 修复版"""
+    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None, kv_features: Optional[Dict] = None):
+        """存储记忆到海马体 - 支持 KV 特征（用于窄带宽注意力）"""
         try:
             if hidden_state is not None:
                 features = hidden_state[0, -1, :] if hidden_state.dim() == 3 else hidden_state.squeeze(0) if hidden_state.dim() == 2 else hidden_state
             else:
-                # 修复：添加attention_mask避免警告
-                input_ids = self.model.tokenizer.encode(monologue[:20], return_tensors="pt").to(self.device)
+                # 修复：添加attention_mask避免警告（线程安全）
+                input_ids = self.model.encode_safe(monologue[:20], return_tensors="pt").to(self.device)
                 attention_mask = torch.ones_like(input_ids)  # 添加attention_mask
                 
                 with torch.no_grad():
@@ -803,11 +811,14 @@ class BrainAIInterface:
                     features = self.feature_adapter(features.unsqueeze(0)).squeeze(0)
             
             semantic_pointer = semantic_pointer or (monologue[:30] if len(monologue) > 30 else monologue)
+            
+            # 存储记忆，包含 KV 特征
             self.hippocampus.encode(
                 features=features, 
                 token_id=hash(monologue) % 100000, 
                 timestamp=int(time.time() * 1000), 
-                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}]
+                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}],
+                kv_features=kv_features  # 传递 KV 特征
             )
         except Exception as e:
             logger.warning(f"记忆存储失败: {e}")
@@ -830,12 +841,12 @@ class BrainAIInterface:
                 'hippocampus': self.hippocampus
             }
             
-            # 对输入文本进行分词，获取 Token ID 以便 STDP 引擎建立时序关联
-            tokenizer = self.model.tokenizer
-            context_ids = tokenizer.encode(self._last_user_input, add_special_tokens=False)
+            # 对输入文本进行分词，获取 Token ID 以便 STDP 引擎建立时序关联（线程安全）
+            context_ids = self.model.encode_safe(self._last_user_input, add_special_tokens=False)
             # current_token 只要一个代表性的 ID
-            seed_ids = tokenizer.encode(self.thought_seed, add_special_tokens=False)
-            current_id = seed_ids[-1] if seed_ids else tokenizer.eos_token_id
+            seed_ids = self.model.encode_safe(self.thought_seed, add_special_tokens=False)
+            eos_token_id = self.model.tokenizer.eos_token_id  # 只读属性，安全
+            current_id = seed_ids[-1] if seed_ids else eos_token_id
             
             inputs = {
                 'context_tokens': torch.tensor(context_ids, device=self.device),
@@ -893,7 +904,7 @@ class BrainAIInterface:
             identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
             is_identity_question = any(keyword in user_input for keyword in identity_keywords)
             try:
-                input_ids = self.model.tokenizer.encode(user_input[:50], return_tensors="pt").to(self.device)
+                input_ids = self.model.encode_safe(user_input[:50], return_tensors="pt").to(self.device)
                 with torch.no_grad():
                     embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
                 query_features = embeddings.mean(dim=1).squeeze(0)
@@ -908,11 +919,34 @@ class BrainAIInterface:
             except: pass
             if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
                 memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
-            return memory_context
+            return memory_context, recalled_memories  # 返回记忆锚点用于窄带宽注意力
 
         recall_task = asyncio.to_thread(parallel_recall_for_stream)
         monologue_task = asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.75)
-        memory_context, monologue_raw = await asyncio.gather(recall_task, monologue_task)
+        (memory_context, recalled_memories), monologue_raw = await asyncio.gather(recall_task, monologue_task)
+        
+        # ========== 新增: 设置记忆锚点用于窄带宽注意力 ==========
+        # 将召回的记忆锚点传递给模型接口
+        self._last_recalled_memories = recalled_memories
+        if recalled_memories:
+            # 提取包含 KV 特征的记忆锚点
+            kv_anchors = []
+            for mem in recalled_memories:
+                if 'key_features' in mem or 'dg_features' in mem:
+                    kv_anchors.append(mem)
+            if kv_anchors:
+                self.model.set_memory_anchors(kv_anchors)
+                logger.debug(f"设置 {len(kv_anchors)} 个记忆锚点用于窄带宽注意力")
+        
+        # ========== 新增: 设置记忆锚点用于窄带宽注意力 ==========
+        # 将召回的记忆锚点传递给模型接口
+        if hasattr(self, '_last_recalled_memories'):
+            # 提取包含 KV 特征的记忆锚点
+            kv_anchors = []
+            for mem in self._last_recalled_memories:
+                if 'key_features' in mem or 'dg_features' in mem:
+                    kv_anchors.append(mem)
+            self.model.set_memory_anchors(kv_anchors)
         monologue = self._clean_monologue(monologue_raw, user_input)
         yield {"type": "monologue", "content": monologue}
         # 计算情感显著性 (简单启发式)
@@ -1058,7 +1092,7 @@ class BrainAIInterface:
         messages.append({"role": "user", "content": user_input})
         
         try:
-            prompt = self.model.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)
         except:
             prompt = ""
             for msg in messages:

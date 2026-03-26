@@ -520,8 +520,8 @@ class InnerThoughtEngine:
                     repetition_penalty=current_penalty
                 )
             
-            # 解码并输出
-            result = self.model.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # 解码并输出（线程安全）
+            result = self.model.decode_safe(outputs[0], skip_special_tokens=True)
             # 只取新生成的部分
             if len(result) > len(thought_context):
                 new_text = result[len(thought_context):].strip()
@@ -634,9 +634,9 @@ class InnerThoughtEngine:
             return ""
         
         try:
-            # 使用模型tokenizer
-            if hasattr(self.model, 'tokenizer'):
-                input_ids = self.model.tokenizer.encode(query[:30], return_tensors="pt")
+            # 使用模型tokenizer（线程安全）
+            if hasattr(self.model, 'encode_safe'):
+                input_ids = self.model.encode_safe(query[:30], return_tensors="pt")
                 device = getattr(self.model, 'device', 'cpu')
                 input_ids = input_ids.to(device)
                 

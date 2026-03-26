@@ -22,9 +22,11 @@ class HardConstraints:
     REFRESH_PERIOD_MS: int = 10  # 10ms 刷新周期
     MAX_COMPUTE_OVERHEAD: float = 0.1  # 单周期算力开销不超过原生 10%
     
-    # 窄窗口约束
-    NARROW_WINDOW_SIZE: int = 2  # 每个周期处理 1-2 个 token
-    ATTENTION_COMPLEXITY: str = "O(1)"  # 固定 O(1) 复杂度
+    # 窄窗口约束（类人脑注意力机制）
+    NARROW_WINDOW_SIZE: int = 5  # 窄窗口大小：只关注 5 个记忆锚点（对应大脑工作记忆容量 4-7）
+    ATTENTION_COMPLEXITY: str = "O(k)"  # O(k) 复杂度，k 是记忆锚点数量（常数）
+    NARROW_BAND_ENABLED: bool = True  # 启用窄带宽注意力
+    MAX_CONTEXT_LENGTH: int = 512  # 最大上下文长度（超过后使用滑动窗口）
     
     # 海马体内存约束
     HIPPOCAMPUS_MAX_MEMORY_MB: int = 2  # 情景记忆库最大 2MB

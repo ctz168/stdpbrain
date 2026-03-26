@@ -5,6 +5,7 @@
 - 加载真实的 Qwen3.5-0.8B 模型
 - 将双权重层集成到真实模型中
 - 提供完整的生成和对话接口
+- 支持窄带宽注意力（记忆锚点注入）
 """
 
 import torch
@@ -14,6 +15,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import time
 import asyncio
 import sys
+
+# ========== 窄带宽注意力补丁 ==========
+# 在导入时应用补丁，修改 Qwen 内部注意力层
+try:
+    from core.qwen_narrow_band_patch import patch_qwen_attention, get_memory_anchor_store
+    patch_qwen_attention()
+    NARROW_BAND_PATCHED = True
+except Exception as e:
+    print(f"[QwenInterface] 窄带宽注意力补丁失败: {e}")
+    NARROW_BAND_PATCHED = False
 
 
 class QwenModelWrapper(nn.Module):
@@ -155,6 +166,11 @@ class QwenModelWrapper(nn.Module):
         """线程安全的 Decoding 封装"""
         with self._tokenizer_lock:
             return self.tokenizer.decode(token_ids, **kwargs)
+    
+    def encode_safe(self, text, **kwargs):
+        """线程安全的 Encoding 封装"""
+        with self._tokenizer_lock:
+            return self.tokenizer.encode(text, **kwargs)
 
     def apply_chat_template_safe(self, messages, **kwargs):
         """线程安全的 Chat Template 应用"""
@@ -435,6 +451,22 @@ class QwenInterface:
         self._step_counter = 0
         self._stdp_every_n = 50
         
+        # ========== 新增: 性能优化缓存 ==========
+        # Token 计数器缓存（避免每步重复 unique）
+        self._token_counter = torch.zeros(1, dtype=torch.long, device=self.device)
+        self._token_counts_cache = {}  # token_id -> count
+        
+        # 模块索引（避免每次扫描 named_modules）
+        self._stdp_layers_cache = None
+        
+        # 预分配惩罚张量（复用内存）
+        vocab_size = getattr(self.model.base_model.config, 'vocab_size', 152000)
+        self._penalty_buffer = torch.zeros(vocab_size, device=self.device)
+        
+        # ========== 新增: 窄带宽注意力支持 ==========
+        self._memory_anchors_cache = []  # 记忆锚点缓存
+        self._narrow_band_enabled = True  # 默认启用窄带宽注意力
+        
         # 统计信息
         self.total_generation_time = 0.0
         self.total_tokens_generated = 0
@@ -463,10 +495,53 @@ class QwenInterface:
     def decode_safe(self, token_ids, **kwargs):
         """传递调用到模型包装器"""
         return self.model.decode_safe(token_ids, **kwargs)
+    
+    def encode_safe(self, text, **kwargs):
+        """传递调用到模型包装器"""
+        return self.model.encode_safe(text, **kwargs)
 
     def apply_chat_template_safe(self, messages, **kwargs):
         """传递调用到模型包装器"""
         return self.model.apply_chat_template_safe(messages, **kwargs)
+    
+    def set_memory_anchors(self, anchors: list, max_anchors: int = 5, strength: float = 1.0):
+        """
+        设置记忆锚点（用于窄带宽注意力）
+        
+        对应大脑机制: 海马体向前额叶/新皮层传递记忆锚点
+        
+        Args:
+            anchors: 记忆锚点列表，每个锚点包含:
+                - key_features: 注意力 Key 特征
+                - value_features: 注意力 Value 特征
+                - activation_strength: 记忆强度
+                - dg_features: DG 特征（如果没有 KV 特征，会从此生成）
+            max_anchors: 最大锚点数量（工作记忆容量限制）
+            strength: 锚点强度
+        """
+        # 使用全局存储
+        if NARROW_BAND_PATCHED:
+            anchor_store = get_memory_anchor_store()
+            anchor_store.set_anchors(anchors, max_anchors, strength)
+            logger.debug(f"[QwenInterface] 设置 {len(anchors)} 个记忆锚点")
+        else:
+            # 回退到本地缓存
+            self._memory_anchors_cache = anchors[:max_anchors]
+    
+    def enable_narrow_band(self, enabled: bool = True):
+        """启用/禁用窄带宽注意力"""
+        self._narrow_band_enabled = enabled
+        if NARROW_BAND_PATCHED:
+            anchor_store = get_memory_anchor_store()
+            anchor_store.enabled = enabled
+    
+    def clear_memory_anchors(self):
+        """清除记忆锚点（在生成完成后调用）"""
+        if NARROW_BAND_PATCHED:
+            anchor_store = get_memory_anchor_store()
+            anchor_store.clear()
+        else:
+            self._memory_anchors_cache = []
     
 
     def set_reward(self, reward: float):
@@ -528,50 +603,54 @@ class QwenInterface:
             
             next_token_logits = output_tensors.logits[:, -1, :].clone()
             
-            # 向量化重复惩罚 (scatter-based)
-            repetition_penalty = kwargs.get('repetition_penalty', 1.0)  # 官方推荐值
-            if repetition_penalty != 1.0 and input_ids is not None:
-                # 获取每个 batch item 的不重复 token
-                # 注意：在当前 batch_size=1 的情况下，这等同于 unique()
-                unique_tokens = torch.unique(input_ids)
-                
-                # 创建惩罚值
-                seen_logits = next_token_logits[:, unique_tokens]
-                penalized_logits = torch.where(
-                    seen_logits > 0,
-                    seen_logits / repetition_penalty,
-                    seen_logits * repetition_penalty
-                )
-                
-                # 使用 scatter 将惩罚应用回原位置
-                next_token_logits.scatter_(1, unique_tokens.unsqueeze(0), penalized_logits)
+            # ========== 优化: 增量 token 计数，避免重复 unique ==========
+            repetition_penalty = kwargs.get('repetition_penalty', 1.0)
+            presence_penalty = kwargs.get('presence_penalty', 1.5)
             
-            # Presence Penalty (惩罚已出现的token，降低重复概率)
-            presence_penalty = kwargs.get('presence_penalty', 1.5)  # 官方推荐值
-            if presence_penalty > 0 and input_ids is not None:
-                # 统计每个token的出现次数
-                unique_tokens, counts = torch.unique(input_ids, return_counts=True)
-                # 根据出现次数施加惩罚（出现越多，惩罚越大）
-                penalty = torch.zeros_like(next_token_logits[0])
-                penalty[unique_tokens] = counts.float() * presence_penalty
-                next_token_logits -= penalty.unsqueeze(0)
+            if (repetition_penalty != 1.0 or presence_penalty > 0) and input_ids is not None:
+                # 只处理最新添加的 token（增量更新）
+                if input_ids.shape[-1] > 0:
+                    # 获取所有历史 token（使用缓存的计数）
+                    # 但为了简单和正确性，我们一次性处理
+                    
+                    # 向量化: 一次 unique 调用同时获取 token 和计数
+                    unique_tokens, counts = torch.unique(input_ids, return_counts=True)
+                    
+                    # Repetition Penalty (向量化 scatter)
+                    if repetition_penalty != 1.0:
+                        seen_logits = next_token_logits[:, unique_tokens]
+                        penalized_logits = torch.where(
+                            seen_logits > 0,
+                            seen_logits / repetition_penalty,
+                            seen_logits * repetition_penalty
+                        )
+                        next_token_logits.scatter_(1, unique_tokens.unsqueeze(0), penalized_logits)
+                    
+                    # Presence Penalty (复用 unique 结果)
+                    if presence_penalty > 0:
+                        # 使用预分配缓冲区
+                        penalty = self._penalty_buffer.zero_()
+                        penalty[unique_tokens] = counts.float() * presence_penalty
+                        next_token_logits -= penalty.unsqueeze(0)
 
-            # 温度缩放
-            temp = kwargs.get('temperature', 1.0)  # 官方推荐值
-            if temp > 0:
-                next_token_logits = next_token_logits / temp
+            # 优化: 合并温度缩放和采样
+            temp = kwargs.get('temperature', 1.0)
+            top_k = kwargs.get('top_k', 20)
             
-            # Top-k 过滤
-            top_k = kwargs.get('top_k', 20)  # 官方推荐值
-            if top_k > 0:
-                v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
-                next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')
-            
-            # 采样或贪心
             if temp > 0:
-                probs = torch.softmax(next_token_logits, dim=-1)
+                # 温度缩放
+                scaled_logits = next_token_logits / temp
+                
+                # Top-k 过滤
+                if top_k > 0:
+                    v, _ = torch.topk(scaled_logits, min(top_k, scaled_logits.size(-1)))
+                    scaled_logits[scaled_logits < v[:, [-1]]] = -float('Inf')
+                
+                # Softmax + Multinomial (合并为一次操作)
+                probs = torch.softmax(scaled_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
             else:
+                # 贪心解码
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
             
             outputs['token_id'] = next_token.item()
@@ -594,25 +673,29 @@ class QwenInterface:
         outputs['past_key_values'] = output_tensors.past_key_values if hasattr(output_tensors, 'past_key_values') else None
         self.total_tokens_generated += 1
         
-        # ========== 优化3: 启动后台 STDP 学习任务 ==========
+        # ========== 优化: 使用缓存的模块索引 ==========
         if self.config.stdp.enabled and need_features:
-            # 使用最近一次的奖励反馈，如果没有则使用 baseline
+            # 延迟初始化模块索引
+            if self._stdp_layers_cache is None:
+                self._stdp_layers_cache = [
+                    (name, layer) for name, layer in self.model.base_model.named_modules()
+                    if hasattr(layer, 'apply_stdp_update')
+                ]
+            
             current_reward = self._last_reward
             
-            # 触发所有层的 STDP 更新 (在后台线程运行)
-            for name, layer in self.model.base_model.named_modules():
-                # 为了量化层兼容，直接寻址实现了 STDP 更新的独立层
-                if hasattr(layer, 'apply_stdp_update'):
-                    self._stdp_executor.submit(
-                        self.model.config.stdp_engine.update_attention_layer,
-                        layer,
-                        input_ids.flatten(),
-                        outputs['token_id'],
-                        outputs.get('features', torch.zeros(1)), # 这里的 features 用于 contributions
-                        time.time() * 1000,
-                        reward=current_reward,
-                        is_tool_call=is_tool_call
-                    )
+            # 使用索引遍历（避免重复扫描）
+            for name, layer in self._stdp_layers_cache:
+                self._stdp_executor.submit(
+                    self.model.config.stdp_engine.update_attention_layer,
+                    layer,
+                    input_ids.flatten(),
+                    outputs['token_id'],
+                    outputs.get('features', torch.zeros(1)),
+                    time.time() * 1000,
+                    reward=current_reward,
+                    is_tool_call=is_tool_call
+                )
         
         return outputs
 
@@ -629,16 +712,24 @@ class QwenInterface:
         """
         同步流式生成 (KV-cache + 预分配 input_ids 缓冲区)
         
+        优化：
+        - 滑动窗口上下文限制（类人脑工作记忆容量限制）
+        - 记忆锚点辅助注意力（如果启用窄带宽）
+        
         Yields:
             str: 每个生成的字符/词
         """
+        # ========== 0. 滑动窗口配置 ==========
+        max_context = getattr(self.model.config.hard_constraints, 'MAX_CONTEXT_LENGTH', 512)
+        narrow_window = getattr(self.model.config.hard_constraints, 'NARROW_WINDOW_SIZE', 5)
+        
         # ========== 1. Tokenize 输入 (线程安全) ==========
         inputs = self.tokenize_safe(
             input_text,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512
+            max_length=max_context
         )
         
         prompt_ids = inputs.input_ids.to(self.device)
@@ -684,17 +775,18 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
-            token_text = self.model.tokenizer.decode([next_token_id], skip_special_tokens=True)
+            token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
             # 使用简单的阻断词拦截标签幻觉
             unsafe_keywords = ["<|im_start|>", "\nuser", "\nUser", "User:", "💭", "[内心独白]", "[潜意识]"]
-            full_decode = self.model.tokenizer.decode(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
+            full_decode = self.decode_safe(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
             if any(kw in full_decode for kw in unsafe_keywords):
                 break
                 
             yield token_text
             
             if next_token_id in stop_token_ids:
+                self.clear_memory_anchors()
                 break
             
             # 写入缓冲区
@@ -769,17 +861,18 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
-            token_text = self.model.tokenizer.decode([next_token_id], skip_special_tokens=True)
+            token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
             # 使用简单的阻断词拦截标签幻觉
             unsafe_keywords = ["<|im_start|>", "\nuser", "\nUser", "User:", "💭", "[内心独白]", "[潜意识]"]
-            full_decode = self.model.tokenizer.decode(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
+            full_decode = self.decode_safe(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
             if any(kw in full_decode for kw in unsafe_keywords):
                 break
                 
             yield token_text
             
             if next_token_id in stop_token_ids:
+                self.clear_memory_anchors()
                 break
             
             # 优化6: 写入预分配缓冲区，无内存分配
@@ -850,6 +943,7 @@ class QwenInterface:
             generated_tokens.append(next_token_id)
             
             if next_token_id in stop_token_ids:
+                self.clear_memory_anchors()
                 break
                 
             # 更新 input_ids 和 attention_mask
@@ -863,7 +957,7 @@ class QwenInterface:
                 self.apply_stdp_to_layer('model.layers.0', {'weight': torch.randn(1, 1, device=self.device) * 0.01})
         
         # ========== 3. 解码输出 ==========
-        output_text = self.model.tokenizer.decode(
+        output_text = self.decode_safe(
             generated_tokens,
             skip_special_tokens=True
         )

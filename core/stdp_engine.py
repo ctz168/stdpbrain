@@ -146,7 +146,7 @@ class FullLinkSTDP:
         reward: float = 1.0,
         is_tool_call: bool = False
     ):
-        """注意力层 STDP 更新 (支持奖励和工具调用强化)"""
+        """注意力层 STDP 更新 (性能优化版)"""
         if not self.config.stdp.update_attention or attention_layer is None:
             return
             
@@ -154,7 +154,6 @@ class FullLinkSTDP:
         self.record_activation('attention', current_token_tensor, timestamp)
         
         # 向量化计算所有上下文 token 的更新
-        # 强制转为 long 类型并限制范围，避免 float 索引错误，同时确保与 activation_times_tensor 在同一 device
         target_device = self.activation_times_tensor.device
         if isinstance(context_tokens, torch.Tensor):
             context_tokens = context_tokens.long().to(target_device).clamp(0, self.activation_times_tensor.shape[0] - 1)
@@ -164,32 +163,42 @@ class FullLinkSTDP:
         post_times = torch.full_like(pre_times, timestamp)
         contributions = torch.full_like(pre_times, self.contribution_cache.get('attention', 0.5))
         
-        # 工具调用强化：如果是工具调用，大幅提升奖励信号
+        # 工具调用强化
         effective_reward = reward * (5.0 if is_tool_call else 1.0)
         
         delta_ws = self.stdp_rule.compute_update(pre_times, post_times, contributions, reward=effective_reward)
         
         # 如果有显著更新
         if torch.any(torch.abs(delta_ws) > 0):
-            # 将 token 更新映射到权重层
-            # 生产级实现：使用平均 delta_w 应用于动态权重分支
-            # 这种策略确保了STDP信号能够均匀地影响所有注意力头
             mean_delta = delta_ws[delta_ws != 0].mean()
             
+            # ========== 优化: 使用缓存的梯度张量 ==========
+            if hasattr(attention_layer, 'apply_stdp_update') and hasattr(attention_layer, 'dynamic_weight'):
+                # 单层更新模式（最常见）
+                weight_shape = attention_layer.dynamic_weight.shape
+                grad = self._get_or_create_grad('attention_single', weight_shape, attention_layer.dynamic_weight.device)
+                grad.fill_(mean_delta.item() * 0.1)
+                attention_layer.apply_stdp_update(grad, lr=self.config.stdp.alpha_LTP)
+                return
+                
             if hasattr(attention_layer, 'apply_stdp_to_all') and not hasattr(attention_layer, 'q_proj'):
-                # 广播模式：传递标量贡献，由接收者自行生成梯度
                 attention_layer.apply_stdp_to_all({'mean_delta': mean_delta}, lr=self.config.stdp.alpha_LTP)
                 return
                 
-            # 为 DualWeightLinear 的 q, k, v, o 生成梯度字典
-            grad_dict = {
-                'q': torch.ones_like(attention_layer.q_proj.dynamic_weight) * mean_delta * 0.1,
-                'k': torch.ones_like(attention_layer.k_proj.dynamic_weight) * mean_delta * 0.1,
-                'v': torch.ones_like(attention_layer.v_proj.dynamic_weight) * mean_delta * 0.1,
-                'o': torch.ones_like(attention_layer.o_proj.dynamic_weight) * mean_delta * 0.1
-            }
-            
-            if hasattr(attention_layer, 'apply_stdp_to_all'):
+            # 为 DualWeightLinear 的 q, k, v, o 生成梯度
+            # 优化: 使用缓存
+            if hasattr(attention_layer, 'q_proj') and hasattr(attention_layer, 'apply_stdp_to_all'):
+                q_weight = attention_layer.q_proj.dynamic_weight
+                grad_shape = q_weight.shape
+                grad_cache = self._get_or_create_grad('attention_qkvo', grad_shape, q_weight.device)
+                grad_cache.fill_(mean_delta.item() * 0.1)
+                
+                grad_dict = {
+                    'q': grad_cache.clone(),
+                    'k': grad_cache.clone(),
+                    'v': grad_cache.clone(),
+                    'o': grad_cache.clone()
+                }
                 attention_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
     
     # ========== 2. FFN 层 STDP 更新 ==========
