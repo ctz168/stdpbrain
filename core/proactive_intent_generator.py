@@ -117,7 +117,13 @@ class ProactiveIntentGenerator(nn.Module):
             context.memory_salience  # 记忆显著性
         ], device=current_state.device).float()
         
-        classifier_input = torch.cat([current_state.mean(dim=-1), time_features])
+        # 处理 batch 维度：取第一个样本或压缩
+        if current_state.dim() == 2 and current_state.shape[0] > 1:
+            state_vec = current_state[0]
+        else:
+            state_vec = current_state.squeeze(0)
+        
+        classifier_input = torch.cat([state_vec, time_features])
         
         # ========== 3. 意图分类 ==========
         intent_probs = self.intent_classifier(classifier_input.unsqueeze(0)).squeeze(0)
@@ -128,7 +134,7 @@ class ProactiveIntentGenerator(nn.Module):
         top_confidence = intent_probs[top_intent_idx].item()
         
         # ========== 4. 质量评估 ==========
-        quality_score = self.quality_scorer(current_state.mean(dim=-1).unsqueeze(0)).item()
+        quality_score = self.quality_scorer(state_vec.unsqueeze(0)).item()
         
         debug_info.update({
             "intent_probs": {intent.value: prob.item() for intent, prob in zip(ProactiveIntent, intent_probs)},
