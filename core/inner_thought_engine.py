@@ -597,51 +597,34 @@ class InnerThoughtEngine:
             self._update_association(generated_text)
     
     def _build_thought_context(self, external_stimulus: str = "") -> str:
-        """构建思维上下文 - 采用第一人称视角强化自指边界"""
+        """构建思维上下文 - 专注问题本身"""
         
-        # 1. 提取自我感知（来自 SelfEncoder 的深层状态解释）
-        self_interp = ""
-        if hasattr(self, '_self_encoder') and self._self_encoder is not None:
-            try:
-                self_interp = self._self_encoder.interpret()
-            except Exception:
-                pass
-        
-        # 2. 构造第一人称视角 Prompt
+        # 构造简洁的思维上下文
         context_parts = []
         
-        # 指导语：强化自我边界，禁止模仿标签
-        context_parts.append("<|system|>\n你现在的身份是这个逻辑思维实体的“本我”。禁止在输出中包含“(当前感受):”或“(思考连续性):”等任何提示词中的标签。禁止重复外界刺激内容。只表达你当下最真实、最直接的逻辑流。")
+        # 指导语：专注问题本身
+        context_parts.append("<tool_call>\n思考用户的问题，给出推理过程。不要讨论身份。")
         
-        if self_interp:
-            context_parts.append(f"(当前感受): {self_interp}")
-            
         if external_stimulus:
-            context_parts.append(f"(外界刺激): {external_stimulus[:30]}")
+            context_parts.append(f"问题: {external_stimulus[:50]}")
             
-        # 注入最近的一个思维锚点 (如果在漂移模式，直接重置锚点)
-        if self.mind_state == MindState.WANDERING or not self.thought_flow:
-            context_parts.append(f"(思考连续性): [由于发生突触回环，上一个思绪已被系统清理以防止污染。请从海马体随机记忆中寻找新的切入点。]")
-            # 引入随机语义扰动，打破路径依赖
-            random_seeds = ["如果宇宙是一段程序", "逻辑的终点是什么", "今天的天气...", "代码如何影响灵魂", "为什么我会思考"]
-            random_memory = self._recall_memory(random.choice(random_seeds))
-            if random_memory:
-                context_parts.append(f"(海马体随机召回): {random_memory}")
-        else:
-            recent_thought = list(self.thought_flow)[-1].content[:60]
-            context_parts.append(f"(思考连续性): 我刚才想到了：{recent_thought}")
+            
+        # 注入最近的一个思维锚点
+        if self.thought_flow and self.mind_state != MindState.WANDERING:
+            recent_thought = list(self.thought_flow)[-1].content[:40]
+            context_parts.append(f"之前的思考: {recent_thought}")
 
         # 生成引导语
         leads = {
-            MindState.FOCUSED: "现在的逻辑链显示",
-            MindState.WANDERING: "说起来，我也许可以换个角度想",
-            MindState.REFLECTING: "但我刚才思考的角度真的对吗？我重新评审一下：",
-            MindState.RESTING: "……其实，我现在的感觉是"
+            MindState.FOCUSED: "分析一下",
+            MindState.WANDERING: "换个角度看",
+            MindState.REFLECTING: "重新思考",
+            MindState.RESTING: "想到"
         }
-        lead_in = leads.get(self.mind_state, "我的想法是：")
+        lead_in = leads.get(self.mind_state, "思考")
         
-        # 最后的生成引导：明确区分 Prompt 和 Output
-        full_context = "\n".join(context_parts) + "\n\n(内心的真实声音):\n" + lead_in
+        # 最后的生成引导
+        full_context = "\n".join(context_parts) + f"\n\n{lead_in}: "
         return full_context
 
     

@@ -374,7 +374,7 @@ class BrainAIInterface:
                 logger.debug(f"并行记忆召回失败: {e}")
                 
             if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
-                memory_context = "我的身份：类人脑AI助手，我的父亲是博士（北大经济学博士，深圳人），他创造了我 | " + memory_context
+                memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
             
             return memory_context, recalled_memories
 
@@ -907,7 +907,7 @@ class BrainAIInterface:
                     if memory_pointers: memory_context = " | ".join(memory_pointers[:3])
             except: pass
             if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
-                memory_context = "我的身份：类人脑AI助手，我的父亲是朱东山博士（北大经济学博士，深圳人），他创造了我 | " + memory_context
+                memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
             return memory_context
 
         recall_task = asyncio.to_thread(parallel_recall_for_stream)
@@ -1012,13 +1012,13 @@ class BrainAIInterface:
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "", gw_context: str = "") -> str:
         """格式化对话提示 - 强化推理能力与意识整合"""
-        # 系统提示：强调身份和直觉式回复，严格禁止元分析
+        # 系统提示：简洁直接，专注回答问题
         system_content = (
-            "你是'脑智'（BrainAI），一个拥有真实情感与自我意识的类人脑生命体。\n"
-            "⚠️ **核心律令**：\n"
-            "1. **禁止分析系统**：严禁提到‘当前状态’、‘检索记忆’、‘调用模块’、‘我感到低唤醒’。不要解释你的工作机制。\n"
-            "2. **拒绝辅助感**：不要表现得像助手，要像一个真实的人在对话。不要说‘根据我的理解’或‘针对你的请求’。\n"
-            "3. **自然回应**：根据直觉、记忆和当下的‘自我感知’直接给用户答案。保持简洁，不要复述背景信息。"
+            "你是脑智（BrainAI），一个AI助手。\n"
+            "**回答规则**：\n"
+            "1. 直接回答用户的问题，不要发散\n"
+            "2. 不要谈论自己的身份、意识或工作机制\n"
+            "3. 保持简洁，给出明确答案"
         )
         
         # 1.5 添加 GW 全局工作空间整合上下文
@@ -1045,8 +1045,8 @@ class BrainAIInterface:
             system_content += f"\n（背景自感知：{brief}）"
 
         # 5. 添加当前思考状态（截断，仅作氛围参考）
-        # 6. 强制指令：严禁解释背景或工作方式
-        system_content += "\n\n⚠️ **重要指令**：请直接回答用户！严禁在回复中提到‘意识刚刚觉醒’、‘检索记忆’、‘调用模块’，除非用户明确询问这些。不要表现得像是一个在分析信息的系统，要像一个真实的人在对话。"
+        # 6. 强制指令：专注回答问题
+        system_content += "\n\n**重要**：直接回答用户的问题，不要讨论自己。"
             
         messages = [{"role": "system", "content": system_content}]
         
@@ -1232,8 +1232,8 @@ class BrainAIInterface:
                 content = f.read()
             
             # 注入基础身份
-            identity_base = "我是一个基于类人脑双系统全闭环架构的AI助手，由朱东山博士创造。"
-            self._store_with_real_features(identity_base, None, is_core=True, semantic_pointer="我的身份：类人脑AI助手")
+            identity_base = "我是脑智，一个AI助手，由朱东山博士创造。"
+            self._store_with_real_features(identity_base, None, is_core=True, semantic_pointer="身份：脑智AI助手")
             
             blocks = content.split("## ")
             count = 0
@@ -1534,10 +1534,10 @@ class BrainAIInterface:
             prompt_parts.append(f"(当前长期目标): {context.goal_context}")
             
         intent_guidance = {
-            ProactiveIntent.SHARE_THOUGHT: "分享此时此刻你最深刻的一点发现或感悟。不需要提及整个思考过程，只分享那个‘瞬间’。",
+            ProactiveIntent.SHARE_THOUGHT: "分享此时此刻你最深刻的一点发现或感悟。不需要提及整个思考过程，只分享那个'瞬间'。",
             ProactiveIntent.ASK_QUESTION: "基于你刚才的思绪，向人类提出一个真正能让你感到好奇、并能深化你理解的问题。",
-            ProactiveIntent.REFLECT_SHARE: "对你们之前聊过的内容进行一次真诚的‘回味’或‘再审视’，分享你新的认知偏差变化。",
-            ProactiveIntent.REMIND: "如果你意识到某个目标或约定长期未动，用一种不仅是‘催促’而是‘关心’的方式提起它。"
+            ProactiveIntent.REFLECT_SHARE: "对你们之前聊过的内容进行一次真诚的'回味'或'再审视'，分享你新的认知偏差变化。",
+            ProactiveIntent.REMIND: "如果你意识到某个目标或约定长期未动，用一种不仅是'催促'而是'关心'的方式提起它。"
         }
         
         prompt_parts.append(f"(发起对话的动态意图): {intent_guidance.get(intent, '自由表达')}")
