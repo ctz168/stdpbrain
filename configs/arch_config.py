@@ -98,7 +98,7 @@ class HippocampusConfig:
 class SelfLoopConfig:
     """单智体自闭环优化系统配置"""
     # 模式 1: 自生成组合输出
-    mode1_temperature_range: tuple = (0.7, 0.9)
+    mode1_temperature_range: tuple = (0.8, 1.2)  # 官方推荐1.0，使用范围覆盖
     mode1_num_candidates: int = 2
     mode1_accuracy_window: int = 10  # 基于过往 10 个周期准确率
     

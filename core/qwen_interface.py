@@ -280,10 +280,11 @@ class QwenModelWrapper(nn.Module):
         self,
         input_ids: torch.Tensor,
         max_new_tokens: int = 100,
-        temperature: float = 0.7,
+        temperature: float = 1.0,
         do_sample: bool = True,
-        top_p: float = 0.9,
-        top_k: int = 50,
+        top_p: float = 0.95,
+        top_k: int = 20,
+        presence_penalty: float = 1.5,
         **kwargs
     ):
         """
@@ -310,7 +311,8 @@ class QwenModelWrapper(nn.Module):
                 do_sample=do_sample,
                 top_p=top_p,
                 top_k=top_k,
-               pad_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.eos_token_id,
+                presence_penalty=presence_penalty,
                 **kwargs
             )
         
@@ -527,7 +529,7 @@ class QwenInterface:
             next_token_logits = output_tensors.logits[:, -1, :].clone()
             
             # 向量化重复惩罚 (scatter-based)
-            repetition_penalty = kwargs.get('repetition_penalty', 1.2) # 从 1.1 提升到 1.2
+            repetition_penalty = kwargs.get('repetition_penalty', 1.0)  # 官方推荐值
             if repetition_penalty != 1.0 and input_ids is not None:
                 # 获取每个 batch item 的不重复 token
                 # 注意：在当前 batch_size=1 的情况下，这等同于 unique()
@@ -543,14 +545,24 @@ class QwenInterface:
                 
                 # 使用 scatter 将惩罚应用回原位置
                 next_token_logits.scatter_(1, unique_tokens.unsqueeze(0), penalized_logits)
+            
+            # Presence Penalty (惩罚已出现的token，降低重复概率)
+            presence_penalty = kwargs.get('presence_penalty', 1.5)  # 官方推荐值
+            if presence_penalty > 0 and input_ids is not None:
+                # 统计每个token的出现次数
+                unique_tokens, counts = torch.unique(input_ids, return_counts=True)
+                # 根据出现次数施加惩罚（出现越多，惩罚越大）
+                penalty = torch.zeros_like(next_token_logits[0])
+                penalty[unique_tokens] = counts.float() * presence_penalty
+                next_token_logits -= penalty.unsqueeze(0)
 
             # 温度缩放
-            temp = kwargs.get('temperature', 0.7)
+            temp = kwargs.get('temperature', 1.0)  # 官方推荐值
             if temp > 0:
                 next_token_logits = next_token_logits / temp
             
             # Top-k 过滤
-            top_k = kwargs.get('top_k', 50)
+            top_k = kwargs.get('top_k', 20)  # 官方推荐值
             if top_k > 0:
                 v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
                 next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')

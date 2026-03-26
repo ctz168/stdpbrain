@@ -347,21 +347,21 @@ class SelfLoopOptimizer:
         
         candidate_a = self._generate_with_temperature(
             input_text, 
-            temperature=0.7,
+            temperature=0.9,
             context=context,
             seed=42
         )
         
         candidate_b = self._generate_with_temperature(
             input_text,
-            temperature=0.9,
+            temperature=1.1,
             context=context,
             seed=43
         )
         
         candidates = [candidate_a, candidate_b]
-        reasoning_log.append(f"Candidate A (T=0.7): {candidate_a[:50]}...")
-        reasoning_log.append(f"Candidate B (T=0.9): {candidate_b[:50]}...")
+        reasoning_log.append(f"Candidate A (T=0.9): {candidate_a[:50]}...")
+        reasoning_log.append(f"Candidate B (T=1.1): {candidate_b[:50]}...")
         
         # ========== 2. 评判角色打分 (每 10 周期执行一次) ==========
         if self.cycle_count % eval_period == 0:
@@ -441,8 +441,8 @@ class SelfLoopOptimizer:
                             max_new_tokens=100,
                             temperature=temperature,
                             do_sample=temperature > 0.1,
-                            top_p=0.9,
-                            top_k=50
+                            top_p=0.95,
+                            top_k=20
                         )
                     
                     # 解码

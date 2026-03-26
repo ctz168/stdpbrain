@@ -451,7 +451,7 @@ class BrainAIInterface:
                 logger.debug(f"准备记忆锚点失败: {e}")
         
         output = self.model.generate(
-            prompt, max_tokens=max_tokens, temperature=0.7, use_self_loop=True, memory_anchor=memory_anchor
+            prompt, max_tokens=max_tokens, temperature=1.0, use_self_loop=True, memory_anchor=memory_anchor
         )
         
         # 3.2 更新全局思维状态 (latent continuity)
@@ -753,7 +753,7 @@ class BrainAIInterface:
             prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{trigger}<|im_end|>\n<|im_start|>assistant\n"
         return prompt
 
-    def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, repetition_penalty: float = 1.2) -> tuple:
+    def _generate_with_hidden_state(self, prompt: str, max_tokens: int = 100, temperature: float = 1.0, repetition_penalty: float = 1.0) -> tuple:
         try:
             # 使用 tokenize_safe 得到完整的 inputs（包含 attention_mask）
             inputs = self.model.tokenize_safe(prompt, return_tensors="pt").to(self.device)
@@ -923,12 +923,12 @@ class BrainAIInterface:
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         full_response = ""
         try:
-            async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.7):
+            async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=1.0):
                 full_response += chunk
                 yield {"type": "chunk", "content": chunk}
         except Exception as e:
             logger.error(f"流式生成失败: {e}")
-            output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.7)
+            output = self.model.generate(prompt, max_tokens=max_tokens, temperature=1.0)
             full_response = output.text
             yield {"type": "chunk", "content": full_response}
             
@@ -1387,8 +1387,8 @@ class BrainAIInterface:
             clarification = self.model.generate(
                 prompt,
                 max_tokens=max_tokens,
-                temperature=0.7,
-                repetition_penalty=1.3
+                temperature=1.0,
+                repetition_penalty=1.0
             ).text.strip()
             
             clarification = clarification.replace("[[CLARIFY]]", "").strip()
@@ -1550,8 +1550,8 @@ class BrainAIInterface:
             response = self.model.generate(
                 full_prompt, 
                 max_tokens=60, 
-                temperature=0.85, 
-                repetition_penalty=1.2,
+                temperature=1.0, 
+                repetition_penalty=1.0,
                 enable_thinking=False # 外部输出不再显示 <think>，直接结果
             ).text.strip()
             

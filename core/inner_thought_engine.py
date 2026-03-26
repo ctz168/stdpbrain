@@ -395,10 +395,10 @@ class InnerThoughtEngine:
         
         # 构建惩罚与温度参数 (下调过激参数，恢复语言的连贯性和严谨性)
         current_temp = 0.5
-        current_penalty = 1.05
+        current_penalty = 1.0
         if self.mind_state == MindState.WANDERING:
             current_temp = 0.7
-            current_penalty = 1.1
+            current_penalty = 1.0
         
         # 5. 构建思维内容
         generated_text = ""
@@ -516,7 +516,7 @@ class InnerThoughtEngine:
                     max_new_tokens=max_tokens,
                     temperature=current_temp,
                     do_sample=True,
-                    top_p=0.9,
+                    top_p=0.95,
                     repetition_penalty=current_penalty
                 )
             
