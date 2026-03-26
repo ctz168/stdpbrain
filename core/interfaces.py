@@ -105,49 +105,65 @@ class BrainAIInterface:
         self.self_encoder = SelfStateEncoder(hidden_size=self.model_hidden_size, device=self.device)
         print("[BrainAI] [OK] 自我状态编码器已初始化")
         
-        # 9. 真正自指循环模块（增强自指深度）
-        try:
-            self.true_self_loop = TrueSelfReferentialLoop(
-                hidden_size=self.model_hidden_size,
-                max_recursion_depth=3
-            ).to(self.device)
-            print("[BrainAI] [OK] 真正自指循环模块已初始化")
-        except Exception as e:
-            logger.warning(f"真正自指循环模块初始化失败: {e}")
+        # 9. 真正自指循环模块（增强自指深度）- 默认开启
+        enable_self_ref = getattr(config, 'enable_self_reference', True)
+        if enable_self_ref:
+            try:
+                self.true_self_loop = TrueSelfReferentialLoop(
+                    hidden_size=self.model_hidden_size,
+                    max_recursion_depth=3
+                ).to(self.device)
+                print("[BrainAI] [OK] 真正自指循环模块已初始化")
+            except Exception as e:
+                logger.warning(f"真正自指循环模块初始化失败: {e}")
+                self.true_self_loop = None
+        else:
             self.true_self_loop = None
+            print("[BrainAI] [INFO] 真正自指循环模块已禁用（配置）")
         
-        # 10. 预测编码模块（预测误差最小化）
-        try:
-            self.predictive_coder = PredictiveCodingModule(
-                hidden_size=self.model_hidden_size,
-                vocab_size=self.model.tokenizer.vocab_size if hasattr(self.model, 'tokenizer') else 50257
-            ).to(self.device)
-            # 追踪上一轮输出
-            self.last_output_ids = None
-            self.last_output_embedding = None
-            print("[BrainAI] [OK] 预测编码模块已初始化")
-        except Exception as e:
-            logger.warning(f"预测编码模块初始化失败: {e}")
+        # 10. 预测编码模块（预测误差最小化）- 默认开启
+        enable_predictive = getattr(config, 'enable_predictive_coding', True)
+        if enable_predictive:
+            try:
+                self.predictive_coder = PredictiveCodingModule(
+                    hidden_size=self.model_hidden_size,
+                    vocab_size=self.model.tokenizer.vocab_size if hasattr(self.model, 'tokenizer') else 50257
+                ).to(self.device)
+                # 追踪上一轮输出
+                self.last_output_ids = None
+                self.last_output_embedding = None
+                print("[BrainAI] [OK] 预测编码模块已初始化")
+            except Exception as e:
+                logger.warning(f"预测编码模块初始化失败: {e}")
+                self.predictive_coder = None
+        else:
             self.predictive_coder = None
+            print("[BrainAI] [INFO] 预测编码模块已禁用（配置）")
         
-        # 11. 主动意图生成器（主动输出）
-        try:
-            self.proactive_generator = ProactiveIntentGenerator(
-                hidden_size=self.model_hidden_size,
-                min_interval_seconds=getattr(config, 'proactive_min_interval', 600),
-                max_daily_count=getattr(config, 'proactive_max_daily', 5)
-            ).to(self.device)
-            # 主动输出统计
-            self.last_output_time = time.time()
-            self.last_user_input_time = time.time()
-            self.proactive_debug_log = []
-            self.clarification_count = 0
-            self.max_clarifications_per_turn = 2
-            print("[BrainAI] [OK] 主动意图生成器已初始化")
-        except Exception as e:
-            logger.warning(f"主动意图生成器初始化失败: {e}")
+        # 11. 主动意图生成器（主动输出）- 默认关闭，需显式开启（谨慎使用）
+        enable_proactive = getattr(config, 'enable_proactive_output', False)
+        if enable_proactive:
+            try:
+                self.proactive_generator = ProactiveIntentGenerator(
+                    hidden_size=self.model_hidden_size,
+                    min_interval_seconds=getattr(config, 'proactive_min_interval', 600),
+                    max_daily_count=getattr(config, 'proactive_max_daily', 5)
+                ).to(self.device)
+                # 主动输出统计
+                self.last_output_time = time.time()
+                self.last_user_input_time = time.time()
+                self.proactive_debug_log = []
+                self.clarification_count = 0
+                self.max_clarifications_per_turn = 2
+                print("[BrainAI] [OK] 主动意图生成器已初始化")
+            except Exception as e:
+                logger.warning(f"主动意图生成器初始化失败: {e}")
+                self.proactive_generator = None
+        else:
             self.proactive_generator = None
+            print("[BrainAI] [INFO] 主动意图生成器已禁用（配置）")
         
+        # 统计：主动输出相关（即使禁用也初始化变量，避免后续检查失败）
         self.last_output_time = time.time()
         self.last_user_input_time = time.time()
         self.proactive_debug_log = []

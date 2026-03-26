@@ -51,8 +51,9 @@ class TrueSelfReferentialLoop(nn.Module):
         self.recursion_gamma = nn.Parameter(torch.tensor(0.8), requires_grad=False)
         
         # 自指强度门控（动态调整自指程度）
+        # 输入：base_state 在 hidden 维度的均值 -> [batch, 1]
         self.self_gate = nn.Sequential(
-            nn.Linear(hidden_size, 1),
+            nn.Linear(1, 1),
             nn.Sigmoid()
         )
         

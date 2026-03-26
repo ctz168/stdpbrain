@@ -11,7 +11,7 @@
 
 import torch
 import torch.nn as nn
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 import time
 import random
 from dataclasses import dataclass
