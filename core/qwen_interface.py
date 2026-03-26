@@ -28,7 +28,7 @@ class QwenModelWrapper(nn.Module):
        model_path: str,
         config,
         device: str = "cpu",
-        quantization: str = "INT4"
+        quantization: str = "INT8"
     ):
         super().__init__()
         import threading
@@ -36,11 +36,14 @@ class QwenModelWrapper(nn.Module):
         self.model_path = model_path
         self.config = config
         self.device = device
-        self.quantization = quantization
+        
+        # 统一读取优先级：1.全局 config.QUANTIZATION 2. 全局 config.quantization 3. 传参配置
+        self.quantization = getattr(config, 'QUANTIZATION', getattr(config, 'quantization', quantization))
+        
         print(f"[QwenWrapper] 正在加载真实 Qwen 模型...")
         print(f"  路径：{model_path}")
         print(f"  设备：{device}")
-        print(f"  量化：{quantization}")
+        print(f"  量化：{self.quantization}")
         
         # ========== 1. 加载 Tokenizer ==========
         try:
@@ -53,7 +56,6 @@ class QwenModelWrapper(nn.Module):
         except Exception as e:
                 print(f"[ERROR] Tokenizer 加载失败：{e}")
                 raise
-        print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         
         # ========== 2. 加载模型 ==========
         self.base_model = self._load_model_with_quantization()
@@ -106,14 +108,18 @@ class QwenModelWrapper(nn.Module):
                     print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
                 else:
                     # CPU 环境：使用更高兼容性的 FP32 加载
-                    print(f"  [!] [CPU] 已启用优化加载流程...")
+                    print(f"  [!] [CPU] bitsandbytes 的 {self.quantization} 量化完全依赖 CUDA (Nvidia GPU)。")
+                    print(f"  [!] [CPU] 正在安全模式下以全精度 (FP32) 加载模型...")
+                    if self.quantization == "INT8":
+                        print(f"  [!] [CPU] 提示：全精度加载完成后，系统将为您调用 PyTorch 动态量化模块，在内存中将其转为 INT8。")
+                    
                     model = AutoModelForCausalLM.from_pretrained(
                         self.model_path,
                         torch_dtype=torch.float32,
                         low_cpu_mem_usage=True,
                         trust_remote_code=True
                     ).to("cpu")
-                    print("  [OK] [CPU] FP32 模型加载完成")
+                    print("  [OK] [CPU] 纯 FP32 步骤防崩溃加载完成")
                 
             else:  # FP16 或 FP32
                 dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
@@ -161,7 +167,7 @@ class QwenModelWrapper(nn.Module):
         
         替换每个 Transformer 层的线性层为 DualWeightLinear
         """
-        from core.dual_weight_layers import DualWeightLinear, DualWeightAttention, DualWeightFFN
+        from core.dual_weight_layers import DualWeightLinear
         
         print("\n[集成] 开始集成双权重层...")
         
@@ -182,22 +188,11 @@ class QwenModelWrapper(nn.Module):
                 if hasattr(module, attr_name):
                     target_layer = getattr(module, attr_name)
                     
-                    # 确保是 Linear 层且尚未被替换 (避免重复计数)
-                    if isinstance(target_layer, nn.Linear) and not isinstance(target_layer, DualWeightLinear):
+                    # 确保是量化黑盒层或普通线性层，且尚未被包裹 (兼容 Linear4bit, Linear8bitLt 等)
+                    if not isinstance(target_layer, DualWeightLinear) and hasattr(target_layer, 'weight'):
                         try:
-                            # 获取原始权重
-                            static_weight = target_layer.weight.data.clone()
-                            bias = target_layer.bias.data.clone() if target_layer.bias is not None else None
-                            
-                            # 创建双权重线性层
-                            dual_layer = DualWeightLinear(
-                                in_features=target_layer.in_features,
-                                out_features=target_layer.out_features,
-                                bias=(bias is not None),
-                                static_weight=static_weight
-                            )
-                            if bias is not None:
-                                dual_layer.bias.data.copy_(bias)
+                            # 创建双权重线性层 (安全包裹，兼容 4-bit)
+                            dual_layer = DualWeightLinear(base_layer=target_layer)
                             
                             # 替换
                             setattr(module, attr_name, dual_layer)
@@ -205,7 +200,7 @@ class QwenModelWrapper(nn.Module):
                         except Exception as e:
                             print(f"  [!] 替换层失败 {name}.{attr_name}: {e}")
         
-        print(f"[OK] 已替换 {replaced_count} 个底层投影为双权重版本")
+        print(f"[OK] 已包裹 {replaced_count} 个量化/线性投影为双权重版本")
         
         # ========== 后置优化：如果是 CPU，执行动态量化 ==========
         if self.device == "cpu" and self.quantization == "INT8":
@@ -260,9 +255,8 @@ class QwenModelWrapper(nn.Module):
         # 存储记忆锚点，供注意力层使用
         self._current_memory_anchor = memory_anchor
         
-        # 设置DualWeightAttention的类变量（供所有注意力层访问）
-        from core.dual_weight_layers import DualWeightAttention
-        DualWeightAttention.set_memory_anchor(memory_anchor)
+        # 注意力层记忆锚点之前由 DualWeightAttention 管理，现已交由底层注意力层处理
+        # (在此预留基座模型可能的 hippocampus_gate 设置钩子)
         
         # 清理 kwargs 避免重复冲突
         exclude = {'return_dict', 'output_attentions', 'output_hidden_states', 'use_cache', 'past_key_values', 'memory_anchor'}
@@ -345,15 +339,14 @@ class QwenModelWrapper(nn.Module):
         
         return outputs.hidden_states
     
-    def get_all_dynamic_weights(self) -> Dict[str, Dict[str, torch.Tensor]]:
+    def get_all_dynamic_weights(self) -> Dict[str, torch.Tensor]:
         """获取所有动态权重"""
         dynamic_weights = {}
+        from core.dual_weight_layers import DualWeightLinear
         
         for name, module in self.base_model.named_modules():
-            if isinstance(module, DualWeightAttention):
-                dynamic_weights[name] = module.get_all_dynamic_weights()
-            elif isinstance(module, DualWeightFFN):
-                dynamic_weights[name] = module.get_all_dynamic_weights()
+            if isinstance(module, DualWeightLinear):
+                dynamic_weights[name] = module.get_dynamic_weight()
         
         return dynamic_weights
 
@@ -366,28 +359,30 @@ class QwenModelWrapper(nn.Module):
     def load_checkpoint(self, path: str):
         """加载模型检查点 (仅加载双权重层的动态部分)"""
         dynamic_weights = torch.load(path, map_location=self.device)
-        for layer_name, weights in dynamic_weights.items():
-            self.apply_stdp_to_layer(layer_name, weights, lr=1.0) # 使用 lr=1.0 直接设置权重
+        for layer_name, tensor_weight in dynamic_weights.items():
+            self.apply_stdp_to_layer(layer_name, tensor_weight, lr=1.0) # 使用 lr=1.0 直接推入更新
         print(f"[QwenWrapper] 动态权重已从 {path} 加载")
     
     def apply_stdp_to_layer(
         self,
         layer_name: str,
-        grad_dict: Dict[str, torch.Tensor],
+        grad: torch.Tensor,
         lr: float = 0.01
     ):
-        """对指定层应用 STDP 更新"""
+        """对指定双权重层直接应用 STDP 更新"""
         for name, module in self.base_model.named_modules():
             if name == layer_name:
-                if hasattr(module, 'apply_stdp_to_all'):
-                    module.apply_stdp_to_all(grad_dict, lr)
+                if hasattr(module, 'apply_stdp_update'):
+                    module.apply_stdp_update(grad, lr)
                 break
     
     def apply_stdp_to_all(self, grad_dict: Dict[str, torch.Tensor], lr: float = 0.01):
         """对所有双权重层广播 STDP 更新"""
-        for module in self.base_model.modules():
-            if hasattr(module, 'apply_stdp_to_all'):
-                module.apply_stdp_to_all(grad_dict, lr)
+        for name, module in self.base_model.named_modules():
+            if hasattr(module, 'apply_stdp_update'):
+                # 精确匹配全名称分发
+                if name in grad_dict:
+                    module.apply_stdp_update(grad_dict[name], lr)
 
 
 class QwenInterface:
@@ -594,7 +589,8 @@ class QwenInterface:
             
             # 触发所有层的 STDP 更新 (在后台线程运行)
             for name, layer in self.model.base_model.named_modules():
-                if hasattr(layer, 'apply_stdp_to_all'):
+                # 为了量化层兼容，直接寻址实现了 STDP 更新的独立层
+                if hasattr(layer, 'apply_stdp_update'):
                     self._stdp_executor.submit(
                         self.model.config.stdp_engine.update_attention_layer,
                         layer,

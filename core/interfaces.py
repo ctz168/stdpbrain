@@ -65,7 +65,7 @@ class BrainAIInterface:
             model_path=config.model_path,
             config=config,
             device=self.device,
-            quantization=getattr(config, 'quantization', 'INT4')
+            quantization=getattr(config, 'QUANTIZATION', getattr(config, 'quantization', 'INT8'))
         )
         # 同步设备（模型可能回退到 CPU）
         self.device = self.model.device
@@ -75,6 +75,8 @@ class BrainAIInterface:
         
         # 3. 加载真实 STDP 引擎
         self.stdp_engine = STDPEngine(config, device=self.device)
+        # 为流式生成过程中的后台 STDP 触发器提供全链路引擎注入
+        config.stdp_engine = self.stdp_engine.full_link_stdp
         
         # 4. 加载真实自闭环优化器
         self.self_loop = SelfLoopOptimizer(config, model=self.model)

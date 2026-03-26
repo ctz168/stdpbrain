@@ -23,7 +23,7 @@ MODEL_PATH = "./models/Qwen3.5-0.8B"
 
 # 量化类型 ("INT4", "INT8", "FP16", "FP32")
 # 在 macOS/CPU 上，INT4/INT8 会被自动优化或回退
-QUANTIZATION = "INT4"
+QUANTIZATION = "INT8"
 
 # 设备 ("cuda", "cpu", "mps")
 # 留空则自动检测

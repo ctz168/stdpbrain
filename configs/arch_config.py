@@ -138,7 +138,7 @@ class TrainingConfig:
     pretrain_batch_size: int = 8
     pretrain_epochs: int = 3
     pretrain_optimizer: str = "AdamW"
-    pretrain_quantization: str = "INT4"
+    pretrain_quantization: str = "INT8"
     
     # 训练数据集
     datasets: List[str] = field(default_factory=lambda: [
