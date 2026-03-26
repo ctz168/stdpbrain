@@ -112,18 +112,3 @@ class EntorhinalEncoder(nn.Module):
         
         ec_code = self.forward(token_features)
         return ec_code.squeeze(0)
-    
-    def update_sparsity(self, sparsity: float):
-        """更新稀疏度"""
-        self.sparsity = sparsity
-        self._generate_sparse_mask()
-    
-    def get_encoding_stats(self, ec_code: torch.Tensor) -> dict:
-        """获取编码统计信息"""
-        return {
-            'mean_activation': ec_code.mean().item(),
-            'std_activation': ec_code.std().item(),
-            'sparsity_actual': (ec_code.abs() < 0.01).float().mean().item(),
-            'min_value': ec_code.min().item(),
-            'max_value': ec_code.max().item()
-        }

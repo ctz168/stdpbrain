@@ -21,7 +21,7 @@ import re
 from core.qwen_interface import QwenInterface
 from hippocampus.hippocampus_system import HippocampusSystem
 from core.stdp_engine import STDPEngine
-from self_loop.self_loop_optimizer import SelfLoopOptimizer
+from core.self_loop_optimizer import SelfLoopOptimizer
 from core.inner_thought_engine import InnerThoughtEngine, MindState, ThinkingMode
 from core.goal_system import GoalSystem, create_goal_system
 from core.global_workspace import GlobalWorkspace, create_global_workspace

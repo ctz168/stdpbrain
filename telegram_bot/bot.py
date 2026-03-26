@@ -477,10 +477,4 @@ class BrainAIBot:
         logger.info("后台思考任务已启动")
 
 
-def create_bot(
-    token: str,
-    ai_interface=None,
-    proxy_url: Optional[str] = None,
-    **kwargs
-) -> BrainAIBot:
-    return BrainAIBot(token=token, ai_interface=ai_interface, proxy_url=proxy_url, **kwargs)
+
