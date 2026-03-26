@@ -393,12 +393,12 @@ class InnerThoughtEngine:
         # 4. 获取状态风格与惩罚参数
         state_info = self.state_prompts[self.mind_state]
         
-        # 构建惩罚与温度参数 (High-Entropy Recovery)
-        current_temp = 0.9
-        current_penalty = 1.2
+        # 构建惩罚与温度参数 (下调过激参数，恢复语言的连贯性和严谨性)
+        current_temp = 0.5
+        current_penalty = 1.05
         if self.mind_state == MindState.WANDERING:
-            current_temp = 1.2
-            current_penalty = 1.8
+            current_temp = 0.7
+            current_penalty = 1.1
         
         # 5. 构建思维内容
         generated_text = ""

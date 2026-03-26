@@ -609,8 +609,9 @@ class QwenInterface:
     def generate_stream_sync(
         self,
         input_text: str,
-        max_tokens: int = 100,
-        temperature: float = 0.7,
+        max_tokens: int = 150,
+        temperature: float = 0.45,
+        repetition_penalty: float = 1.05,
         **kwargs
     ):
         """
@@ -620,14 +621,13 @@ class QwenInterface:
             str: 每个生成的字符/词
         """
         # ========== 1. Tokenize 输入 (线程安全) ==========
-        with self._tokenizer_lock:
-            inputs = self.model.tokenizer(
-                input_text,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=512
-            )
+        inputs = self.tokenize_safe(
+            input_text,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
         
         prompt_ids = inputs.input_ids.to(self.device)
         prompt_len = prompt_ids.shape[1]
@@ -635,8 +635,8 @@ class QwenInterface:
         # 预分配 input_ids 缓冲区
         max_total = prompt_len + max_tokens
         with self._tokenizer_lock:
-            pad_id = self.model.tokenizer.pad_token_id or 0
-            eos_id = self.model.tokenizer.eos_token_id
+            pad_id = self.tokenizer.pad_token_id or 0
+            eos_id = self.tokenizer.eos_token_id
             
         input_ids_buf = torch.full(
             (1, max_total), pad_id,
@@ -649,7 +649,8 @@ class QwenInterface:
         past_key_values = None
         
         # 定义停止token
-        eos_token_id = self.model.tokenizer.eos_token_id
+        with self._tokenizer_lock:
+            eos_token_id = self.tokenizer.eos_token_id
         im_end_token_id = 151645  # <|im_end|>
         stop_token_ids = {eos_token_id, im_end_token_id}
         
@@ -671,8 +672,14 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
-            # 解码单个token
             token_text = self.model.tokenizer.decode([next_token_id], skip_special_tokens=True)
+            
+            # 使用简单的阻断词拦截标签幻觉
+            unsafe_keywords = ["<|im_start|>", "\nuser", "\nUser", "User:", "💭", "[内心独白]", "[潜意识]"]
+            full_decode = self.model.tokenizer.decode(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
+            if any(kw in full_decode for kw in unsafe_keywords):
+                break
+                
             yield token_text
             
             if next_token_id in stop_token_ids:
@@ -691,15 +698,16 @@ class QwenInterface:
     async def generate_stream(
         self,
         input_text: str,
-        max_tokens: int = 100,
-        temperature: float = 0.7,
+        max_tokens: int = 150,
+        temperature: float = 0.35,
+        repetition_penalty: float = 1.05,
         **kwargs
     ):
         """
         异步流式生成 (KV-cache + 预分配 input_ids 缓冲区 + 条件 STDP)
         """
-        # ========== 1. Tokenize 输入 ==========
-        inputs = self.model.tokenizer(
+        # ========== 1. Tokenize 输入 (使用线程安全包装) ==========
+        inputs = self.tokenize_safe(
             input_text,
             return_tensors="pt",
             padding=True,
@@ -712,8 +720,11 @@ class QwenInterface:
         
         # 优化6: 预分配 input_ids 缓冲区，避免每步 torch.cat 分配内存
         max_total = prompt_len + max_tokens
+        with self._tokenizer_lock:
+            pad_id = self.tokenizer.pad_token_id or 0
+            
         input_ids_buf = torch.full(
-            (1, max_total), self.model.tokenizer.pad_token_id or 0,
+            (1, max_total), pad_id,
             dtype=torch.long, device=self.device
         )
         input_ids_buf[:, :prompt_len] = prompt_ids
@@ -723,7 +734,8 @@ class QwenInterface:
         past_key_values = None
         
         # 定义停止token
-        eos_token_id = self.model.tokenizer.eos_token_id
+        with self._tokenizer_lock:
+            eos_token_id = self.tokenizer.eos_token_id
         im_end_token_id = 151645  # <|im_end|>
         stop_token_ids = {eos_token_id, im_end_token_id}
         
@@ -746,6 +758,13 @@ class QwenInterface:
             past_key_values = step_outputs['past_key_values']
             
             token_text = self.model.tokenizer.decode([next_token_id], skip_special_tokens=True)
+            
+            # 使用简单的阻断词拦截标签幻觉
+            unsafe_keywords = ["<|im_start|>", "\nuser", "\nUser", "User:", "💭", "[内心独白]", "[潜意识]"]
+            full_decode = self.model.tokenizer.decode(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
+            if any(kw in full_decode for kw in unsafe_keywords):
+                break
+                
             yield token_text
             
             if next_token_id in stop_token_ids:
@@ -765,10 +784,11 @@ class QwenInterface:
     def generate(
         self,
         input_text: str,
-        max_tokens: int = 100,
-        temperature: float = 0.7,
+        max_tokens: int = 150,
+        temperature: float = 0.35,
         use_self_loop: bool = False,
         memory_anchor: Optional[torch.Tensor] = None,
+        repetition_penalty: float = 1.05,
         **kwargs
     ):
         """
