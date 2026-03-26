@@ -128,6 +128,28 @@ class SelfLoopConfig:
     ])
 
 
+@dataclass
+class ProactiveConfig:
+    """主动意图输出配置"""
+    enabled: bool = False  # 是否启用主动输出（默认关闭，谨慎使用）
+    min_interval_seconds: int = 300  # 最小主动间隔（秒），默认5分钟
+    max_daily_count: int = 10  # 每日主动输出上限，默认10次
+    
+    # 意图类型权重（用于分类器）
+    intent_weights: Dict[str, float] = field(default_factory=lambda: {
+        "share_thought": 0.3,    # 分享想法
+        "ask_question": 0.2,     # 主动提问
+        "reflect_share": 0.2,    # 分享反思
+        "remind": 0.1,           # 提醒
+        "silence": 0.2           # 沉默（默认）
+    })
+    
+    # 触发条件阈值
+    silence_threshold_s: float = 600.0  # 沉默超过10分钟才考虑主动输出
+    confidence_threshold: float = 0.4  # 意图置信度阈值
+    quality_threshold: float = 0.6    # 内容质量阈值
+
+
 # ==================== 训练配置 ====================
 
 @dataclass
@@ -229,6 +251,7 @@ class BrainAIConfig:
     stdp: STDPConfig = field(default_factory=STDPConfig)
     hippocampus: HippocampusConfig = field(default_factory=HippocampusConfig)
     self_loop: SelfLoopConfig = field(default_factory=SelfLoopConfig)
+    proactive: ProactiveConfig = field(default_factory=ProactiveConfig)  # 新增：主动输出配置
     training: TrainingConfig = field(default_factory=TrainingConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     deployment: DeploymentConfig = field(default_factory=DeploymentConfig)

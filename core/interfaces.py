@@ -140,14 +140,31 @@ class BrainAIInterface:
             self.predictive_coder = None
             print("[BrainAI] [INFO] 预测编码模块已禁用（配置）")
         
-        # 11. 主动意图生成器（主动输出）- 默认关闭，需显式开启（谨慎使用）
-        enable_proactive = getattr(config, 'enable_proactive_output', False)
+        # 11. 主动意图生成器（主动输出）
+        # 支持两种配置方式：
+        # 1) config.enable_proactive_output (旧方式，config.py 设置)
+        # 2) config.brain_config.proactive.enabled (新方式，arch_config.py)
+        enable_proactive = False
+        proactive_min_interval = 600
+        proactive_max_daily = 5
+        
+        # 方式1: 检查旧配置属性
+        if hasattr(config, 'enable_proactive_output'):
+            enable_proactive = config.enable_proactive_output
+            proactive_min_interval = getattr(config, 'proactive_min_interval', 600)
+            proactive_max_daily = getattr(config, 'proactive_max_daily', 5)
+        # 方式2: 检查新的 BRAIN_CONFIG
+        elif hasattr(config, 'brain_config') and hasattr(config.brain_config, 'proactive'):
+            enable_proactive = config.brain_config.proactive.enabled
+            proactive_min_interval = getattr(config.brain_config.proactive, 'min_interval_seconds', 600)
+            proactive_max_daily = getattr(config.brain_config.proactive, 'max_daily_count', 5)
+        
         if enable_proactive:
             try:
                 self.proactive_generator = ProactiveIntentGenerator(
                     hidden_size=self.model_hidden_size,
-                    min_interval_seconds=getattr(config, 'proactive_min_interval', 600),
-                    max_daily_count=getattr(config, 'proactive_max_daily', 5)
+                    min_interval_seconds=proactive_min_interval,
+                    max_daily_count=proactive_max_daily
                 ).to(self.device)
                 # 主动输出统计
                 self.last_output_time = time.time()

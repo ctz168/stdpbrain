@@ -4,6 +4,9 @@
 将敏感信息（如 Token）和环境配置（如代理）与主代码分离。
 """
 
+# 导入核心架构配置
+from configs.arch_config import BrainAIConfig, ProactiveConfig
+
 # ==================== Telegram Bot 配置 ====================
 
 # 你的 Telegram Bot Token
@@ -29,16 +32,13 @@ QUANTIZATION = "INT4"
 # 留空则自动检测
 DEVICE = ""
 
+# 核心架构配置（包含所有增强模块设置）
+BRAIN_CONFIG = BrainAIConfig()
 
-# ==================== 增强模块配置 ====================
+# 覆盖主动输出配置（可根据需要调整）
+BRAIN_CONFIG.proactive.enabled = True          # 开启主动输出
+BRAIN_CONFIG.proactive.min_interval_seconds = 300   # 最小间隔 5 分钟
+BRAIN_CONFIG.proactive.max_daily_count = 10        # 每日最多 10 次
 
-# 真正自指循环
-ENABLE_SELF_REFERENCE = True
-
-# 预测编码
-ENABLE_PREDICTIVE_CODING = True
-
-# 主动意图输出
-ENABLE_PROACTIVE_OUTPUT = True  # 开启主动输出
-PROACTIVE_MIN_INTERVAL = 300    # 最小间隔 5 分钟
-PROACTIVE_MAX_DAILY = 10        # 每日最多 10 次
+# 其他增强模块配置（如果需要调整）
+BRAIN_CONFIG.self_loop = None  # 禁用自闭环优化（性能开销大，可选）
