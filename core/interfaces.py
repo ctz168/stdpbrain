@@ -1208,8 +1208,10 @@ class BrainAIInterface:
         if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
             memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
         
-        # 独白生成（优化：减少token数量以加速CPU推理）
-        monologue_raw = self._generate_spontaneous_monologue(20, 0.8)  # 从30减少到20个token
+        # 独白生成（优化：CPU环境下大幅减少token数量）
+        # CPU环境：10个token（约5秒）
+        # GPU环境：可以增加到20-30
+        monologue_raw = self._generate_spontaneous_monologue(12, 0.85)  # 进一步减少到12个token
         
         return memory_context, recalled_memories, monologue_raw
 

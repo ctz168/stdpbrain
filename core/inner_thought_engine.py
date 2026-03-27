@@ -117,7 +117,9 @@ class InnerThoughtEngine:
         self.current_concept: str = ""
         
         # ========== 输出参数 ==========
-        self.char_interval = (0.02, 0.06)  # 打字机效果间隔
+        # CPU优化：禁用字符级延迟（打字机效果）
+        # GPU环境下可以启用：(0.02, 0.06)
+        self.char_interval = (0.0, 0.0)  # 无延迟
         
         # ========== 统计 ==========
         self.cycle_count = 0
@@ -406,7 +408,7 @@ class InnerThoughtEngine:
                 max_tokens=max_tokens, 
                 temperature=current_temp,
                 repetition_penalty=current_penalty,
-                enable_thinking=True
+                enable_thinking=False  # CPU优化：禁用thinking模式加速
             ):
                 if "<think>" in token: in_think_block = True; continue
                 if "</think>" in token: in_think_block = False; continue
