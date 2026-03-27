@@ -394,28 +394,26 @@ class BrainAIBot:
             # hippocampus 和 ca3_memory 在 BrainAIInterface 和 HippocampusSystem 中已初始化
             ca3 = self.ai.hippocampus.ca3_memory
             memories = list(ca3.memories.values()) if ca3.memories else []
-                
-                memory_text = "📚 [*记忆系统详情*]\n"
-                memory_text += "=" * 30 + "\n\n"
-                
-                # 统计信息
-                memory_text += f"总记忆数: {len(memories)}\n"
-                core_memories = [m for m in memories if getattr(m, 'is_core', False)]
-                memory_text += f"核心记忆: {len(core_memories)}\n\n"
-                
-                # 显示最近的5条记忆
-                memory_text += "[*最近记忆*]\n"
-                recent = sorted(memories, key=lambda m: getattr(m, 'timestamp', 0), reverse=True)[:5]
-                for i, mem in enumerate(recent, 1):
-                    semantic = getattr(mem, 'semantic_pointer', 'N/A')[:50]
-                    activation = getattr(mem, 'activation_strength', 0)
-                    is_core = '⭐' if getattr(mem, 'is_core', False) else ''
-                    memory_text += f"{i}. {is_core}{semantic}...\n"
-                    memory_text += f"   激活: {activation:.3f}\n"
-                
-                await update.message.reply_text(memory_text, parse_mode='Markdown')
-            else:
-                await update.message.reply_text("❌ 记忆系统未初始化")
+            
+            memory_text = "📚 [*记忆系统详情*]\n"
+            memory_text += "=" * 30 + "\n\n"
+            
+            # 统计信息
+            memory_text += f"总记忆数: {len(memories)}\n"
+            core_memories = [m for m in memories if getattr(m, 'is_core', False)]
+            memory_text += f"核心记忆: {len(core_memories)}\n\n"
+            
+            # 显示最近的5条记忆
+            memory_text += "[*最近记忆*]\n"
+            recent = sorted(memories, key=lambda m: getattr(m, 'timestamp', 0), reverse=True)[:5]
+            for i, mem in enumerate(recent, 1):
+                semantic = getattr(mem, 'semantic_pointer', 'N/A')[:50]
+                activation = getattr(mem, 'activation_strength', 0)
+                is_core = '⭐' if getattr(mem, 'is_core', False) else ''
+                memory_text += f"{i}. {is_core}{semantic}...\n"
+                memory_text += f"   激活: {activation:.3f}\n"
+            
+            await update.message.reply_text(memory_text, parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text(f"❌ 获取记忆详情失败：{e}")
     
