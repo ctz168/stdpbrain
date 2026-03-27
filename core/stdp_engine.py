@@ -106,6 +106,9 @@ class FullLinkSTDP:
         self.activation_times_tensor = torch.full((vocab_size,), -1e9, device=self.device)
         self.activation_times: Dict[str, Dict[Any, float]] = {} # 杂项记录 (非 token)
         self.contribution_cache: Dict[str, float] = {}
+        
+        # 梯度张量缓存 (避免每次更新都创建新张量)
+        self._grad_cache: Dict[str, torch.Tensor] = {}
     
     def record_activation(self, layer_name: str, id: Any, timestamp: float):
         """记录激活时间"""
@@ -125,6 +128,13 @@ class FullLinkSTDP:
     
     def set_contribution(self, layer_name: str, score: float):
         self.contribution_cache[layer_name] = score
+    
+    def _get_or_create_grad(self, cache_key: str, shape: tuple, device: torch.device) -> torch.Tensor:
+        """获取或创建缓存的梯度张量 (性能优化)"""
+        full_key = f"{cache_key}_{shape}_{device}"
+        if full_key not in self._grad_cache:
+            self._grad_cache[full_key] = torch.zeros(shape, device=device, dtype=torch.float32)
+        return self._grad_cache[full_key]
     
     def update_attention_layer(
         self,
@@ -190,6 +200,21 @@ class FullLinkSTDP:
                     'o': grad_cache.clone()
                 }
                 attention_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
+                return
+            
+            # ========== 新增: 处理整个模型的情况 ==========
+            # 如果传入的是整个模型，遍历所有 DualWeightLinear 层进行更新
+            if hasattr(attention_layer, 'named_modules'):
+                update_count = 0
+                for name, module in attention_layer.named_modules():
+                    if hasattr(module, 'dynamic_weight') and hasattr(module, 'apply_stdp_update'):
+                        weight_shape = module.dynamic_weight.shape
+                        grad = self._get_or_create_grad(f'model_{name}', weight_shape, module.dynamic_weight.device)
+                        grad.fill_(mean_delta.item() * 0.1)
+                        module.apply_stdp_update(grad, lr=self.config.stdp.alpha_LTP)
+                        update_count += 1
+                if update_count > 0:
+                    return
     
     # ========== 2. FFN 层 STDP 更新 ==========
     def update_ffn_layer(

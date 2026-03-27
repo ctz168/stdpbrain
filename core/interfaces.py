@@ -193,6 +193,7 @@ class BrainAIInterface:
         self.last_output_time = time.time()
         self.last_user_input_time = time.time()
         self.proactive_debug_log = []
+        self.proactive_callback = None  # Telegram Bot 回调
         self.clarification_count = 0
         self.max_clarifications_per_turn = 2
         
@@ -364,7 +365,7 @@ class BrainAIInterface:
             self.thought_seed = user_input[:30]
         
         t_step1 = time.time()
-        print(f"⏱️ [步骤1] 输入预处理: {(t_step1-t_start)*1000:.0f}ms")
+        print(f"⏱️ [步骤1] 输入预处理: {(t_step1-t_start)*1000:.0f}ms", flush=True)
         
         # 1.5 检查主动意图（异步，不阻塞主流程）
         if self.proactive_generator is not None:
@@ -377,58 +378,13 @@ class BrainAIInterface:
             logger.debug(f"目标推断: {goal.goal_type.value} - {goal.description}")
         
         t_step2 = time.time()
-        print(f"⏱️ [步骤2] 目标推断: {(t_step2-t_step1)*1000:.0f}ms")
+        print(f"⏱️ [步骤2] 目标推断: {(t_step2-t_step1)*1000:.0f}ms", flush=True)
 
         
         # 2. 并行执行：记忆召回 和 潜意识独白生成
         def parallel_recall():
-            """并行记忆召回（优化版）"""
-            memory_context = ""
-            recalled_memories = []
-            identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史", "名字", "我叫什么", "记得"]
-            # 强化检查：如果包含数学符号或非常短，跳过身份偏差
-            is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
-            is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
-            is_memory_question = any(kw in user_input for kw in ["记得", "记住", "我叫什么", "我的名字", "来自", "还记"])
-            
-        
-            # 优化: 复用缓存或创建新的
-            inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
-            input_ids = inputs.input_ids
-            
-            # 获取 embedding（优化：缓存）
-            with torch.no_grad():
-                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
-            query_features = embeddings.mean(dim=1).squeeze(0)
-            
-            if query_features.shape[0] != 1024:
-                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
-            
-            # 改进：增加召回数量，确保找到相关记忆
-            topk = 5 if is_memory_question else 3
-            query_semantic = user_input if (is_identity_question or is_memory_question) else None
-            recalled_memories = self.hippocampus.recall(query_features, topk=topk, query_semantic=query_semantic)
-            
-            # 改进：构建更详细的记忆上下文
-            if recalled_memories:
-                memory_parts = []
-                for m in recalled_memories[:3]:  # 最多3条
-                    # 优先使用 semantic_pointer
-                    if m.get('semantic_pointer'):
-                        memory_parts.append(m['semantic_pointer'])
-                    # 如果有context，也加入
-                    elif m.get('context'):
-                        ctx = m['context']
-                        if isinstance(ctx, list) and len(ctx) > 0:
-                            memory_parts.append(ctx[0].get('content', '')[:50])
-                
-                if memory_parts:
-                    memory_context = " | ".join(memory_parts)
-                        
-                
-            if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
-                memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
-            
+            """并行记忆召回 - 调用公共方法"""
+            memory_context, recalled_memories, _ = self._parallel_recall_and_monologue(user_input, 3)
             return memory_context, recalled_memories
 
         future_recall = self.executor.submit(parallel_recall)
@@ -438,7 +394,7 @@ class BrainAIInterface:
         monologue = future_monologue.result()
         
         t_step3 = time.time()
-        print(f"⏱️ [步骤3] 并行召回+独白: {(t_step3-t_step2)*1000:.0f}ms")
+        print(f"⏱️ [步骤3] 并行召回+独白: {(t_step3-t_step2)*1000:.0f}ms", flush=True)
         
         # 存储完整记忆字典供注意力层使用
         self._current_recalled_memories = recalled_memories
@@ -545,14 +501,14 @@ class BrainAIInterface:
 
         
         t_step4 = time.time()
-        print(f"⏱️ [步骤4] GW整合+提示构建: {(t_step4-t_step3)*1000:.0f}ms")
+        print(f"⏱️ [步骤4] GW整合+提示构建: {(t_step4-t_step3)*1000:.0f}ms", flush=True)
         
         output = self.model.generate(
             prompt, max_tokens=max_tokens, temperature=0.6, use_self_loop=True, memory_anchor=memory_anchor
         )
         
         t_step5 = time.time()
-        print(f"⏱️ [步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms")
+        print(f"⏱️ [步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms", flush=True)
         
         # 3.2 更新全局思维状态 (latent continuity)
         if output.hidden_state is not None:
@@ -761,7 +717,7 @@ class BrainAIInterface:
         self.clarification_count = 0
         
         t_end = time.time()
-        print(f"⏱️ [总计] 对话处理完成: {(t_end-t_start)*1000:.0f}ms")
+        print(f"⏱️ [总计] 对话处理完成: {(t_end-t_start)*1000:.0f}ms", flush=True)
         
         return output.text
 
@@ -1003,61 +959,37 @@ class BrainAIInterface:
         2. [串行] 输出回复流
         3. [并行/后台] 后期固化
         """
+        import time
+        t_start = time.time()
+        
         self.hippocampus.record_activity()
         self.thought_seed = user_input  # ← 提前设置，影响独白生成
         self._last_user_input = user_input  # 同时更新最后用户输入
         
-        def parallel_recall_for_stream():
-            memory_context = ""
-            recalled_memories = []
-            identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
-            is_identity_question = any(keyword in user_input for keyword in identity_keywords)
-            try:
-                input_ids = self.model.encode_safe(user_input[:50], return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
-                query_features = embeddings.mean(dim=1).squeeze(0)
-                if query_features.shape[0] != 1024:
-                    query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
-                topk = 3 if is_identity_question else 2
-                query_semantic = user_input if is_identity_question else None
-                recalled_memories = self.hippocampus.recall(query_features, topk=topk, query_semantic=query_semantic)
-                if recalled_memories:
-                    memory_pointers = [m['semantic_pointer'] for m in recalled_memories if m.get('semantic_pointer')]
-                    if memory_pointers: memory_context = " | ".join(memory_pointers[:3])
-            except: pass
-            if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
-                memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
-            return memory_context, recalled_memories  # 返回记忆锚点用于窄带宽注意力
-
-        recall_task = asyncio.to_thread(parallel_recall_for_stream)
-        # 独白生成现在已经会参考 thought_seed (即 user_input)
-        monologue_task = asyncio.to_thread(self._generate_spontaneous_monologue, 30, 0.75)
-        (memory_context, recalled_memories), monologue_raw = await asyncio.gather(recall_task, monologue_task)
+        t_step1 = time.time()
+        print(f"⏱️ [步骤1] 输入预处理: {(t_step1-t_start)*1000:.0f}ms", flush=True)
         
-        # ========== 新增: 设置记忆锚点用于窄带宽注意力 ==========
-        # 将召回的记忆锚点传递给模型接口
+        # 使用公共方法并行召回和独白生成
+        memory_context, recalled_memories, monologue_raw = await asyncio.to_thread(
+            self._parallel_recall_and_monologue, user_input, 3
+        )
+        
+        t_step2 = time.time()
+        print(f"⏱️ [步骤2] 并行召回+独白: {(t_step2-t_step1)*1000:.0f}ms", flush=True)
+        
+        # 设置记忆锚点用于窄带宽注意力
         self._last_recalled_memories = recalled_memories
         if recalled_memories:
-            # 提取包含 KV 特征的记忆锚点
-            kv_anchors = []
-            for mem in recalled_memories:
-                if 'key_features' in mem or 'dg_features' in mem:
-                    kv_anchors.append(mem)
+            kv_anchors = [m for m in recalled_memories if 'key_features' in m or 'dg_features' in m]
             if kv_anchors:
                 self.model.set_memory_anchors(kv_anchors)
                 logger.debug(f"设置 {len(kv_anchors)} 个记忆锚点用于窄带宽注意力")
         
-        # ========== 新增: 设置记忆锚点用于窄带宽注意力 ==========
-        # 将召回的记忆锚点传递给模型接口
-        if hasattr(self, '_last_recalled_memories'):
-            # 提取包含 KV 特征的记忆锚点
-            kv_anchors = []
-            for mem in self._last_recalled_memories:
-                if 'key_features' in mem or 'dg_features' in mem:
-                    kv_anchors.append(mem)
-            self.model.set_memory_anchors(kv_anchors)
         monologue = self._clean_monologue(monologue_raw, user_input)
+        
+        t_step3 = time.time()
+        print(f"⏱️ [步骤3] 独白清洗: {(t_step3-t_step2)*1000:.0f}ms", flush=True)
+        
         yield {"type": "monologue", "content": monologue}
         # 计算情感显著性 (简单启发式)
         emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
@@ -1065,6 +997,10 @@ class BrainAIInterface:
         salience = min(salience, 3.0) # 最高 3 倍增强
         
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
+        
+        t_step4 = time.time()
+        print(f"⏱️ [步骤4] 提示构建: {(t_step4-t_step3)*1000:.0f}ms", flush=True)
+        
         full_response = ""
         try:
             async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.6):
@@ -1075,6 +1011,9 @@ class BrainAIInterface:
             output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.6)
             full_response = output.text
             yield {"type": "chunk", "content": full_response}
+        
+        t_step5 = time.time()
+        print(f"⏱️ [步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms", flush=True)
             
         thought_state_snapshot = self.current_thought_state
         def post_processing():
@@ -1084,6 +1023,65 @@ class BrainAIInterface:
                 self._update_adapter_online(thought_state_snapshot, salience)
             except: pass
         self.executor.submit(post_processing)
+        
+        t_end = time.time()
+        print(f"⏱️ [总计] 流式对话处理: {(t_end-t_start)*1000:.0f}ms", flush=True)
+
+    def _parallel_recall_and_monologue(self, user_input: str, topk: int = 3) -> Tuple[str, List[Dict], str]:
+        """
+        并行执行记忆召回和独白生成 (公共方法)
+        
+        Args:
+            user_input: 用户输入
+            topk: 召回记忆数量
+            
+        Returns:
+            (memory_context, recalled_memories, monologue_raw)
+        """
+        identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
+        is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
+        is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
+        is_memory_question = any(kw in user_input for kw in ["记得", "记住", "我叫什么", "我的名字", "来自", "还记"])
+        
+        # 记忆召回
+        memory_context = ""
+        recalled_memories = []
+        try:
+            inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
+            input_ids = inputs.input_ids
+            
+            with torch.no_grad():
+                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+            query_features = embeddings.mean(dim=1).squeeze(0)
+            
+            if query_features.shape[0] != 1024:
+                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            
+            actual_topk = 5 if is_memory_question else topk
+            query_semantic = user_input if (is_identity_question or is_memory_question) else None
+            recalled_memories = self.hippocampus.recall(query_features, topk=actual_topk, query_semantic=query_semantic)
+            
+            if recalled_memories:
+                memory_parts = []
+                for m in recalled_memories[:3]:
+                    if m.get('semantic_pointer'):
+                        memory_parts.append(m['semantic_pointer'])
+                    elif m.get('context'):
+                        ctx = m['context']
+                        if isinstance(ctx, list) and len(ctx) > 0:
+                            memory_parts.append(ctx[0].get('content', '')[:50])
+                if memory_parts:
+                    memory_context = " | ".join(memory_parts)
+        except Exception as e:
+            logger.debug(f"记忆召回失败: {e}")
+        
+        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
+            memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
+        
+        # 独白生成
+        monologue_raw = self._generate_spontaneous_monologue(30, 0.75)
+        
+        return memory_context, recalled_memories, monologue_raw
 
     def _clean_monologue(self, monologue: str, user_input: str = "") -> str:
         # 移除模型标签和系统词
@@ -1598,18 +1596,24 @@ class BrainAIInterface:
             return template.format(input=short_input)
     
     def _send_proactive_message(self, text: str, is_clarification: bool = False):
-        """发送主动消息（需 Telegram Bot 支持）"""
+        """发送主动消息（支持 Telegram Bot 回调）"""
         try:
-            # 通过 OpenClaw 发送到当前会话
-            # 注意：需要配置 allow_proactive = true
-            from openclaw import send_message
-            send_message(text)
-            
-            # 更新时间戳
-            self.last_output_time = time.time()
-            self.clarification_count += 1 if is_clarification else 0
-            
-            logger.info(f"[Proactive] 发送{'澄清' if is_clarification else '主动'}消息：{text[:50]}...")
+            # 优先使用注册的回调函数（Telegram Bot 模式）
+            if hasattr(self, 'proactive_callback') and self.proactive_callback is not None:
+                self.proactive_callback(text, is_clarification)
+                self.last_output_time = time.time()
+                self.clarification_count += 1 if is_clarification else 0
+                logger.info(f"[Proactive] 通过回调发送{'澄清' if is_clarification else '主动'}消息：{text[:50]}...")
+            else:
+                # 回退到 OpenClaw（如果存在）
+                try:
+                    from openclaw import send_message
+                    send_message(text)
+                    self.last_output_time = time.time()
+                    self.clarification_count += 1 if is_clarification else 0
+                    logger.info(f"[Proactive] 发送{'澄清' if is_clarification else '主动'}消息：{text[:50]}...")
+                except ImportError:
+                    logger.debug(f"[Proactive] 无发送通道，主动消息被丢弃：{text[:50]}...")
             
             # 记录到调试日志
             self.proactive_debug_log.append({
@@ -1620,6 +1624,10 @@ class BrainAIInterface:
             
         except Exception as e:
             logger.warning(f"主动发送失败：{e}")
+    
+    def set_proactive_callback(self, callback):
+        """设置主动消息发送回调（由 Telegram Bot 调用）"""
+        self.proactive_callback = callback
     
     def _count_recent_clarifications(self) -> int:
         """统计近期澄清次数（用于节流）"""

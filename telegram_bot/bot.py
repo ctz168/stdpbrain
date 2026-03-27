@@ -72,6 +72,11 @@ class BrainAIBot:
         self.max_monologue_buffer = 5
         
         self._init_stream_handler()
+        
+        # 注册主动消息回调
+        if ai_interface and hasattr(ai_interface, 'set_proactive_callback'):
+            ai_interface.set_proactive_callback(self._on_proactive_message)
+            logger.info("[Bot] 已注册主动消息回调")
     
     async def _background_thinking_loop(self):
         """后台持续自思考流 (内心独白流式生成 + 主动推送)"""
@@ -145,6 +150,40 @@ class BrainAIBot:
     def set_ai_interface(self, ai_interface):
         self.ai = ai_interface
         self._init_stream_handler()
+        
+        # 注册主动消息回调
+        if hasattr(ai_interface, 'set_proactive_callback'):
+            ai_interface.set_proactive_callback(self._on_proactive_message)
+            logger.info("[Bot] 已注册主动消息回调")
+    
+    def _on_proactive_message(self, text: str, is_clarification: bool = False):
+        """处理主动消息回调（由 AI 接口异步调用）"""
+        import asyncio
+        
+        async def send_async():
+            chat_id = self.last_active_chat_id
+            if chat_id and self.application:
+                try:
+                    prefix = "🤔 *[澄清]*\n" if is_clarification else "💬 *[主动分享]*\n"
+                    await self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"{prefix}_{text}_",
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"[Proactive] 主动消息已发送到 {chat_id}")
+                except Exception as e:
+                    logger.error(f"[Proactive] 发送失败: {e}")
+        
+        # 获取当前运行的事件循环
+        try:
+            loop = asyncio.get_running_loop()
+            asyncio.run_coroutine_threadsafe(send_async(), loop)
+        except RuntimeError:
+            # 如果没有运行中的循环，尝试创建新的
+            try:
+                asyncio.run(send_async())
+            except Exception as e:
+                logger.error(f"[Proactive] 无法发送消息: {e}")
     
     def _init_stream_handler(self):
         if self.ai:
