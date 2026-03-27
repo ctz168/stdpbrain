@@ -746,7 +746,7 @@ class QwenInterface:
         input_text: str,
         max_tokens: int = 150,
         temperature: float = 0.45,
-        repetition_penalty: float = 1.05,
+        repetition_penalty: float = 1.15,  # 提高重复惩罚，防止循环生成
         **kwargs
     ):
         """
@@ -864,7 +864,7 @@ class QwenInterface:
         input_text: str,
         max_tokens: int = 150,
         temperature: float = 0.35,
-        repetition_penalty: float = 1.05,
+        repetition_penalty: float = 1.15,  # 提高重复惩罚，防止循环生成
         **kwargs
     ):
         """
@@ -948,7 +948,16 @@ class QwenInterface:
             full_decode = self.decode_safe(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
             if any(kw in full_decode for kw in unsafe_keywords):
                 break
-                
+            
+            # ========== 新增：重复模式检测 ==========
+            # 检测连续重复（如 "月租金：月租金：月租金"）
+            if cur_len > prompt_len + 5:
+                recent_tokens = input_ids_buf[0, cur_len-4:cur_len+1].tolist()
+                # 如果最近5个token完全重复，立即停止
+                if len(recent_tokens) == 5 and len(set(recent_tokens)) <= 2:
+                    logger.warning(f"[重复检测] 检测到重复模式，停止生成")
+                    break
+            
             yield token_text
             
             if next_token_id in stop_token_ids:
@@ -973,7 +982,7 @@ class QwenInterface:
         temperature: float = 0.35,
         use_self_loop: bool = False,
         memory_anchor: Optional[torch.Tensor] = None,
-        repetition_penalty: float = 1.05,
+        repetition_penalty: float = 1.15,  # 提高重复惩罚，防止循环生成
         **kwargs
     ):
         """

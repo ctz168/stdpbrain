@@ -349,6 +349,9 @@ class BrainAIInterface:
         3. [并行/后台] 学习 (Learn)：STDP更新和记忆存储
         4. [异步] 主动意图检查（如果启用）
         """
+        import time
+        t_start = time.time()
+        
         self.hippocampus.record_activity()
         
         # 1. 消化输入：保存用户输入，但不覆盖情形中的思维狍子
@@ -357,16 +360,21 @@ class BrainAIInterface:
         if not self.thought_seed:
             self.thought_seed = user_input[:30]
         
+        t_step1 = time.time()
+        print(f"⏱️ [步骤1] 输入预处理: {(t_step1-t_start)*1000:.0f}ms")
+        
         # 1.5 检查主动意图（异步，不阻塞主流程）
-        if hasattr(self, 'proactive_generator') and self.proactive_generator:
+        if self.proactive_generator is not None:
             self._check_proactive_intent_async(user_input)
         
         # 1.5 目标推断（新增）
-        if hasattr(self, 'goal_system') and self.goal_system:
-
+        if self.goal_system is not None:
             # 使用当前思维状态推断目标
             goal = self.goal_system.infer_goal(user_input, self.current_thought_state)
             logger.debug(f"目标推断: {goal.goal_type.value} - {goal.description}")
+        
+        t_step2 = time.time()
+        print(f"⏱️ [步骤2] 目标推断: {(t_step2-t_step1)*1000:.0f}ms")
 
         
         # 2. 并行执行：记忆召回 和 潜意识独白生成
@@ -425,6 +433,9 @@ class BrainAIInterface:
         
         memory_context, recalled_memories = future_recall.result()
         monologue = future_monologue.result()
+        
+        t_step3 = time.time()
+        print(f"⏱️ [步骤3] 并行召回+独白: {(t_step3-t_step2)*1000:.0f}ms")
         
         # 存储完整记忆字典供注意力层使用
         self._current_recalled_memories = recalled_memories
@@ -530,9 +541,15 @@ class BrainAIInterface:
                 memory_anchor = torch.stack(mem_features).mean(dim=0).unsqueeze(0).to(self.device)
 
         
+        t_step4 = time.time()
+        print(f"⏱️ [步骤4] GW整合+提示构建: {(t_step4-t_step3)*1000:.0f}ms")
+        
         output = self.model.generate(
             prompt, max_tokens=max_tokens, temperature=0.6, use_self_loop=True, memory_anchor=memory_anchor
         )
+        
+        t_step5 = time.time()
+        print(f"⏱️ [步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms")
         
         # 3.2 更新全局思维状态 (latent continuity)
         if output.hidden_state is not None:
@@ -739,6 +756,9 @@ class BrainAIInterface:
         self.last_user_input_time = time.time()
         # 重置澄清计数（每轮对话结束后）
         self.clarification_count = 0
+        
+        t_end = time.time()
+        print(f"⏱️ [总计] 对话处理完成: {(t_end-t_start)*1000:.0f}ms")
         
         return output.text
 
