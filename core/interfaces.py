@@ -87,7 +87,10 @@ class BrainAIInterface:
         if self._model_dtype is None:
             self._model_dtype = torch.float32
         
-        # ========== 让海马体跟随模型精度 ==========
+        # ========== 让海马体移动到正确设备并跟随模型精度 ==========
+        # 注意：必须先移动设备，再转换数据类型
+        # 否则 register_buffer 创建的张量仍在 CPU 上
+        self.hippocampus = self.hippocampus.to(self.device)
         if self._model_dtype != torch.float32:
             self.hippocampus = self.hippocampus.to(dtype=self._model_dtype)
         # 注意：STDPEngine 不是 nn.Module，不需要数据类型转换
