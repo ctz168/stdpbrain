@@ -86,20 +86,21 @@ class BrainAIBot:
     
     async def _background_thinking_loop(self):
         """
-        后台持续潜意识流 (永不停止)
+        后台持续潜意识流 (永不停止 + 实时决策输出)
         
         核心理念：
         - 潜意识是一个持续运行的流，永不停止
-        - 当有用户输入时，潜意识处理用户输入
-        - 否则，生成自由独白
+        - 每次生成内容时，实时判断是否输出 (should_speak)
+        - 可能思考中不输出，想好了就输出
+        - 即使没有用户输入，自己平时在想的时候也可以输出
         """
-        logger.info("[Thinking] 后台潜意识流已启动 - 持续运行模式")
+        logger.info("[Thinking] 后台潜意识流已启动 - 实时决策模式")
         
         while self.is_thinking_enabled:
             try:
                 if self.ai:
                     # 缩短等待时间，让潜意识更频繁地运行
-                    delay = random.randint(8, 15)  # 从 20-40 秒缩短到 8-15 秒
+                    delay = random.randint(8, 15)  # 8-15秒
                     await asyncio.sleep(delay)
                     
                     chat_id = self.last_active_chat_id
@@ -124,49 +125,105 @@ class BrainAIBot:
                         await asyncio.sleep(5)  # 等待用户交互完成
                         continue
                     
-                    # 生成自由独白
+                    # ========== 生成自由独白 + 思维修改缓冲区 ==========
                     logger.info(f"[Thinking] 潜意识自由流动...")
                     
                     try:
-                        message = await self.application.bot.send_message(
-                            chat_id=chat_id,
-                            text="💭 *[潜意识]*\n_自由思考中..._",
-                            parse_mode='Markdown'
-                        )
-                        
                         full_monologue = ""
+                        draft_buffer = ""  # 草稿缓冲区：可以被思维修改
                         last_update_time = time.time()
                         last_sent_text = ""
-                        update_interval = 2.0  # 增加间隔避免限流
+                        update_interval = 2.0  # 更新间隔
+                        reflect_interval = 35  # 每35个字符反思一次
+                        tokens_since_reflect = 0
+                        message_sent = False  # 是否已发送消息
+                        last_confidence = 0.0  # 上次反思的置信度
                         
                         async for chunk in self.ai.generate_monologue_stream(max_tokens=100):
                             full_monologue += chunk
+                            draft_buffer += chunk
+                            tokens_since_reflect += len(chunk)
                             
-                            current_time = time.time()
-                            if current_time - last_update_time > update_interval:
-                                display_text = full_monologue[:400]
-                                new_text = f"💭 *[潜意识]*\n_{display_text}▌_"
-                                
-                                if new_text != last_sent_text:
+                            # ========== 思维反思：修改缓冲区 ==========
+                            should_output = False
+                            should_revise = False
+                            
+                            if tokens_since_reflect >= reflect_interval:
+                                # 思维反思：审视草稿内容
+                                if hasattr(self.ai, 'proactive_generator') and self.ai.proactive_generator is not None:
                                     try:
-                                        await message.edit_text(
-                                            text=new_text,
-                                            parse_mode='Markdown'
+                                        from core.proactive_intent_generator import ProactiveIntent
+                                        context = self.ai._build_proactive_context()
+                                        intent, confidence, debug = self.ai.proactive_generator(
+                                            self.ai.current_thought_state, context
                                         )
-                                        last_sent_text = new_text
-                                        last_update_time = current_time
-                                    except:
-                                        pass
+                                        
+                                        # 根据置信度判断是否"想清楚"了
+                                        if confidence < 0.3:
+                                            # 置信度太低，需要修改
+                                            should_revise = True
+                                            logger.debug(f"[思维修改] 置信度低，重新思考 (conf={confidence:.2f})")
+                                        elif intent != ProactiveIntent.SILENCE and confidence > 0.5:
+                                            # 置信度高，可以输出
+                                            should_output = True
+                                            logger.info(f"[想清楚了] 置信度高，输出独白 (conf={confidence:.2f})")
+                                        else:
+                                            # 中等置信度，继续思考
+                                            logger.debug(f"[继续思考] 置信度中等 (conf={confidence:.2f})")
+                                        
+                                        # 如果需要修改草稿，生成新的思维指导
+                                        if should_revise and draft_buffer:
+                                            # 基于当前草稿生成改进建议
+                                            logger.debug(f"[思维修改] 正在重新思考...")
+                                            # 这里可以调用新的思维生成（暂不实现，避免递归）
+                                        
+                                        last_confidence = confidence
+                                        
+                                    except Exception as e:
+                                        logger.debug(f"思维反思失败: {e}")
+                                
+                                tokens_since_reflect = 0
+                            
+                            # 如果决定输出，发送缓冲区内容
+                            if should_output and draft_buffer:
+                                # 首次发送消息
+                                if not message_sent:
+                                    message = await self.application.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=f"💭 *[潜意识]*\n_{draft_buffer}▌_",
+                                        parse_mode='Markdown'
+                                    )
+                                    message_sent = True
+                                    last_sent_text = draft_buffer
+                                else:
+                                    # 更新消息
+                                    current_time = time.time()
+                                    if current_time - last_update_time > update_interval:
+                                        new_text = f"💭 *[潜意识]*\n_{full_monologue[:400]}▌_"
+                                        if new_text != last_sent_text:
+                                            try:
+                                                await message.edit_text(
+                                                    text=new_text,
+                                                    parse_mode='Markdown'
+                                                )
+                                                last_sent_text = new_text
+                                                last_update_time = current_time
+                                            except:
+                                                pass
+                                
+                                draft_buffer = ""  # 清空缓冲区
                         
-                        # 最终更新
-                        if full_monologue:
+                        # 生成结束后，如果有剩余缓冲区内容，强制输出
+                        if draft_buffer or full_monologue:
                             clean_monologue = full_monologue.strip()
                             self.monologue_buffer.append(clean_monologue)
                             if len(self.monologue_buffer) > self.max_monologue_buffer:
                                 self.monologue_buffer.pop(0)
                             
                             final_text = f"💭 *[潜意识]*\n_{clean_monologue}_"
-                            if final_text != last_sent_text:
+                            
+                            if message_sent:
+                                # 更新已发送的消息
                                 try:
                                     await message.edit_text(
                                         text=final_text,
@@ -174,6 +231,13 @@ class BrainAIBot:
                                     )
                                 except:
                                     pass
+                            else:
+                                # 如果从未发送过，发送最终结果
+                                await self.application.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=final_text,
+                                    parse_mode='Markdown'
+                                )
                             
                             logger.info(f"[潜意识] 自由独白: {clean_monologue[:50]}...")
                             

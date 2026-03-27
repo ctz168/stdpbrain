@@ -954,12 +954,12 @@ class BrainAIInterface:
         max_tokens: int = 256
     ) -> AsyncGenerator[Dict[str, str], None]:
         """
-        流式类人对话接口 (迭代潜意识版)：
+        流式类人对话接口 (实时决策版)：
         1. [并行] 召回 + 初始独白
-        2. [迭代] 生成回复 + 刷新潜意识
+        2. [迭代] 生成回复 + 实时判断是否输出 (should_speak)
         3. [并行/后台] 后期固化
         
-        核心：潜意识持续运行，迭代地影响回复内容
+        核心：潜意识持续运行，实时判断是否输出（高刷新流式决策）
         """
         import time
         t_start = time.time()
@@ -1004,10 +1004,16 @@ class BrainAIInterface:
         print(f"⏱️ [步骤4] 提示构建: {(t_step4-t_step3)*1000:.0f}ms", flush=True)
         
         full_response = ""
+        draft_buffer = ""  # 草稿缓冲区：可以被思维修改的内容
         final_hidden_state = None
-        subconscious_refresh_interval = 50  # 每生成50个token刷新一次潜意识
+        subconscious_refresh_interval = 50  # 每生成50个字符刷新一次潜意识
         tokens_since_refresh = 0
         current_subconscious = monologue  # 当前潜意识内容
+        
+        # ========== 思维修改缓冲区机制 ==========
+        reflect_interval = 30  # 每30个字符反思一次
+        tokens_since_reflect = 0
+        last_confidence = 0.0  # 上次反思的置信度
         
         try:
             async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.6):
@@ -1015,23 +1021,72 @@ class BrainAIInterface:
                 if isinstance(chunk, dict) and chunk.get("type") == "hidden_state":
                     final_hidden_state = chunk.get("hidden_state")
                 else:
-                    full_response += chunk
-                    tokens_since_refresh += len(chunk)  # 粗略估计token数
-                    yield {"type": "chunk", "content": chunk}
+                    # 先添加到草稿缓冲区
+                    draft_buffer += chunk
+                    tokens_since_refresh += len(chunk)
+                    tokens_since_reflect += len(chunk)
+                    
+                    # ========== 思维反思：修改缓冲区 ==========
+                    should_output = False
+                    should_revise = False  # 是否需要修改
+                    
+                    if tokens_since_reflect >= reflect_interval:
+                        # 思维反思：审视草稿内容
+                        try:
+                            context = self._build_proactive_context()
+                            intent, confidence, debug = self.proactive_generator(
+                                self.current_thought_state, context
+                            )
+                            
+                            # 根据置信度判断是否"想清楚"了
+                            if confidence < 0.25:
+                                # 置信度太低，需要修改
+                                should_revise = True
+                                logger.debug(f"[思维修改] 置信度低，重新思考 (conf={confidence:.2f})")
+                            elif confidence > 0.5:
+                                # 置信度高，可以输出
+                                should_output = True
+                                logger.debug(f"[想清楚了] 置信度高，输出 (conf={confidence:.2f})")
+                            else:
+                                # 中等置信度，继续思考
+                                logger.debug(f"[继续思考] 置信度中等 (conf={confidence:.2f})")
+                            
+                            # 如果需要修改草稿，生成新的思维指导
+                            if should_revise and draft_buffer:
+                                # 基于当前草稿生成改进建议
+                                revision_context = f"当前草稿：{draft_buffer[-200:]}\n思考：如何改进这个回复？"
+                                new_thought = await asyncio.to_thread(
+                                    self._generate_spontaneous_monologue, 25, 0.8
+                                )
+                                
+                                # 如果有新想法，更新潜意识
+                                if new_thought and len(new_thought) > 5:
+                                    current_subconscious = new_thought
+                                    yield {"type": "subconscious_refresh", "content": current_subconscious}
+                                    logger.debug(f"[思维更新] {new_thought[:40]}...")
+                            
+                            last_confidence = confidence
+                            
+                        except Exception as e:
+                            logger.debug(f"思维反思失败: {e}")
+                            should_output = True  # 失败时默认输出
+                        
+                        tokens_since_reflect = 0
+                    
+                    # 如果决定输出，将缓冲区内容发送出去
+                    if should_output and draft_buffer:
+                        full_response += draft_buffer
+                        yield {"type": "chunk", "content": draft_buffer}
+                        draft_buffer = ""  # 清空缓冲区
                     
                     # ========== 迭代潜意识刷新 ==========
-                    # 每生成一定数量的内容，刷新潜意识
                     if tokens_since_refresh >= subconscious_refresh_interval:
-                        # 在后台刷新潜意识
                         try:
-                            # 基于当前回复内容刷新潜意识
-                            refresh_context = f"用户问：{user_input}\n我正在回复：{full_response[-200:]}"
                             new_subconscious_raw = await asyncio.to_thread(
                                 self._generate_spontaneous_monologue, 20, 0.7
                             )
                             if new_subconscious_raw and len(new_subconscious_raw) > 5:
                                 current_subconscious = new_subconscious_raw
-                                # 发送潜意识更新事件
                                 yield {"type": "subconscious_refresh", "content": current_subconscious}
                                 logger.debug(f"[潜意识刷新] {current_subconscious[:50]}...")
                         except Exception as e:
@@ -1045,6 +1100,11 @@ class BrainAIInterface:
             full_response = output.text
             final_hidden_state = output.hidden_state
             yield {"type": "chunk", "content": full_response}
+        
+        # 生成结束后，强制输出缓冲区剩余内容
+        if draft_buffer:
+            full_response += draft_buffer
+            yield {"type": "chunk", "content": draft_buffer}
         
         t_step5 = time.time()
         print(f"⏱️ [步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms", flush=True)
