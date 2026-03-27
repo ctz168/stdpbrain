@@ -364,9 +364,9 @@ class HippocampusSystem(nn.Module):
             # 基础数据结构大小
             memory_size = sys.getsizeof(memory_id)
             
-            # 特征向量大小 - features 是可选属性
-            if memory.features is not None:
-                memory_size += memory.features.element_size() * memory.features.nelement()
+            # 特征向量大小 - dg_features 是 EpisodicMemory 的可选属性
+            if memory.dg_features is not None:
+                memory_size += memory.dg_features.element_size() * memory.dg_features.nelement()
             
             # 文本数据大小 - semantic_pointer 是 EpisodicMemory 的必需属性
             memory_size += sys.getsizeof(memory.semantic_pointer)
