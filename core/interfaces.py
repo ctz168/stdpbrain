@@ -374,8 +374,11 @@ class BrainAIInterface:
         # 1.5 目标推断（新增）
         if self.goal_system is not None:
             # 使用当前思维状态推断目标
+            print("\n" + "="*60, flush=True)
+            print("🎯 [目标系统] 开始推断目标", flush=True)
+            print("="*60, flush=True)
             goal = self.goal_system.infer_goal(user_input, self.current_thought_state)
-            logger.debug(f"目标推断: {goal.goal_type.value} - {goal.description}")
+            print("="*60 + "\n", flush=True)
         
         t_step2 = time.time()
         print(f"⏱️ [步骤2] 目标推断: {(t_step2-t_step1)*1000:.0f}ms", flush=True)
@@ -503,8 +506,20 @@ class BrainAIInterface:
         t_step4 = time.time()
         print(f"⏱️ [步骤4] GW整合+提示构建: {(t_step4-t_step3)*1000:.0f}ms", flush=True)
         
+        # ========== 关键修改：将目标向量注入生成过程 ==========
+        # 准备目标向量（如果存在）
+        goal_vector = None
+        if self.goal_system is not None and self.goal_system.current_goal_vector is not None:
+            goal_vector = self.goal_system.current_goal_vector
+            print(f"🎯 [目标向量] 已准备，类型: {self.goal_system.current_goal.goal_type.value}")
+        
         output = self.model.generate(
-            prompt, max_tokens=max_tokens, temperature=0.6, use_self_loop=True, memory_anchor=memory_anchor
+            prompt, 
+            max_tokens=max_tokens, 
+            temperature=0.6, 
+            use_self_loop=True, 
+            memory_anchor=memory_anchor,
+            goal_vector=goal_vector  # 传递目标向量
         )
         
         t_step5 = time.time()
@@ -689,23 +704,32 @@ class BrainAIInterface:
                 
                 # 更新目标进度（新增）
                 if self.goal_system is not None and self.goal_system.current_goal is not None:
+                    print("\n🎯 [目标进度] 根据回复内容更新进度", flush=True)
                     # 根据目标类型和回复内容判断进度
                     goal = self.goal_system.current_goal
+                    print(f"🎯 [目标进度] 当前目标类型: {goal.goal_type.value}", flush=True)
+                    
                     if goal.goal_type.value == "remember":
                         # 记忆目标：如果用户提到个人信息，视为完成
-                        if is_core_memory and "好的" in output.text or "记住" in output.text:
+                        if is_core_memory and ("好的" in output.text or "记住" in output.text):
+                            print(f"🎯 [目标进度] 检测到记忆确认，进度=1.0", flush=True)
                             self.goal_system.update_progress(1.0)
                         else:
+                            print(f"🎯 [目标进度] 部分完成，进度=0.5", flush=True)
                             self.goal_system.update_progress(0.5)  # 部分完成
                     elif goal.goal_type.value == "recall":
                         # 回忆目标：如果回复中包含记忆信息
                         if memory_context and len(output.text) > 20:
+                            print(f"🎯 [目标进度] 回忆成功，进度=1.0", flush=True)
                             self.goal_system.update_progress(1.0)
                         else:
+                            print(f"🎯 [目标进度] 部分回忆，进度=0.3", flush=True)
                             self.goal_system.update_progress(0.3)
                     else:
                         # 其他目标：基础进度
+                        print(f"🎯 [目标进度] 基础完成，进度=0.8", flush=True)
                         self.goal_system.update_progress(0.8)
+                    print()  # 空行分隔
             except Exception as e:
                 logger.error(f"后台处理失败: {e}")
 

@@ -145,6 +145,9 @@ class GoalSystem:
         # 目标计数器
         self.goal_counter = 0
         
+        # 当前目标向量（用于参与生成过程）
+        self.current_goal_vector: Optional[torch.Tensor] = None
+        
         # 内在奖励历史
         self.reward_history: List[float] = []
         
@@ -235,6 +238,9 @@ class GoalSystem:
         self.current_goal = goal
         self.goal_stack.append(goal)
         
+        # 7. 生成目标向量（用于参与生成过程）
+        self.current_goal_vector = self._generate_goal_vector(goal)
+        
         return goal
     
     def _match_keywords(self, text: str) -> GoalType:
@@ -320,7 +326,10 @@ class GoalSystem:
         goal = self.current_goal if goal_id is None else self._find_goal(goal_id)
         
         if goal:
+            old_progress = goal.progress
             goal.progress = min(1.0, max(0.0, progress))
+            
+            print(f"🎯 [目标进度更新] {goal.goal_id}: {old_progress:.2f} → {goal.progress:.2f}", flush=True)
             
             # 检查是否完成
             if goal.is_complete():
@@ -342,6 +351,9 @@ class GoalSystem:
         goal.completed = True
         goal.progress = 1.0
         
+        print(f"🎯 [目标完成] ✓ {goal.goal_id}: {goal.description}", flush=True)
+        print(f"🎯 [目标完成] 类型: {goal.goal_type.value}", flush=True)
+        
         # 添加到历史
         self.goal_history.append(goal)
         
@@ -356,11 +368,64 @@ class GoalSystem:
         # 如果是当前目标，切换到下一个
         if goal == self.current_goal:
             self.current_goal = self.goal_stack[-1] if self.goal_stack else None
+            if self.current_goal:
+                print(f"🎯 [目标切换] → 下一个目标: {self.current_goal.description}", flush=True)
+            else:
+                print(f"🎯 [目标栈空] 所有目标已完成", flush=True)
     
     def _update_parent_progress(self, parent: Goal):
         """更新父目标进度"""
         if parent.sub_goals:
             parent.progress = sum(g.progress for g in parent.sub_goals) / len(parent.sub_goals)
+    
+    def _generate_goal_vector(self, goal: Goal) -> torch.Tensor:
+        """
+        生成目标向量（用于参与生成过程）
+        
+        Args:
+            goal: 目标对象
+        
+        Returns:
+            goal_vector: 目标向量 [hidden_size]
+        """
+        with torch.no_grad():
+            # 1. 获取目标类型嵌入
+            goal_type_idx = list(GoalType).index(goal.goal_type)
+            goal_type_embedding = self.inference.goal_type_embeddings(
+                torch.tensor([goal_type_idx], device=self.device)
+            )  # [1, embed_dim]
+            
+            print(f"   └─ 目标类型嵌入维度: {goal_type_embedding.shape}", flush=True)
+            
+            # 2. 结合目标优先级和进度
+            priority_weight = torch.tensor([goal.priority], device=self.device)
+            progress_weight = torch.tensor([goal.progress], device=self.device)
+            
+            # 3. 扩展到hidden_size维度
+            # 目标嵌入: embed_dim -> hidden_size
+            goal_vector = torch.zeros(self.hidden_size, device=self.device)
+            
+            # 将目标嵌入填充到向量的前部分
+            embed_dim = goal_type_embedding.shape[-1]
+            goal_vector[:embed_dim] = goal_type_embedding.squeeze(0)
+            
+            # 在特定位置编码优先级和进度
+            if embed_dim < self.hidden_size - 2:
+                goal_vector[embed_dim] = priority_weight
+                goal_vector[embed_dim + 1] = progress_weight
+            
+            print(f"   └─ 优先级编码位置: {embed_dim}, 值: {priority_weight.item():.2f}", flush=True)
+            print(f"   └─ 进度编码位置: {embed_dim+1}, 值: {progress_weight.item():.2f}", flush=True)
+            
+            # 4. 如果有子目标，编码子目标信息
+            if goal.sub_goals:
+                # 子目标数量编码
+                num_subgoals = min(len(goal.sub_goals), 10)  # 最多10个子目标
+                if embed_dim + 2 < self.hidden_size:
+                    goal_vector[embed_dim + 2] = torch.tensor([num_subgoals], device=self.device, dtype=torch.float)
+                print(f"   └─ 子目标数量: {num_subgoals}", flush=True)
+            
+            return goal_vector
             if parent.is_complete():
                 self._complete_goal(parent)
     

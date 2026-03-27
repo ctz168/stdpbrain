@@ -602,9 +602,13 @@ class QwenInterface:
         use_cache: bool = True,
         memory_anchor_id: Optional[str] = None,
         memory_anchor_gate: Optional[torch.Tensor] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,  # 新增：支持自定义embedding
         **kwargs
     ) -> Dict[str, Any]:
-        """单步前向推理 (KV-cache + inference_mode + 条件特征提取)"""
+        """单步前向推理 (KV-cache + inference_mode + 条件特征提取)
+        
+        新增：支持inputs_embeds参数，用于目标向量注入
+        """
         # 工具提示检测：简单的启发式
         is_tool_call = False
         if input_ids.shape[-1] > 0:
@@ -629,17 +633,27 @@ class QwenInterface:
         with torch.inference_mode():
             exclude_keys = {'return_dict', 'output_attentions', 'memory_anchor'}
             clean_kwargs = {k: v for k, v in kwargs.items() if k not in exclude_keys}
-            output_tensors = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                use_cache=use_cache,
-                memory_anchor=memory_anchor_gate,
-                output_attentions=False,
-                output_hidden_states=need_features,  # 优化3: 按需提取
-                return_dict=True,
+            
+            # 构建forward参数：优先使用inputs_embeds
+            forward_params = {
+                'attention_mask': attention_mask,
+                'past_key_values': past_key_values,
+                'use_cache': use_cache,
+                'memory_anchor': memory_anchor_gate,
+                'output_attentions': False,
+                'output_hidden_states': need_features,  # 优化3: 按需提取
+                'return_dict': True,
                 **clean_kwargs
-            )
+            }
+            
+            # 如果提供了inputs_embeds，使用它而不是input_ids
+            if inputs_embeds is not None:
+                forward_params['inputs_embeds'] = inputs_embeds
+                # 注意：使用inputs_embeds时，不能传递input_ids
+            else:
+                forward_params['input_ids'] = input_ids
+            
+            output_tensors = self.model(**forward_params)
             
             next_token_logits = output_tensors.logits[:, -1, :].clone()
             
@@ -1056,11 +1070,15 @@ class QwenInterface:
         temperature: float = 0.35,
         use_self_loop: bool = False,
         memory_anchor: Optional[torch.Tensor] = None,
+        goal_vector: Optional[torch.Tensor] = None,  # 新增：目标向量
         repetition_penalty: float = 1.3,  # 提高重复惩罚到1.3
         **kwargs
     ):
         """
         STDP Strict Generate with KV-cache optimization
+        
+        新增功能：
+        - goal_vector: 目标向量，注入到输入embedding中
         """
         start_time = time.time()
         
@@ -1075,6 +1093,33 @@ class QwenInterface:
         
         input_ids = inputs.input_ids.to(self.device)
         attention_mask = inputs.attention_mask.to(self.device)
+        
+        # ========== 1.5. 目标向量注入（新增）==========
+        if goal_vector is not None:
+            # 获取输入embedding
+            with torch.no_grad():
+                input_embeddings = self.model.base_model.get_input_embeddings()(input_ids)
+                # input_embeddings: [batch, seq_len, hidden_size]
+                
+                # 将目标向量扩展到序列长度
+                # goal_vector: [hidden_size] -> [1, seq_len, hidden_size]
+                goal_expanded = goal_vector.unsqueeze(0).unsqueeze(0).expand(
+                    input_embeddings.shape[0], 
+                    input_embeddings.shape[1], 
+                    -1
+                )
+                
+                # 注入目标向量（加权融合）
+                goal_injection_weight = 0.15  # 目标向量权重
+                modified_embeddings = input_embeddings * (1 - goal_injection_weight) + goal_expanded * goal_injection_weight
+                
+                print(f"🎯 [目标注入] 已将目标向量注入到输入embedding (权重={goal_injection_weight})")
+                
+                # 使用修改后的embedding（需要修改forward调用）
+                # 这里我们先记录，稍后在第一次forward时使用
+                self._modified_embeddings = modified_embeddings
+        else:
+            self._modified_embeddings = None
         
         # 定义停止token
         eos_token_id = self.model.tokenizer.eos_token_id
@@ -1093,8 +1138,12 @@ class QwenInterface:
             # KV-cache 模式: 只传最后一个 token
             if past_key_values is not None:
                 model_input_ids = input_ids[:, -1:]
+                # 第一步之后的步骤：不使用modified_embeddings
+                step_inputs_embeds = None
             else:
                 model_input_ids = input_ids
+                # 第一步：使用modified_embeddings（如果有）
+                step_inputs_embeds = self._modified_embeddings
                 
             step_outputs = self.forward_step(
                 input_ids=model_input_ids,
@@ -1102,6 +1151,7 @@ class QwenInterface:
                 past_key_values=past_key_values,
                 use_cache=True,
                 memory_anchor_gate=memory_anchor,
+                inputs_embeds=step_inputs_embeds,  # 传递修改后的embedding
                 **forward_kwargs
             )
             

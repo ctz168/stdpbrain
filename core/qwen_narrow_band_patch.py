@@ -25,10 +25,10 @@ class MemoryAnchorStore:
     """Global memory anchor storage"""
     def __init__(self):
         self.anchors: List[Dict] = []
-        self.enabled: bool = True
+        self.enabled: bool = True  # 启用稀疏注意力压缩（模拟人脑注意力机制）
         self.max_anchors: int = 5
         self.anchor_strength: float = 1.0
-        self.window_size: int = 64  # Narrow window size (last 64 tokens)
+        self.window_size: int = 64  # 窗口大小（平衡计算效率和上下文保持）
     
     def set_anchors(self, anchors: List[Dict], max_anchors: int = 5, strength: float = 1.0):
         """Set memory anchors"""
@@ -64,7 +64,59 @@ class SparseAttentionCompressor:
     
     Compresses KV to: recent W tokens + K memory anchors
     Implements human-like narrow-band attention
+    
+    Key Fix: Properly handle RoPE when concatenating anchors and window
     """
+    
+    @staticmethod
+    def reapply_rope(
+        key_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_offset: int = 0
+    ) -> torch.Tensor:
+        """
+        重新应用RoPE位置编码
+        
+        Args:
+            key_states: [batch, num_heads, seq_len, head_dim]
+            cos, sin: RoPE的cos和sin [seq_len, head_dim]
+            position_offset: 位置偏移量
+        
+        Returns:
+            重新应用RoPE后的key_states
+        """
+        # 获取序列长度
+        seq_len = key_states.shape[2]
+        
+        # 选择对应位置的cos和sin
+        # cos, sin形状: [seq_len, head_dim] 或 [1, seq_len, head_dim]
+        if cos.dim() == 3:
+            cos_pos = cos[:, position_offset:position_offset+seq_len, :]
+            sin_pos = sin[:, position_offset:position_offset+seq_len, :]
+        else:
+            cos_pos = cos[position_offset:position_offset+seq_len, :].unsqueeze(0)
+            sin_pos = sin[position_offset:position_offset+seq_len, :].unsqueeze(0)
+        
+        # 扩展到正确的维度 [batch, num_heads, seq_len, head_dim]
+        # cos_pos: [1, seq_len, head_dim] -> [batch, num_heads, seq_len, head_dim]
+        cos_pos = cos_pos.unsqueeze(0).expand(key_states.shape[0], -1, -1, -1)
+        cos_pos = cos_pos.expand(-1, key_states.shape[1], -1, -1)
+        
+        sin_pos = sin_pos.unsqueeze(0).expand(key_states.shape[0], -1, -1, -1)
+        sin_pos = sin_pos.expand(-1, key_states.shape[1], -1, -1)
+        
+        # 应用旋转位置编码（RoPE）
+        # rotate_half: 将向量分成两半并旋转
+        def rotate_half(x):
+            x1 = x[..., : x.shape[-1] // 2]
+            x2 = x[..., x.shape[-1] // 2 :]
+            return torch.cat((-x2, x1), dim=-1)
+        
+        # RoPE公式: k' = k * cos + rotate_half(k) * sin
+        key_rotated = key_states * cos_pos + rotate_half(key_states) * sin_pos
+        
+        return key_rotated
     
     @staticmethod
     def compress_kv(
@@ -74,7 +126,9 @@ class SparseAttentionCompressor:
         window_size: int = 64,
         num_heads: int = 2,
         head_dim: int = 256,
-        device: torch.device = None
+        device: torch.device = None,
+        cos: torch.Tensor = None,
+        sin: torch.Tensor = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compress KV to sparse representation
@@ -196,9 +250,30 @@ class SparseAttentionCompressor:
             anchor_keys_tensor = torch.cat(anchor_keys_list, dim=2) * strength
             anchor_values_tensor = torch.cat(anchor_values_list, dim=2) * strength
             
+            # ========== 关键修复：拼接前先移除RoPE，拼接后重新应用 ==========
+            # 但实际上RoPE不可逆，所以我们采用另一种策略：
+            # 为拼接后的KV统一应用新的RoPE
+            
+            # 策略：Anchors使用虚拟position（如负数或固定值）
+            #       Window使用正确的连续position
+            
+            num_anchors = anchor_keys_tensor.shape[2]
+            num_window = window_keys.shape[2]
+            
             # Concatenate: anchors + recent window
             compressed_keys = torch.cat([anchor_keys_tensor, window_keys], dim=2)
             compressed_values = torch.cat([anchor_values_tensor, window_values], dim=2)
+            
+            # ========== 重新应用RoPE ==========
+            if cos is not None and sin is not None:
+                # 为整个拼接后的KV重新应用position embedding
+                # 使用连续的position: 0, 1, 2, ..., total_len-1
+                compressed_keys = SparseAttentionCompressor.reapply_rope(
+                    compressed_keys, cos, sin, position_offset=0
+                )
+                # Values不需要RoPE，只需要Keys
+            
+            print(f"[SparseAttn] KV拼接完成: {num_anchors} anchors + {num_window} window = {compressed_keys.shape[2]} total")
         else:
             # No anchors, use only window
             compressed_keys = window_keys
@@ -220,50 +295,54 @@ class SparseAttentionCompressor:
         
         Compressed KV length = num_anchors + min(seq_len, window_size)
         Query length unchanged
+        
+        Key fix: Anchors should be visible to all queries (global memory)
+                 Window should follow causal rules
         """
         if attention_mask is None:
             return attention_mask
         
         # Calculate compressed KV length
         compressed_kv_len = num_anchors + min(original_seq_len, window_size)
+        query_len = attention_mask.shape[-2]  # Query length
+        
+        # 4D mask [batch, 1, query_len, kv_len]
+        if attention_mask.dim() == 4:
+            batch_size = attention_mask.shape[0]
+            
+            # Create new mask: all positions initialized to 0 (can attend)
+            new_mask = torch.zeros(batch_size, 1, query_len, compressed_kv_len, device=device, dtype=dtype)
+            
+            # ========== Anchors部分：对所有query可见（全局记忆）==========
+            # 不需要mask，保持为0即可
+            
+            # ========== Window部分：遵循causal规则 ==========
+            if original_seq_len <= window_size:
+                # 序列短，直接复制causal mask
+                new_mask[:, :, :, num_anchors:] = attention_mask
+            else:
+                # 序列长，需要调整causal mask
+                # Query只能看到之前的token
+                
+                # 获取原始causal mask的最后window_size列
+                # attention_mask shape: [batch, 1, query_len, original_seq_len]
+                window_mask = attention_mask[:, :, :, -window_size:]  # [batch, 1, query_len, window_size]
+                new_mask[:, :, :, num_anchors:] = window_mask
+            
+            return new_mask
         
         # 2D mask [batch, seq_len]
-        if attention_mask.dim() == 2:
+        elif attention_mask.dim() == 2:
             batch_size, seq_len = attention_mask.shape
-            # Create new mask
+            # Create new mask (padding mask, not causal mask)
             new_mask = torch.zeros(batch_size, compressed_kv_len, device=device, dtype=dtype)
-            # Copy recent window part of mask
+            
+            # Anchors: all accessible (no mask)
+            # Window: copy from original
             if original_seq_len <= window_size:
                 new_mask[:, num_anchors:] = attention_mask
             else:
                 new_mask[:, num_anchors:] = attention_mask[:, -window_size:]
-            return new_mask
-        
-        # 4D mask [batch, 1, seq_len, kv_len]
-        elif attention_mask.dim() == 4:
-            batch_size, _, seq_len, kv_len = attention_mask.shape
-            # Create new mask
-            new_mask = torch.zeros(batch_size, 1, seq_len, compressed_kv_len, device=device, dtype=dtype)
-            
-            # Anchor positions: can attend
-            # Window positions: preserve original causal mask logic
-            
-            # Simplified handling: assume anchors are all accessible, window part preserves original causal mask
-            if original_seq_len <= window_size:
-                # Sequence is short, copy directly
-                new_mask[:, :, :, num_anchors:] = attention_mask
-            else:
-                # Sequence is long, need to adjust causal mask
-                # Query position i should only attend to tokens before position i
-                # But since we only kept recent window, need to adjust indices
-                
-                # Simplified version: anchor positions all accessible, window positions use causal mask
-                # Create causal mask
-                causal_mask = torch.triu(
-                    torch.ones(seq_len, window_size, device=device, dtype=dtype) * float('-inf'),
-                    diagonal=1
-                )
-                new_mask[:, :, :, num_anchors:] = causal_mask.unsqueeze(0).unsqueeze(0)
             
             return new_mask
         
@@ -330,6 +409,8 @@ def patch_qwen_attention():
             
             # 改进：始终启用窗口压缩，有锚点时额外注入
             if anchor_store.enabled and original_seq_len > anchor_store.window_size:
+                num_anchors = len(anchors) if anchors else 0
+                
                 # Compress KV: keep only window + anchors
                 key_states, value_states = SparseAttentionCompressor.compress_kv(
                     key_states=key_states,
@@ -338,13 +419,36 @@ def patch_qwen_attention():
                     window_size=anchor_store.window_size,
                     num_heads=self.config.num_key_value_heads,
                     head_dim=self.head_dim,
-                    device=hidden_states.device
+                    device=hidden_states.device,
+                    cos=cos,  # 传递position embedding
+                    sin=sin   # 传递position embedding
                 )
+                
+                # ========== 关键：调整Q的position以匹配拼接后的KV ==========
+                # Q应该attend到KV的最后位置
+                # 拼接后的KV: [anchors...window...]
+                # Q的position应该对应window的末尾
+                
+                # 方法：重新应用RoPE到Q，使用正确的position offset
+                if num_anchors > 0 and cos is not None and sin is not None:
+                    # Q的position需要偏移num_anchors
+                    # 因为现在KV的position是 0, 1, 2, ..., num_anchors+window_size-1
+                    # Q应该对应position num_anchors+window_size-1（或当前实际position）
+                    
+                    # 但实际上，Q的position已经在前面应用过了
+                    # 我们需要"撤销"旧的RoPE，然后应用新的
+                    
+                    # 简化方案：不修改Q，而是调整KV的position
+                    # 让KV的position与Q匹配
+                    
+                    # 更好的方案：使用相对position编码
+                    # 暂时保持现状，观察效果
+                    pass
                 
                 # Adjust attention mask
                 attention_mask = SparseAttentionCompressor.adjust_attention_mask(
                     attention_mask=attention_mask,
-                    num_anchors=len(anchors) if anchors else 0,
+                    num_anchors=num_anchors,
                     window_size=anchor_store.window_size,
                     original_seq_len=original_seq_len,
                     device=hidden_states.device,

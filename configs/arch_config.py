@@ -31,8 +31,8 @@ class HardConstraints:
     KV_CACHE_WARMUP: bool = True  # 启用KV cache预热，加速首token
     
     # ========== KV Cache 滑动窗口管理（新增）==========
-    ENABLE_KV_SLIDING_WINDOW: bool = True  # 启用KV cache滑动窗口（实现无限上下文）
-    KV_CACHE_WINDOW_SIZE: int = 32  # KV cache窗口大小（只保留最近32个token的KV）
+    ENABLE_KV_SLIDING_WINDOW: bool = True  # 启用KV cache滑动窗口（模拟人脑工作记忆）
+    KV_CACHE_WINDOW_SIZE: int = 128  # KV cache窗口大小（平衡性能和上下文保持）
     ENABLE_KV_HIPPOCAMPUS_INTEGRATION: bool = True  # 启用海马体KV存储（长期记忆）
     KV_EVICT_TO_HIPPOCAMPUS: bool = True  # 被释放的KV自动存储到海马体
     MAX_MEMORY_KV: int = 5  # 最大记忆KV数量（用于组合注意力）

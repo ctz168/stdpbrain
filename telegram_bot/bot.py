@@ -203,20 +203,24 @@ class BrainAIBot:
                             
                             # 如果决定输出，发送缓冲区内容
                             if should_output and draft_buffer:
+                                # 转义 Markdown 特殊字符
+                                safe_draft = self._escape_markdown(draft_buffer)
+                                
                                 # 首次发送消息
                                 if not message_sent:
                                     message = await self.application.bot.send_message(
                                         chat_id=chat_id,
-                                        text=f"💭 *[潜意识]*\n_{draft_buffer}▌_",
+                                        text=f"💭 *[潜意识]*\n_{safe_draft}▌_",
                                         parse_mode='Markdown'
                                     )
                                     message_sent = True
-                                    last_sent_text = draft_buffer
+                                    last_sent_text = safe_draft
                                 else:
                                     # 更新消息
                                     current_time = time.time()
                                     if current_time - last_update_time > update_interval:
-                                        new_text = f"💭 *[潜意识]*\n_{full_monologue[:400]}▌_"
+                                        safe_full = self._escape_markdown(full_monologue[:400])
+                                        new_text = f"💭 *[潜意识]*\n_{safe_full}▌_"
                                         if new_text != last_sent_text:
                                             try:
                                                 await message.edit_text(
@@ -237,7 +241,9 @@ class BrainAIBot:
                             if len(self.monologue_buffer) > self.max_monologue_buffer:
                                 self.monologue_buffer.pop(0)
                             
-                            final_text = f"💭 *[潜意识]*\n_{clean_monologue}_"
+                            # 转义 Markdown 特殊字符
+                            safe_monologue = self._escape_markdown(clean_monologue)
+                            final_text = f"💭 *[潜意识]*\n_{safe_monologue}_"
                             
                             if message_sent:
                                 # 更新已发送的消息
@@ -313,6 +319,17 @@ class BrainAIBot:
                 chunk_size=self.stream_chunk_size,
                 delay_ms=self.stream_delay_ms
             )
+    
+    def _escape_markdown(self, text: str) -> str:
+        """
+        转义 Telegram Markdown 特殊字符
+        
+        需要转义的字符：_ * [ ] ( ) ~ ` > # + - = | { } . !
+        """
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in special_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -752,9 +769,11 @@ class BrainAIBot:
                             recalled_mem_str += f"  {i}. {semantic}... (激活:{activation:.3f})\n"
                     
                     # 立即显示潜意识
+                    # 转义 Markdown 特殊字符
+                    safe_monologue = self._escape_markdown(monologue)
                     display_text = (
                         f"💭 *[潜意识]*\n"
-                        f"_{monologue}_\n\n"
+                        f"_{safe_monologue}_\n\n"
                         f"📊 *系统状态:*\n{status_str}\n"
                         f"{recalled_mem_str}"
                         f"✨ *[准备回复...]*"
@@ -780,7 +799,7 @@ class BrainAIBot:
                         
                         display_text = (
                             f"💭 *[潜意识]*\n"
-                            f"_{monologue}_\n\n"
+                            f"_{safe_monologue}_\n\n"
                             f"📊 *系统状态:*\n{status_str}\n"
                             f"{recalled_mem_str}"
                             f"✨ **回复:**\n{full_response}▌"
@@ -890,9 +909,10 @@ class BrainAIBot:
             input_str = f"📝 *输入:* `{user_message[:80]}...`\n" if len(user_message) > 80 else f"📝 *输入:* `{user_message}`\n"
             
             # 构建最终消息
+            safe_monologue_final = self._escape_markdown(monologue)
             final_display = (
                 f"💭 *[潜意识]*\n"
-                f"_{monologue}_\n\n"
+                f"_{safe_monologue_final}_\n\n"
                 f"{input_str}\n"
                 f"📊 *系统状态详情*\n"
                 f"{stdp_info}\n"
