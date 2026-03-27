@@ -850,7 +850,7 @@ class QwenInterface:
                 break
             
             # ========== N-gram 重复检测 ==========
-            recent_tokens.append(next_token_id.item())
+            recent_tokens.append(next_token_id)  # next_token_id 已经是 int
             if len(recent_tokens) > 10:
                 recent_tokens.pop(0)
             
@@ -976,7 +976,7 @@ class QwenInterface:
                 break
             
             # ========== N-gram 重复检测 ==========
-            recent_tokens.append(next_token_id.item())
+            recent_tokens.append(next_token_id)  # next_token_id 已经是 int
             if len(recent_tokens) > 10:
                 recent_tokens.pop(0)
             
