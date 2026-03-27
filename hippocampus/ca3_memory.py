@@ -201,16 +201,20 @@ class CA3EpisodicMemory(nn.Module):
                 if any(kw in semantic_text for kw in keywords):
                     candidates.append(memory)
         
-        # ========== 2. 特征相似度匹配 ==========
+        # ========== 2. 特征相似度匹配 + 语义关键词匹配 ==========
         if query_features is not None and len(candidates) < topk:
-            # 收集所有记忆的特征
+            # 收集所有记忆的特征和语义信息
             all_features = []
             all_ids = []
+            all_semantics = []  # 新增：保存语义指针
             
             for mid, memory in self.memories.items():
                 if memory.dg_features is not None:
                     all_features.append(memory.dg_features)
                     all_ids.append(mid)
+                    # 收集语义指针和内容
+                    semantic_info = (memory.semantic_pointer + " " + memory.content).lower()
+                    all_semantics.append(semantic_info)
             
             if all_features:
                 all_features = torch.stack(all_features)
@@ -235,16 +239,43 @@ class CA3EpisodicMemory(nn.Module):
                     
                     # 获取 Top-K 相似的记忆
                     # 核心记忆使用更低的阈值
-                    top_sim, top_indices = torch.topk(similarities, k=min(topk * 2, len(all_ids)))
+                    top_sim, top_indices = torch.topk(similarities, k=min(topk * 3, len(all_ids)))  # 增加到3倍
+                    
+                    # 如果有语义查询，也进行关键词匹配
+                    query_keywords = set()
+                    if query_semantic:
+                        # 提取查询中的数字和关键词
+                        import re
+                        # 提取金额数字
+                        money_nums = re.findall(r'\d+(?:\.\d+)?', query_semantic)
+                        query_keywords.update(money_nums)
+                        # 提取日期
+                        dates = re.findall(r'\d{1,2}月\d{1,2}[日号]?|\d+号|\d+日', query_semantic)
+                        query_keywords.update(dates)
+                        # 提取关键词（房租、押金等）
+                        keywords = re.findall(r'房租|押金|卫生费|水电费|物业费|租金|定金', query_semantic)
+                        query_keywords.update(keywords)
                     
                     for i, sim in enumerate(top_sim):
                         memory_id = all_ids[top_indices[i]]
                         memory = self.memories[memory_id]
                         
-                        # 核心记忆使用更低的召回阈值
-                        threshold = 0.4 if memory.is_core else 0.5  # 降低阈值提高召回率
+                        # 计算语义匹配分数
+                        semantic_score = 0.0
+                        if query_keywords and i < len(all_semantics):
+                            semantic_text = all_semantics[i]
+                            # 检查关键词匹配
+                            matched_keywords = sum(1 for kw in query_keywords if kw in semantic_text)
+                            semantic_score = matched_keywords / len(query_keywords) if query_keywords else 0.0
                         
-                        if sim > threshold:
+                        # 综合评分：特征相似度 + 语义匹配
+                        # 如果语义匹配度高，即使特征相似度低也召回
+                        final_score = sim * 0.6 + semantic_score * 0.4
+                        
+                        # 核心记忆使用更低的召回阈值
+                        threshold = 0.35 if memory.is_core else 0.40  # 进一步降低阈值
+                        
+                        if final_score > threshold or sim > 0.5 or semantic_score > 0.5:
                             candidates.append(memory)
         
         # ========== 3. 如果召回结果不足，直接返回核心记忆 ==========

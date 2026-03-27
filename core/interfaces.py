@@ -641,44 +641,72 @@ class BrainAIInterface:
         identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住"]
         is_core_memory = any(pattern in user_input for pattern in identity_patterns)
         
-        # 提取实体信息增强semantic_pointer - 改进：存储结构化信息
-        enhanced_pointer = f"用户: {user_input[:30]} | 回复: {output.text[:30]}"
+        # 提取实体信息增强semantic_pointer - 改进：存储结构化信息，增加保存长度
+        enhanced_pointer = f"用户: {user_input[:80]} | 回复: {output.text[:80]}"  # 增加到80字符
         
         # 提取关键实体并构建记忆内容
         memory_content = f"{user_input} -> {output.text}"
-        if is_core_memory:
-            # 提取关键实体 - 改进：更精确的正则表达式
-            import re
-            # 名字：只匹配中文字符或字母，不包括标点
-            name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
-            age_match = re.search(r"我今年(\d+)", user_input)
-            job_match = re.search(r"我是(.{2,10})(工程师|医生|老师|学生|设计师|程序员)", user_input)
-            # 地点：匹配"来自XX"或"在XX工作/生活"
-            location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10})(工作|生活)", user_input)
-            hobby_match = re.search(r"我喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
-            
-            entities = []
-            if name_match:
-                name = name_match.group(1) or name_match.group(3)
-                entities.append(f"用户名字:{name}")
-                enhanced_pointer = f"名字:{name} | " + enhanced_pointer
-            if age_match:
-                entities.append(f"年龄:{age_match.group(1)}岁")
-                enhanced_pointer = f"年龄:{age_match.group(1)}岁 | " + enhanced_pointer
-            if job_match:
-                entities.append(f"职业:{job_match.group(0)}")
-                enhanced_pointer = f"职业:{job_match.group(0)} | " + enhanced_pointer
-            if location_match:
-                location = location_match.group(1) or location_match.group(2)
-                entities.append(f"地点:{location}")
-                enhanced_pointer = f"地点:{location} | " + enhanced_pointer
-            if hobby_match:
-                entities.append(f"爱好:{hobby_match.group(1)}")
-            
-            if entities:
-                # 改进：存储结构化实体信息，而不是整个对话
-                memory_content = " | ".join(entities)
-                enhanced_pointer = " | ".join(entities)
+        
+        # ========== 新增：提取数值和关键信息 ==========
+        import re
+        entities = []
+        
+        # 1. 金额信息（租金、押金、费用等）
+        # 匹配"XX元"、"XX块钱"、"XX万"
+        money_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(元|块钱|万|千元)', user_input)
+        money_keywords = re.findall(r'(房租|押金|卫生费|水电费|物业费|费用|租金|定金|预付款)', user_input)
+        if money_matches or money_keywords:
+            for i, (amount, unit) in enumerate(money_matches):
+                # 尝试关联关键词
+                if i < len(money_keywords):
+                    entities.append(f"{money_keywords[i]}:{amount}{unit}")
+                else:
+                    entities.append(f"金额:{amount}{unit}")
+        
+        # 2. 日期时间信息
+        date_matches = re.findall(r'(\d{1,2}月\d{1,2}[日号]?|\d{4}年\d{1,2}月\d{1,2}[日号]?|\d{1,2}号|\d{1,2}日)', user_input)
+        for date in date_matches:
+            entities.append(f"日期:{date}")
+        
+        # 3. 个人信息（名字、年龄、职业等）
+        name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
+        age_match = re.search(r"我今年(\d+)", user_input)
+        job_match = re.search(r"我是(.{2,10})(工程师|医生|老师|学生|设计师|程序员)", user_input)
+        location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10})(工作|生活)", user_input)
+        hobby_match = re.search(r"我喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
+        
+        if name_match:
+            name = name_match.group(1) or name_match.group(3)
+            entities.append(f"用户名字:{name}")
+            is_core_memory = True  # 有名字信息标记为核心记忆
+        if age_match:
+            entities.append(f"年龄:{age_match.group(1)}岁")
+            is_core_memory = True
+        if job_match:
+            entities.append(f"职业:{job_match.group(0)}")
+            is_core_memory = True
+        if location_match:
+            location = location_match.group(1) or location_match.group(2)
+            entities.append(f"地点:{location}")
+            is_core_memory = True
+        if hobby_match:
+            entities.append(f"爱好:{hobby_match.group(1)}")
+        
+        # 4. 数值信息（面积、数量等）
+        number_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(平方|平米|平方米|天|个月|年|个|件|次)', user_input)
+        for num, unit in number_matches:
+            entities.append(f"{unit}:{num}")
+        
+        # 5. 如果提取到实体，更新语义指针和记忆内容
+        if entities:
+            entity_str = " | ".join(entities)
+            enhanced_pointer = entity_str + " | " + enhanced_pointer
+            # 核心记忆：存储结构化实体信息
+            # 普通记忆：存储完整对话 + 实体摘要
+            if is_core_memory:
+                memory_content = entity_str + " | " + user_input[:100]  # 保存更多上下文
+            else:
+                memory_content = entity_str + " | " + memory_content[:200]  # 保存实体 + 截断对话
         
         thought_state_snapshot = self.current_thought_state
         
@@ -1184,11 +1212,15 @@ class BrainAIInterface:
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             query_features = embeddings.mean(dim=1).squeeze(0)
             
-            if query_features.shape[0] != 1024:
-                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            # ========== 修复：不需要适配，海马体EC编码器期望2048维输入 ==========
+            # 之前的适配逻辑是错误的，海马体内部会处理维度转换（2048 -> 256 -> 512）
+            # if query_features.shape[0] != 1024:  # 错误的逻辑
+            #     query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
             actual_topk = 5 if is_memory_question else topk
-            query_semantic = user_input if (is_identity_question or is_memory_question) else None
+            # ========== 修复：所有查询都使用语义匹配 ==========
+            # 不再限制只有身份问题才使用语义匹配
+            query_semantic = user_input  # 所有查询都使用语义信息
             recalled_memories = self.hippocampus.recall(query_features, topk=actual_topk, query_semantic=query_semantic)
             
             if recalled_memories:
