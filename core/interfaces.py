@@ -954,22 +954,24 @@ class BrainAIInterface:
         max_tokens: int = 256
     ) -> AsyncGenerator[Dict[str, str], None]:
         """
-        流式类人对话接口 (并行优化版)：
-        1. [并行] 召回 + 思考
-        2. [串行] 输出回复流
+        流式类人对话接口 (迭代潜意识版)：
+        1. [并行] 召回 + 初始独白
+        2. [迭代] 生成回复 + 刷新潜意识
         3. [并行/后台] 后期固化
+        
+        核心：潜意识持续运行，迭代地影响回复内容
         """
         import time
         t_start = time.time()
         
         self.hippocampus.record_activity()
-        self.thought_seed = user_input  # ← 提前设置，影响独白生成
-        self._last_user_input = user_input  # 同时更新最后用户输入
+        self.thought_seed = user_input
+        self._last_user_input = user_input
         
         t_step1 = time.time()
         print(f"⏱️ [步骤1] 输入预处理: {(t_step1-t_start)*1000:.0f}ms", flush=True)
         
-        # 使用公共方法并行召回和独白生成
+        # 初始记忆召回和独白生成
         memory_context, recalled_memories, monologue_raw = await asyncio.to_thread(
             self._parallel_recall_and_monologue, user_input, 3
         )
@@ -977,13 +979,12 @@ class BrainAIInterface:
         t_step2 = time.time()
         print(f"⏱️ [步骤2] 并行召回+独白: {(t_step2-t_step1)*1000:.0f}ms", flush=True)
         
-        # 设置记忆锚点用于窄带宽注意力
+        # 设置记忆锚点
         self._last_recalled_memories = recalled_memories
         if recalled_memories:
             kv_anchors = [m for m in recalled_memories if 'key_features' in m or 'dg_features' in m]
             if kv_anchors:
                 self.model.set_memory_anchors(kv_anchors)
-                logger.debug(f"设置 {len(kv_anchors)} 个记忆锚点用于窄带宽注意力")
         
         monologue = self._clean_monologue(monologue_raw, user_input)
         
@@ -991,10 +992,11 @@ class BrainAIInterface:
         print(f"⏱️ [步骤3] 独白清洗: {(t_step3-t_step2)*1000:.0f}ms", flush=True)
         
         yield {"type": "monologue", "content": monologue}
-        # 计算情感显著性 (简单启发式)
+        
+        # 计算情感显著性
         emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
         salience = 1.0 + 0.5 * sum(1 for kw in emotional_keywords if kw in user_input or kw in monologue)
-        salience = min(salience, 3.0) # 最高 3 倍增强
+        salience = min(salience, 3.0)
         
         prompt = self._format_chat_prompt(user_input, history, monologue, memory_context)
         
@@ -1003,6 +1005,10 @@ class BrainAIInterface:
         
         full_response = ""
         final_hidden_state = None
+        subconscious_refresh_interval = 50  # 每生成50个token刷新一次潜意识
+        tokens_since_refresh = 0
+        current_subconscious = monologue  # 当前潜意识内容
+        
         try:
             async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.6):
                 # 检查是否是隐藏状态标记
@@ -1010,7 +1016,29 @@ class BrainAIInterface:
                     final_hidden_state = chunk.get("hidden_state")
                 else:
                     full_response += chunk
+                    tokens_since_refresh += len(chunk)  # 粗略估计token数
                     yield {"type": "chunk", "content": chunk}
+                    
+                    # ========== 迭代潜意识刷新 ==========
+                    # 每生成一定数量的内容，刷新潜意识
+                    if tokens_since_refresh >= subconscious_refresh_interval:
+                        # 在后台刷新潜意识
+                        try:
+                            # 基于当前回复内容刷新潜意识
+                            refresh_context = f"用户问：{user_input}\n我正在回复：{full_response[-200:]}"
+                            new_subconscious_raw = await asyncio.to_thread(
+                                self._generate_spontaneous_monologue, 20, 0.7
+                            )
+                            if new_subconscious_raw and len(new_subconscious_raw) > 5:
+                                current_subconscious = new_subconscious_raw
+                                # 发送潜意识更新事件
+                                yield {"type": "subconscious_refresh", "content": current_subconscious}
+                                logger.debug(f"[潜意识刷新] {current_subconscious[:50]}...")
+                        except Exception as e:
+                            logger.debug(f"潜意识刷新失败: {e}")
+                        
+                        tokens_since_refresh = 0
+                        
         except Exception as e:
             logger.error(f"流式生成失败: {e}")
             output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.6)

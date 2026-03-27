@@ -72,6 +72,11 @@ class BrainAIBot:
         self.monologue_buffer: List[str] = []
         self.max_monologue_buffer = 5
         
+        # 持续潜意识流
+        self.pending_user_input: Optional[str] = None  # 待处理的用户输入
+        self.subconscious_state: Dict[str, Any] = {}  # 潜意识状态
+        self.last_subconscious_update: float = 0  # 上次潜意识更新时间
+        
         self._init_stream_handler()
         
         # 注册主动消息回调
@@ -80,78 +85,107 @@ class BrainAIBot:
             logger.info("[Bot] 已注册主动消息回调")
     
     async def _background_thinking_loop(self):
-        """后台持续自思考流 (内心独白流式生成 + 主动推送)"""
-        logger.info("[Thinking] 后台自思考流已启动")
+        """
+        后台持续潜意识流 (永不停止)
+        
+        核心理念：
+        - 潜意识是一个持续运行的流，永不停止
+        - 当有用户输入时，潜意识处理用户输入
+        - 否则，生成自由独白
+        """
+        logger.info("[Thinking] 后台潜意识流已启动 - 持续运行模式")
         
         while self.is_thinking_enabled:
             try:
                 if self.ai:
-                    delay = random.randint(20, 40)
+                    # 缩短等待时间，让潜意识更频繁地运行
+                    delay = random.randint(8, 15)  # 从 20-40 秒缩短到 8-15 秒
                     await asyncio.sleep(delay)
                     
-                    # 检查用户是否正在交互（只在交互期间暂停，回答后立即恢复）
-                    if self.is_user_interacting:
-                        logger.debug("[Thinking] 用户正在交互，跳过本次内心独白")
+                    chat_id = self.last_active_chat_id
+                    if not chat_id:
                         continue
                     
-                    chat_id = self.last_active_chat_id
+                    # 检查是否有待处理的用户输入
+                    if self.pending_user_input:
+                        logger.info(f"[Thinking] 潜意识处理用户输入: {self.pending_user_input[:30]}...")
+                        # 潜意识处理用户输入（不发送消息，只更新内部状态）
+                        try:
+                            async for event in self.ai.chat_stream(self.pending_user_input, []):
+                                if event["type"] == "monologue":
+                                    logger.debug(f"[潜意识] {event['content'][:50]}...")
+                            self.pending_user_input = None  # 清除待处理输入
+                        except Exception as e:
+                            logger.error(f"[Thinking] 潜意识处理输入失败: {e}")
+                        continue
                     
-                    if chat_id:
-                        logger.info(f"[Thinking] 正在流式生成内心独白...")
-                        
-                        # 先发送初始消息
+                    # 用户正在交互时，降低更新频率但不停止
+                    if self.is_user_interacting:
+                        await asyncio.sleep(5)  # 等待用户交互完成
+                        continue
+                    
+                    # 生成自由独白
+                    logger.info(f"[Thinking] 潜意识自由流动...")
+                    
+                    try:
                         message = await self.application.bot.send_message(
                             chat_id=chat_id,
-                            text="💭 *[内心独白]*\n_思考中..._",
+                            text="💭 *[潜意识]*\n_自由思考中..._",
                             parse_mode='Markdown'
                         )
                         
-                        # 流式生成独白
                         full_monologue = ""
                         last_update_time = time.time()
                         last_sent_text = ""
-                        update_interval = 1.5  # 增加间隔以避免 429
+                        update_interval = 2.0  # 增加间隔避免限流
                         
-                        async for chunk in self.ai.generate_monologue_stream(max_tokens=150):
+                        async for chunk in self.ai.generate_monologue_stream(max_tokens=100):
                             full_monologue += chunk
                             
                             current_time = time.time()
                             if current_time - last_update_time > update_interval:
-                                display_text = full_monologue[:500]
-                                new_text = f"💭 *[内心独白]*\n_{display_text}▌_"
+                                display_text = full_monologue[:400]
+                                new_text = f"💭 *[潜意识]*\n_{display_text}▌_"
                                 
-                                # 只有在内容变化时才更新，避免 400 错误
                                 if new_text != last_sent_text:
-                                    await message.edit_text(
-                                        text=new_text,
-                                        parse_mode='Markdown'
-                                    )
-                                    last_sent_text = new_text
-                                    last_update_time = current_time
+                                    try:
+                                        await message.edit_text(
+                                            text=new_text,
+                                            parse_mode='Markdown'
+                                        )
+                                        last_sent_text = new_text
+                                        last_update_time = current_time
+                                    except:
+                                        pass
                         
                         # 最终更新
                         if full_monologue:
-                            clean_monologue = full_monologue.strip().replace('"', '').replace("'", "")
-                            
-                            # 写入缓冲区
+                            clean_monologue = full_monologue.strip()
                             self.monologue_buffer.append(clean_monologue)
                             if len(self.monologue_buffer) > self.max_monologue_buffer:
                                 self.monologue_buffer.pop(0)
                             
-                            # 最终消息
-                            final_text = f"💭 *[内心独白]*\n_{clean_monologue}_"
+                            final_text = f"💭 *[潜意识]*\n_{clean_monologue}_"
                             if final_text != last_sent_text:
-                                await message.edit_text(
-                                    text=final_text,
-                                    parse_mode='Markdown'
-                                )
+                                try:
+                                    await message.edit_text(
+                                        text=final_text,
+                                        parse_mode='Markdown'
+                                    )
+                                except:
+                                    pass
                             
-                            logger.info(f"[Monologue Push] Sent to {chat_id}: {clean_monologue[:50]}...")
+                            logger.info(f"[潜意识] 自由独白: {clean_monologue[:50]}...")
+                            
+                    except Exception as e:
+                        logger.error(f"[Thinking] 潜意识生成失败: {e}")
+                        
                 else:
                     await asyncio.sleep(10)
+                    
             except Exception as e:
-                logger.error(f"[Thinking] 后台思考异常: {e}")
-                await asyncio.sleep(30)
+                logger.error(f"[Thinking] 后台潜意识异常: {e}")
+                await asyncio.sleep(20)
 
     def set_ai_interface(self, ai_interface):
         self.ai = ai_interface
@@ -685,6 +719,11 @@ class BrainAIBot:
                                         await initial_message.edit_text(fallback, parse_mode=None)
                                     except:
                                         pass
+                
+                # 处理潜意识刷新事件
+                elif event["type"] == "subconscious_refresh":
+                    monologue = event["content"]  # 更新当前潜意识内容
+                    logger.debug(f"[Bot] 潜意识刷新: {monologue[:30]}...")
             
             await typing.stop_typing()
             
