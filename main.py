@@ -114,53 +114,48 @@ def run_chat(ai):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-        while True:
-            user_input = input("\n\033[92m你：\033[0m").strip()
-            
-            if user_input.lower() in ['quit', 'exit']:
-                break
-            
-            if not user_input:
-                continue
-            
-            # 使用流式对话接口
-            start_time = time.time()
-            
-            # 检查是否支持 chat_stream
-            if hasattr(ai, 'chat_stream'):
-                print("\033[90m💭 [潜意识消化中...]\033[0m")
-                
-                monologue = ""
-                response = ""
-                
-                # 运行异步生成（使用已创建的事件循环）
-                async def stream_chat():
-                    nonlocal monologue, response
-                    async for event in ai.chat_stream(user_input, history):
-                        if event["type"] == "monologue":
-                            monologue = event["content"]
-                            # 实时更新独白显示
-                            print(f"\r\033[90m💭 [潜意识] {monologue[:50]}...\033[0m", end="", flush=True)
-                        elif event["type"] == "chunk":
-                            if monologue and not response:
-                                # 独白结束，开始回复
-                                print()  # 换行
-                                print(f"\033[90m💭 [内心独白] {monologue}\033[0m")
-                                print("\n\033[93mAI:\033[0m", end=" ", flush=True)
-                            response += event["content"]
-                            print(event["content"], end="", flush=True)
-                    return response
-                
-                # 使用已存在的事件循环
-                response = loop.run_until_complete(stream_chat())
-                print()  # 最终换行
-            else:
-                # 降级到同步模式
-                response = ai.chat(user_input, history)
-                print(f"\n\033[93mAI:\033[0m {response}")
-            
-            elapsed = time.time() - start_time
-            print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
+    while True:
+        user_input = input("\n\033[92m你：\033[0m").strip()
+        
+        if user_input.lower() in ['quit', 'exit']:
+            break
+        
+        if not user_input:
+            continue
+        
+        # 使用流式对话接口
+        start_time = time.time()
+        
+        # BrainAIInterface 必定有 chat_stream 方法
+        print("\033[90m💭 [潜意识消化中...]\033[0m")
+        
+        monologue = ""
+        response = ""
+        
+        # 运行异步生成（使用已创建的事件循环）
+        async def stream_chat():
+            nonlocal monologue, response
+            async for event in ai.chat_stream(user_input, history):
+                if event["type"] == "monologue":
+                    monologue = event["content"]
+                    # 实时更新独白显示
+                    print(f"\r\033[90m💭 [潜意识] {monologue[:50]}...\033[0m", end="", flush=True)
+                elif event["type"] == "chunk":
+                    if monologue and not response:
+                        # 独白结束，开始回复
+                        print()  # 换行
+                        print(f"\033[90m💭 [内心独白] {monologue}\033[0m")
+                        print("\n\033[93mAI:\033[0m", end=" ", flush=True)
+                    response += event["content"]
+                    print(event["content"], end="", flush=True)
+            return response
+        
+        # 使用已存在的事件循环
+        response = loop.run_until_complete(stream_chat())
+        print()  # 最终换行
+        
+        elapsed = time.time() - start_time
+        print(f"\n\033[94m[耗时：{elapsed*1000:.1f}ms]\033[0m")
     
     # 关闭事件循环
     loop.close()

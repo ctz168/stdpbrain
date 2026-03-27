@@ -90,7 +90,9 @@ class DentateGyrusSeparator(nn.Module):
         batch_size, seq_len, _ = ec_code.shape
         
         # ========== 1. 稀疏随机投影 ==========
-        dg_output = F.linear(ec_code, self.projection_matrix)  # [batch, seq, output_dim]
+        # 自动匹配输入的数据类型 (FP16/FP32)
+        proj_matrix = self.projection_matrix.to(dtype=ec_code.dtype, device=ec_code.device)
+        dg_output = F.linear(ec_code, proj_matrix)  # [batch, seq, output_dim]
         
         # ========== 2. 非线性激活 (增强分离效果) ==========
         dg_output = F.relu(dg_output)
@@ -98,7 +100,8 @@ class DentateGyrusSeparator(nn.Module):
         # ========== 3. 正交化 (可选) ==========
         if self.orthogonalization:
             # 将输出投影到正交基上
-            dg_output = torch.matmul(dg_output, self.orthogonal_basis.t())
+            orth_basis = self.orthogonal_basis.to(dtype=dg_output.dtype, device=dg_output.device)
+            dg_output = torch.matmul(dg_output, orth_basis.t())
         
         # ========== 4. 归一化 ==========
         dg_output = F.normalize(dg_output, p=2, dim=-1)

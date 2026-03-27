@@ -170,12 +170,12 @@ class SWRConsolidation:
         # 快速重放记忆序列
         for i, memory in enumerate(sequence.memories):
             # 增强记忆的激活强度 (巩固)
-            if hasattr(self.hippocampus, 'ca3_memory'):
-                memory_id = memory.get('memory_id')
-                if memory_id:
-                    # 根据奖励信号增强
-                    delta = sequence.reward_signal * self.consolidation_strength
-                    self.hippocampus.ca3_memory.update_memory_strength(memory_id, delta)
+            # ca3_memory 是 HippocampusSystem 的必需组件
+            memory_id = memory.get('memory_id')
+            if memory_id:
+                # 根据奖励信号增强
+                delta = sequence.reward_signal * self.consolidation_strength
+                self.hippocampus.ca3_memory.update_memory_strength(memory_id, delta)
             
             # 调用 STDP 更新 (如果已设置回调)
             if self.stdp_update_fn:
@@ -295,9 +295,8 @@ class SWRConsolidation:
         else:
             self._memory_links[link_key] = strength
         
-        # 如果海马体支持关联更新
-        if hasattr(self.hippocampus, 'ca3_memory') and \
-           hasattr(self.hippocampus.ca3_memory, 'update_link'):
+        # 如果海马体支持关联更新 - update_link 是 CA3EpisodicMemory 的方法
+        if hasattr(self.hippocampus.ca3_memory, 'update_link'):
             self.hippocampus.ca3_memory.update_link(
                 from_memory_id, 
                 to_memory_id, 
@@ -321,7 +320,7 @@ class SWRConsolidation:
         # 这实际上是选择性地"修剪"弱记忆
         for memory in sequence.memories:
             memory_id = memory.get('memory_id')
-            if memory_id and hasattr(self.hippocampus, 'ca3_memory'):
+            if memory_id:
                 # 获取当前记忆强度
                 current_strength = self.hippocampus.ca3_memory.get_memory_strength(memory_id)
                 

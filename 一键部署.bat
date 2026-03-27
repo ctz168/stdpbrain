@@ -64,6 +64,16 @@ echo       [2/2] 安装依赖包...
 venv\Scripts\python.exe -m pip install torch transformers huggingface_hub numpy accelerate -i https://pypi.tuna.tsinghua.edu.cn/simple
 venv\Scripts\python.exe -m pip install python-telegram-bot aiohttp pydantic python-dotenv loguru tqdm colorama modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
 
+REM 尝试安装注意力优化库 (可选，Windows可能失败)
+echo.
+echo       [可选] 安装注意力加速库...
+venv\Scripts\python.exe -m pip install flash-linear-attention causal-conv1d -i https://pypi.tuna.tsinghua.edu.cn/simple 2>nul
+if %errorlevel% equ 0 (
+    echo       [OK] 注意力加速库安装成功
+) else (
+    echo       [跳过] 注意力加速库安装失败，使用标准实现
+)
+
 echo.
 echo       [OK] 依赖安装完成
 echo.

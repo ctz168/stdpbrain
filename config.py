@@ -24,7 +24,7 @@ MODEL_PATH = "./models/Qwen3.5-2B"
 # 量化类型 ("INT4", "INT8", "FP16", "FP32", "AUTO")
 # 在 macOS/CPU 上，INT4/INT8 会被自动优化或回退
 # AUTO: 在 GPU 上使用 INT8，在 CPU 上使用 FP32（避免缓慢的动态量化）
-QUANTIZATION = "FP32"
+QUANTIZATION = "FP16"
 
 # 设备 ("cuda", "cpu", "mps")
 # 留空则自动检测

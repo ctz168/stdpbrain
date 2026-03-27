@@ -117,9 +117,6 @@ class BrainAIBot:
                                     )
                                     last_sent_text = new_text
                                     last_update_time = current_time
-                        except Exception as e:
-                            logger.error(f"流式独白生成失败: {e}")
-                            full_monologue = "我正在思考..."
                         
                         # 最终更新
                         if full_monologue:
@@ -207,91 +204,98 @@ class BrainAIBot:
             await update.message.reply_text("⚠️ AI 模型未初始化")
             return
         
-        try:
-            stats = self.ai.get_stats()
-            
-            # 构建详细的监控消息
-            stats_text = "📊 [*系统监控面板*]\n"
-            stats_text += "=" * 30 + "\n\n"
-            
-            # 1. 海马体记忆情况
-            hippocampus = stats.get('hippocampus', {})
-            stats_text += "🧠 [*海马体记忆*]\n"
-            stats_text += f"  记忆数量: {hippocampus.get('num_memories', 0)}\n"
-            stats_text += f"  核心记忆: {hippocampus.get('core_memory_count', 0)}\n"
-            stats_text += f"  内存使用: {hippocampus.get('memory_usage_mb', 0):.2f}/{hippocampus.get('max_memory_mb', 2.0):.1f}MB\n"
-            stats_text += f"  召回次数: {hippocampus.get('recall_count', 0)}\n"
-            stats_text += f"  平均激活: {hippocampus.get('avg_activation', 0):.3f}\n"
-            stats_text += f"  KV记忆数: {hippocampus.get('kv_memory_count', 0)}\n\n"
-            
-            # 2. STDP学习情况
-            stdp = stats.get('stdp', {})
-            stats_text += "🔄 [*STDP学习*]\n"
-            stats_text += f"  学习周期: {stdp.get('cycle_count', 0)}\n"
-            stats_text += f"  总更新次数: {stdp.get('total_updates', 0)}\n"
-            stats_text += f"  LTP增强: {stdp.get('ltp_count', 0)}\n"
-            stats_text += f"  LTD抑制: {stdp.get('ltd_count', 0)}\n"
-            stats_text += f"  动态权重范数: {stdp.get('dynamic_weight_norm', 0):.6f}\n"
-            stats_text += f"  最近更新幅度: {stdp.get('last_update_magnitude', 0):.6f}\n"
-            stats_text += f"  学习率: {stdp.get('learning_rate', 0):.4f}\n\n"
-            
-            # 3. 情绪状态
-            emotion = stats.get('emotion', {})
-            if emotion:
-                stats_text += "😊 [*情绪状态*]\n"
-                stats_text += f"  唤醒度: {emotion.get('arousal', 0.5):.2f} ({emotion.get('energy', 'low')})\n"
-                stats_text += f"  效价: {emotion.get('valence', 0.5):.2f} ({emotion.get('state', 'neutral')})\n\n"
-            
-            # 4. 目标状态
-            goal = stats.get('goal', {})
-            if goal:
-                stats_text += "🎯 [*目标状态*]\n"
-                if goal.get('has_goal'):
-                    stats_text += f"  当前目标: {goal.get('goal_type', 'none')}\n"
-                    stats_text += f"  描述: {goal.get('goal_description', '')[:30]}...\n"
-                    stats_text += f"  进度: {goal.get('goal_progress', 0):.1%}\n"
-                    stats_text += f"  优先级: {goal.get('goal_priority', 0):.2f}\n"
-                    stats_text += f"  子目标数: {goal.get('sub_goals_count', 0)}\n"
-                else:
-                    stats_text += "  当前无目标\n"
-                stats_text += "\n"
-            
-            # 5. 全局状态
-            global_ws = stats.get('global_workspace', {})
-            if global_ws:
-                stats_text += "🌐 [*全局工作空间*]\n"
-                stats_text += f"  活跃状态: {'是' if global_ws.get('is_active') else '否'}\n"
-                stats_text += f"  广播次数: {global_ws.get('broadcast_count', 0)}\n"
-                stats_text += f"  竞争胜者: {global_ws.get('competition_winner', 'none')}\n\n"
-            
-            # 6. 注意力计算情况
-            attention = stats.get('attention', {})
-            if attention:
-                stats_text += "👁️ [*注意力机制*]\n"
-                stats_text += f"  窗口大小: {attention.get('window_size', 32)}\n"
-                stats_text += f"  最大锚点: {attention.get('max_anchors', 5)}\n"
-                stats_text += f"  复杂度: {attention.get('attention_complexity', 'O(n×(W+K))')}\n"
-                stats_text += f"  KV缓存: {'启用' if attention.get('kv_cache_enabled') else '禁用'}\n\n"
-            
-            # 7. KV情况
-            kv = stats.get('kv', {})
-            if kv:
-                stats_text += "📦 [*KV缓存*]\n"
-                stats_text += f"  活跃KV数: {kv.get('active_kv_count', 0)}\n"
-                stats_text += f"  海马体集成: {'启用' if kv.get('kv_enabled') else '禁用'}\n"
-                stats_text += f"  滑动窗口: {'启用' if kv.get('sliding_window') else '禁用'}\n"
-                stats_text += f"  窗口大小: {kv.get('window_size', 32)}\n\n"
-            
-            # 系统状态
-            system = stats.get('system', {})
-            stats_text += "⚙️ [*系统状态*]\n"
-            stats_text += f"  总周期: {system.get('total_cycles', 0)}\n"
-            stats_text += f"  设备: {system.get('device', 'cpu')}\n"
-            stats_text += f"  思维状态: {'存在' if system.get('has_thought_state') else '缺失'}\n"
-            
-            await update.message.reply_text(stats_text, parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ 获取统计失败：{e}")
+        stats = self.ai.get_stats()
+        
+        # 构建详细的监控消息
+        stats_text = "📊 [*系统监控面板*]\n"
+        stats_text += "=" * 30 + "\n\n"
+        
+        # 1. 海马体记忆情况
+        hippocampus = stats.get('hippocampus', {})
+        stats_text += "🧠 [*海马体记忆*]\n"
+        stats_text += f"  记忆数量: {hippocampus.get('num_memories', 0)}\n"
+        stats_text += f"  核心记忆: {hippocampus.get('core_memory_count', 0)}\n"
+        stats_text += f"  内存使用: {hippocampus.get('memory_usage_mb', 0):.2f}/{hippocampus.get('max_memory_mb', 2.0):.1f}MB\n"
+        stats_text += f"  召回次数: {hippocampus.get('recall_count', 0)}\n"
+        stats_text += f"  平均激活: {hippocampus.get('avg_activation', 0):.4f}\n"
+        stats_text += f"  KV记忆数: {hippocampus.get('kv_memory_count', 0)}\n\n"
+        
+        # 2. STDP学习情况
+        stdp = stats.get('stdp', {})
+        stats_text += "🔄 [*STDP学习*]\n"
+        stats_text += f"  学习周期: {stdp.get('cycle_count', 0)}\n"
+        stats_text += f"  总更新次数: {stdp.get('total_updates', 0)}\n"
+        stats_text += f"  LTP增强: {stdp.get('ltp_count', 0)}\n"
+        stats_text += f"  LTD抑制: {stdp.get('ltd_count', 0)}\n"
+        stats_text += f"  动态权重范数: `{stdp.get('dynamic_weight_norm', 0):.6f}`\n"
+        stats_text += f"  最近更新幅度: `{stdp.get('last_update_magnitude', 0):.6f}`\n"
+        stats_text += f"  学习率: {stdp.get('learning_rate', 0):.4f}\n\n"
+        
+        # 3. 情绪状态
+        emotion = stats.get('emotion', {})
+        if emotion:
+            stats_text += "😊 [*情绪状态*]\n"
+            stats_text += f"  唤醒度: {emotion.get('arousal', 0.5):.2f} ({emotion.get('energy', 'low')})\n"
+            stats_text += f"  效价: {emotion.get('valence', 0.5):.2f} ({emotion.get('state', 'neutral')})\n\n"
+        
+        # 4. 目标状态
+        goal = stats.get('goal', {})
+        if goal:
+            stats_text += "🎯 [*目标状态*]\n"
+            if goal.get('has_goal'):
+                stats_text += f"  当前目标: {goal.get('goal_type', 'none')}\n"
+                stats_text += f"  描述: {goal.get('goal_description', '')[:30]}...\n"
+                stats_text += f"  进度: {goal.get('goal_progress', 0):.1%}\n"
+                stats_text += f"  优先级: {goal.get('goal_priority', 0):.2f}\n"
+                stats_text += f"  子目标数: {goal.get('sub_goals_count', 0)}\n"
+            else:
+                stats_text += "  当前无目标\n"
+            stats_text += "\n"
+        
+        # 5. 全局状态
+        global_ws = stats.get('global_workspace', {})
+        if global_ws:
+            stats_text += "🌐 [*全局工作空间*]\n"
+            stats_text += f"  活跃状态: {'是' if global_ws.get('is_active') else '否'}\n"
+            stats_text += f"  广播次数: {global_ws.get('broadcast_count', 0)}\n"
+            stats_text += f"  竞争胜者: {global_ws.get('competition_winner', 'none')}\n\n"
+        
+        # 6. 注意力计算情况
+        attention = stats.get('attention', {})
+        if attention:
+            stats_text += "👁️ [*注意力机制*]\n"
+            stats_text += f"  窗口大小: {attention.get('window_size', 32)}\n"
+            stats_text += f"  最大锚点: {attention.get('max_anchors', 5)}\n"
+            stats_text += f"  复杂度: {attention.get('attention_complexity', 'O(n×(W+K))')}\n"
+            stats_text += f"  KV缓存: {'启用' if attention.get('kv_cache_enabled') else '禁用'}\n\n"
+        
+        # 7. KV情况
+        kv = stats.get('kv', {})
+        if kv:
+            stats_text += "📦 [*KV缓存*]\n"
+            stats_text += f"  活跃KV数: {kv.get('active_kv_count', 0)}\n"
+            stats_text += f"  海马体集成: {'启用' if kv.get('kv_enabled') else '禁用'}\n"
+            stats_text += f"  滑动窗口: {'启用' if kv.get('sliding_window') else '禁用'}\n"
+            stats_text += f"  窗口大小: {kv.get('window_size', 32)}\n\n"
+        
+        # 8. 最近记忆锚点数值（新增）
+        # _last_recalled_memories 在 BrainAIInterface.__init__ 中需要预初始化
+        if self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
+            stats_text += "⚓ [*最近记忆锚点*]\n"
+            for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
+                semantic = mem.get('semantic_pointer', 'N/A')[:35]
+                activation = mem.get('activation_strength', 0)
+                stats_text += f"  {i}. {semantic}... ({activation:.4f})\n"
+            stats_text += "\n"
+        
+        # 系统状态
+        system = stats.get('system', {})
+        stats_text += "⚙️ [*系统状态*]\n"
+        stats_text += f"  总周期: {system.get('total_cycles', 0)}\n"
+        stats_text += f"  设备: {system.get('device', 'cpu')}\n"
+        stats_text += f"  思维状态: {'存在' if system.get('has_thought_state') else '缺失'}\n"
+        
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
     
     async def monitor_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """实时监控命令 - 显示当前状态快照"""
@@ -299,75 +303,85 @@ class BrainAIBot:
             await update.message.reply_text("⚠️ AI 模型未初始化")
             return
         
-        try:
-            # 获取当前状态快照
-            stats = self.ai.get_stats()
-            
-            # 构建简洁的实时监控消息
-            monitor_text = "🔍 [*实时监控快照*]\n"
-            monitor_text += "=" * 30 + "\n\n"
-            
-            # 当前思维状态
-            monologue = stats.get('monologue', {})
-            monitor_text += "💭 [*当前思维*]\n"
-            monitor_text += f"  状态: {monologue.get('thought_state', 'unknown')}\n"
-            monitor_text += f"  情绪: {monologue.get('emotion_state', 'unknown')}\n"
-            monitor_text += f"  独白历史: {monologue.get('history_count', 0)}条\n\n"
-            
-            # 最近记忆（如果有）
-            hippocampus = stats.get('hippocampus', {})
-            monitor_text += "🧠 [*最近记忆*]\n"
-            monitor_text += f"  总数: {hippocampus.get('num_memories', 0)}\n"
-            monitor_text += f"  核心记忆: {hippocampus.get('core_memory_count', 0)}\n"
-            if hippocampus.get('last_recall_time', 0) > 0:
-                import time as t
-                elapsed = t.time() - hippocampus.get('last_recall_time', 0)
-                monitor_text += f"  最近召回: {elapsed:.1f}秒前\n\n"
-            
-            # 当前学习状态
-            stdp = stats.get('stdp', {})
-            monitor_text += "📚 [*学习状态*]\n"
-            monitor_text += f"  更新次数: {stdp.get('total_updates', 0)}\n"
-            monitor_text += f"  权重范数: {stdp.get('dynamic_weight_norm', 0):.6f}\n"
-            ltp = stdp.get('ltp_count', 0)
-            ltd = stdp.get('ltd_count', 0)
-            if ltp + ltd > 0:
-                ratio = ltp / (ltp + ltd)
-                monitor_text += f"  LTP/LTD比: {ratio:.2%}\n\n"
-            
-            # 当前目标
-            goal = stats.get('goal', {})
-            if goal and goal.get('has_goal'):
-                monitor_text += "🎯 [*当前目标*]\n"
-                monitor_text += f"  类型: {goal.get('goal_type', 'none')}\n"
-                progress_bar = "█" * int(goal.get('goal_progress', 0) * 10)
-                progress_bar += "░" * (10 - len(progress_bar))
-                monitor_text += f"  进度: [{progress_bar}] {goal.get('goal_progress', 0):.0%}\n\n"
-            
-            # 当前情绪
-            emotion = stats.get('emotion', {})
-            if emotion:
-                monitor_text += "😊 [*当前情绪*]\n"
-                arousal = emotion.get('arousal', 0.5)
-                valence = emotion.get('valence', 0.5)
-                arousal_bar = "█" * int(arousal * 10) + "░" * (10 - int(arousal * 10))
-                valence_bar = "█" * int(valence * 10) + "░" * (10 - int(valence * 10))
-                monitor_text += f"  唤醒: [{arousal_bar}] {arousal:.2f}\n"
-                monitor_text += f"  效价: [{valence_bar}] {valence:.2f}\n\n"
-            
-            # KV状态
-            kv = stats.get('kv', {})
-            monitor_text += "📦 [*KV状态*]\n"
-            monitor_text += f"  活跃: {kv.get('active_kv_count', 0)}\n"
-            monitor_text += f"  窗口: {kv.get('window_size', 32)}\n"
-            
-            # 添加时间戳
-            from datetime import datetime
-            monitor_text += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
-            
-            await update.message.reply_text(monitor_text, parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ 获取监控失败：{e}")
+        # 获取当前状态快照
+        stats = self.ai.get_stats()
+        
+        # 构建简洁的实时监控消息
+        monitor_text = "🔍 [*实时监控快照*]\n"
+        monitor_text += "=" * 30 + "\n\n"
+        
+        # 当前思维状态
+        monologue = stats.get('monologue', {})
+        monitor_text += "💭 [*当前思维*]\n"
+        monitor_text += f"  状态: {monologue.get('thought_state', 'unknown')}\n"
+        monitor_text += f"  情绪: {monologue.get('emotion_state', 'unknown')}\n"
+        monitor_text += f"  独白历史: {monologue.get('history_count', 0)}条\n\n"
+        
+        # 最近记忆（如果有）
+        hippocampus = stats.get('hippocampus', {})
+        monitor_text += "🧠 [*最近记忆*]\n"
+        monitor_text += f"  总数: {hippocampus.get('num_memories', 0)}\n"
+        monitor_text += f"  核心记忆: {hippocampus.get('core_memory_count', 0)}\n"
+        monitor_text += f"  平均激活: {hippocampus.get('avg_activation', 0):.4f}\n"
+        if hippocampus.get('last_recall_time', 0) > 0:
+            import time as t
+            elapsed = t.time() - hippocampus.get('last_recall_time', 0)
+            monitor_text += f"  最近召回: {elapsed:.1f}秒前\n\n"
+        
+        # 当前学习状态
+        stdp = stats.get('stdp', {})
+        monitor_text += "📚 [*学习状态*]\n"
+        monitor_text += f"  更新次数: {stdp.get('total_updates', 0)}\n"
+        monitor_text += f"  权重范数: `{stdp.get('dynamic_weight_norm', 0):.6f}`\n"
+        monitor_text += f"  更新幅度: `{stdp.get('last_update_magnitude', 0):.6f}`\n"
+        ltp = stdp.get('ltp_count', 0)
+        ltd = stdp.get('ltd_count', 0)
+        if ltp + ltd > 0:
+            ratio = ltp / (ltp + ltd)
+            monitor_text += f"  LTP/LTD比: {ratio:.2%}\n\n"
+        
+        # 当前目标
+        goal = stats.get('goal', {})
+        if goal and goal.get('has_goal'):
+            monitor_text += "🎯 [*当前目标*]\n"
+            monitor_text += f"  类型: {goal.get('goal_type', 'none')}\n"
+            monitor_text += f"  描述: {goal.get('goal_description', '')[:30]}...\n"
+            progress_bar = "█" * int(goal.get('goal_progress', 0) * 10)
+            progress_bar += "░" * (10 - len(progress_bar))
+            monitor_text += f"  进度: [{progress_bar}] {goal.get('goal_progress', 0):.0%}\n"
+            monitor_text += f"  优先级: {goal.get('goal_priority', 0):.2f}\n\n"
+        
+        # 当前情绪
+        emotion = stats.get('emotion', {})
+        if emotion:
+            monitor_text += "😊 [*当前情绪*]\n"
+            arousal = emotion.get('arousal', 0.5)
+            valence = emotion.get('valence', 0.5)
+            arousal_bar = "█" * int(arousal * 10) + "░" * (10 - int(arousal * 10))
+            valence_bar = "█" * int(valence * 10) + "░" * (10 - int(valence * 10))
+            monitor_text += f"  唤醒: [{arousal_bar}] {arousal:.2f}\n"
+            monitor_text += f"  效价: [{valence_bar}] {valence:.2f}\n\n"
+        
+        # 最近记忆锚点（新增）
+        if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories:
+            monitor_text += "⚓ [*记忆锚点*]\n"
+            for i, mem in enumerate(self.ai._last_recalled_memories[:2], 1):
+                semantic = mem.get('semantic_pointer', 'N/A')[:30]
+                activation = mem.get('activation_strength', 0)
+                monitor_text += f"  {i}. {semantic}... ({activation:.3f})\n"
+            monitor_text += "\n"
+        
+        # KV状态
+        kv = stats.get('kv', {})
+        monitor_text += "📦 [*KV状态*]\n"
+        monitor_text += f"  活跃: {kv.get('active_kv_count', 0)}\n"
+        monitor_text += f"  窗口: {kv.get('window_size', 32)}\n"
+        
+        # 添加时间戳
+        from datetime import datetime
+        monitor_text += f"\n⏰ {datetime.now().strftime('%H:%M:%S')}"
+        
+        await update.message.reply_text(monitor_text, parse_mode='Markdown')
     
     async def memory_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """查看记忆详情命令"""
@@ -377,9 +391,9 @@ class BrainAIBot:
         
         try:
             # 获取记忆系统详细信息
-            if hasattr(self.ai, 'hippocampus') and hasattr(self.ai.hippocampus, 'ca3_memory'):
-                ca3 = self.ai.hippocampus.ca3_memory
-                memories = list(ca3.memories.values()) if hasattr(ca3, 'memories') else []
+            # hippocampus 和 ca3_memory 在 BrainAIInterface 和 HippocampusSystem 中已初始化
+            ca3 = self.ai.hippocampus.ca3_memory
+            memories = list(ca3.memories.values()) if ca3.memories else []
                 
                 memory_text = "📚 [*记忆系统详情*]\n"
                 memory_text += "=" * 30 + "\n\n"
@@ -493,22 +507,60 @@ class BrainAIBot:
             current_stats = self.ai.get_stats() if self.ai else {}
             emotion = current_stats.get('emotion', {})
             goal = current_stats.get('goal', {})
+            stdp = current_stats.get('stdp', {})
+            hippocampus = current_stats.get('hippocampus', {})
             
-            # 构建状态指示器
-            status_indicators = []
+            # ========== 构建详细状态显示 ==========
+            status_lines = []
+            
+            # 1. STDP 学习状态
+            if stdp:
+                weight_norm = stdp.get('dynamic_weight_norm', 0)
+                last_update = stdp.get('last_update_magnitude', 0)
+                ltp = stdp.get('ltp_count', 0)
+                ltd = stdp.get('ltd_count', 0)
+                status_lines.append(f"🔄 STDP权重:{weight_norm:.5f} | 更新:{last_update:.5f} | LTP:{ltp}/LTD:{ltd}")
+            
+            # 2. 海马体记忆锚点
+            if hippocampus:
+                num_mem = hippocampus.get('num_memories', 0)
+                avg_act = hippocampus.get('avg_activation', 0)
+                core_mem = hippocampus.get('core_memory_count', 0)
+                status_lines.append(f"🧠 记忆:{num_mem}条 | 激活:{avg_act:.3f} | 核心:{core_mem}")
+            
+            # 3. 目标状态
+            if goal and goal.get('has_goal'):
+                goal_type = goal.get('goal_type', '?')
+                progress = goal.get('goal_progress', 0)
+                priority = goal.get('goal_priority', 0)
+                status_lines.append(f"🎯 目标:{goal_type} | 进度:{progress:.0%} | 优先级:{priority:.2f}")
+            
+            # 4. 情绪状态
             if emotion:
                 arousal = emotion.get('arousal', 0.5)
                 valence = emotion.get('valence', 0.5)
-                status_indicators.append(f"情绪:{arousal:.1f}/{valence:.1f}")
-            if goal and goal.get('has_goal'):
-                status_indicators.append(f"目标:{goal.get('goal_type', '?')}")
+                status_lines.append(f"😊 情绪 唤醒:{arousal:.2f} 效价:{valence:.2f}")
             
-            status_str = " | ".join(status_indicators) if status_indicators else "初始化"
+            status_str = "\n".join(status_lines) if status_lines else "初始化中..."
             
-            # 初始状态消息
+            # ========== 召回的记忆详情 ==========
+            recalled_memories_str = ""
+            if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories:
+                recalled_memories_str = "\n📖 *召回记忆:*\n"
+                for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
+                    semantic = mem.get('semantic_pointer', 'N/A')[:40]
+                    activation = mem.get('activation_strength', 0)
+                    recalled_memories_str += f"  {i}. {semantic}... (激活:{activation:.3f})\n"
+            
+            # ========== 输入提示词 ==========
+            input_preview = user_message[:60] + "..." if len(user_message) > 60 else user_message
+            
+            # 初始状态消息（大幅增强）
             initial_message = await update.message.reply_text(
-                f"💭 *[潜意识消化中...]*\n"
-                f"📊 [{status_str}]\n"
+                f"💭 *[潜意识消化中...]*\n\n"
+                f"📝 *输入:* `{input_preview}`\n\n"
+                f"📊 *系统状态:*\n{status_str}\n"
+                f"{recalled_memories_str}"
                 f"_准备思考..._",
                 parse_mode='Markdown'
             )
@@ -519,16 +571,30 @@ class BrainAIBot:
             last_sent_text = ""
             update_interval = 1.2
             
+            # 存储生成的记忆（用于最终显示）
+            stored_memory_info = None
+            
             # 使用新的 chat_stream 接口
             history = self.user_history.get(user_id, [])
             async for event in self.ai.chat_stream(user_message, history):
                 if event["type"] == "monologue":
                     monologue = event["content"]
+                    
+                    # 更新召回记忆信息
+                    recalled_mem_str = ""
+                    if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories:
+                        recalled_mem_str = "\n📖 *召回记忆:*\n"
+                        for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
+                            semantic = mem.get('semantic_pointer', 'N/A')[:40]
+                            activation = mem.get('activation_strength', 0)
+                            recalled_mem_str += f"  {i}. {semantic}... (激活:{activation:.3f})\n"
+                    
                     # 立即显示潜意识
                     display_text = (
                         f"💭 *[潜意识]*\n"
                         f"_{monologue}_\n\n"
-                        f"📊 [{status_str}]\n"
+                        f"📊 *系统状态:*\n{status_str}\n"
+                        f"{recalled_mem_str}"
                         f"✨ *[准备回复...]*"
                     )
                     try:
@@ -542,10 +608,19 @@ class BrainAIBot:
                     
                     current_time = time.time()
                     if current_time - last_update_time > update_interval:
+                        # 更新召回记忆信息
+                        recalled_mem_str = ""
+                        if self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
+                            recalled_mem_str = "\n📖 *召回记忆:*\n"
+                            for i, mem in enumerate(self.ai._last_recalled_memories[:2], 1):
+                                semantic = mem.get('semantic_pointer', 'N/A')[:35]
+                                recalled_mem_str += f"  {i}. {semantic}...\n"
+                        
                         display_text = (
                             f"💭 *[潜意识]*\n"
                             f"_{monologue}_\n\n"
-                            f"📊 [{status_str}]\n"
+                            f"📊 *系统状态:*\n{status_str}\n"
+                            f"{recalled_mem_str}"
                             f"✨ **回复:**\n{full_response}▌"
                         )
                         if display_text != last_sent_text:
@@ -566,16 +641,99 @@ class BrainAIBot:
             
             await typing.stop_typing()
             
-            # 最终显示 - 包含学习状态
-            stdp = current_stats.get('stdp', {})
-            learning_info = f"📚 学习更新: {stdp.get('total_updates', 0)}"
+            # ========== 最终显示 - 完整详细信息 ==========
+            # 获取最新的状态（包括STDP更新后的）
+            final_stats = self.ai.get_stats() if self.ai else {}
+            stdp_final = final_stats.get('stdp', {})
+            hippocampus_final = final_stats.get('hippocampus', {})
+            goal_final = final_stats.get('goal', {})
             
+            # 1. STDP 学习详情
+            stdp_info = ""
+            if stdp_final:
+                weight_norm = stdp_final.get('dynamic_weight_norm', 0)
+                last_update = stdp_final.get('last_update_magnitude', 0)
+                total_updates = stdp_final.get('total_updates', 0)
+                ltp = stdp_final.get('ltp_count', 0)
+                ltd = stdp_final.get('ltd_count', 0)
+                stdp_info = (
+                    f"🔄 *STDP学习*\n"
+                    f"  权重范数: `{weight_norm:.6f}`\n"
+                    f"  更新幅度: `{last_update:.6f}`\n"
+                    f"  总更新: {total_updates}次\n"
+                    f"  LTP增强: {ltp}次 | LTD抑制: {ltd}次\n"
+                )
+            
+            # 2. 海马体记忆详情
+            memory_info = ""
+            if hippocampus_final:
+                num_mem = hippocampus_final.get('num_memories', 0)
+                avg_act = hippocampus_final.get('avg_activation', 0)
+                core_mem = hippocampus_final.get('core_memory_count', 0)
+                recall_count = hippocampus_final.get('recall_count', 0)
+                memory_info = (
+                    f"🧠 *海马体记忆*\n"
+                    f"  总记忆: {num_mem}条 | 核心记忆: {core_mem}条\n"
+                    f"  平均激活: {avg_act:.4f}\n"
+                    f"  召回次数: {recall_count}次\n"
+                )
+            
+            # 3. 召回的记忆详情
+            recalled_str = ""
+            if self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
+                recalled_str = "📖 *召回的记忆:*\n"
+                for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
+                    semantic = mem.get('semantic_pointer', 'N/A')[:50]
+                    activation = mem.get('activation_strength', 0)
+                    recalled_str += f"  {i}. {semantic}\n     激活度: {activation:.4f}\n"
+            
+            # 4. 记住的记忆（本轮存储的新记忆）
+            stored_str = ""
+            # hippocampus 和 ca3_memory 都是 BrainAIInterface 的必需组件
+            if self.ai.hippocampus is not None and self.ai.hippocampus.ca3_memory is not None:
+                # 获取最近存储的记忆
+                recent_memories = list(self.ai.hippocampus.ca3_memory.memories.values())
+                if recent_memories:
+                    # 按时间戳排序，取最新的
+                    sorted_memories = sorted(recent_memories, key=lambda m: getattr(m, 'timestamp', 0), reverse=True)[:2]
+                    if sorted_memories:
+                        stored_str = "💾 *记住的记忆:*\n"
+                        for i, mem in enumerate(sorted_memories, 1):
+                            semantic = getattr(mem, 'semantic_pointer', 'N/A')[:50]
+                            is_core = '⭐核心' if getattr(mem, 'is_core', False) else ''
+                            stored_str += f"  {i}. {semantic} {is_core}\n"
+            
+            # 5. 目标进展详情
+            goal_str = ""
+            if goal_final and goal_final.get('has_goal'):
+                goal_type = goal_final.get('goal_type', '?')
+                goal_desc = goal_final.get('goal_description', '')[:40]
+                progress = goal_final.get('goal_progress', 0)
+                priority = goal_final.get('goal_priority', 0)
+                progress_bar = "█" * int(progress * 10) + "░" * (10 - int(progress * 10))
+                goal_str = (
+                    f"🎯 *目标状态*\n"
+                    f"  类型: {goal_type}\n"
+                    f"  描述: {goal_desc}...\n"
+                    f"  进度: [{progress_bar}] {progress:.0%}\n"
+                    f"  优先级: {priority:.2f}\n"
+                )
+            
+            # 6. 输入提示词预览
+            input_str = f"📝 *输入:* `{user_message[:80]}...`\n" if len(user_message) > 80 else f"📝 *输入:* `{user_message}`\n"
+            
+            # 构建最终消息
             final_display = (
                 f"💭 *[潜意识]*\n"
                 f"_{monologue}_\n\n"
-                f"📊 [{status_str}]\n"
-                f"✨ **回复:**\n{full_response}\n\n"
-                f"{learning_info}"
+                f"{input_str}\n"
+                f"📊 *系统状态详情*\n"
+                f"{stdp_info}\n"
+                f"{memory_info}\n"
+                f"{recalled_str}\n"
+                f"{stored_str}\n"
+                f"{goal_str}\n"
+                f"✨ **回复:**\n{full_response}"
             )
             
             for attempt in range(3):
@@ -584,10 +742,14 @@ class BrainAIBot:
                     break
                 except:
                     try:
-                        await initial_message.edit_text(
-                            f"潜意识:\n{monologue}\n\n回复:\n{full_response}\n\n{learning_info}",
-                            parse_mode=None
+                        # 回退到简化版本
+                        simplified = (
+                            f"潜意识:\n{monologue}\n\n"
+                            f"回复:\n{full_response}\n\n"
+                            f"STDP权重: {stdp_final.get('dynamic_weight_norm', 0):.6f}\n"
+                            f"记忆: {hippocampus_final.get('num_memories', 0)}条"
                         )
+                        await initial_message.edit_text(simplified, parse_mode=None)
                         break
                     except:
                         await asyncio.sleep(1)

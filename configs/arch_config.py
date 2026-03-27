@@ -48,11 +48,11 @@ class STDPConfig:
     """STDP 时序可塑性权重更新配置 - 优化版本"""
     enabled: bool = True  # 是否启用 STDP 学习机制
     # 学习率 - 提升学习能力
-    alpha_LTP: float = 0.025  # 权重增强学习率 (Long-Term Potentiation) - 从0.01提升到0.025
-    beta_LTD: float = 0.02   # 权重减弱学习率 (Long-Term Depression) - 从0.008提升到0.02
+    alpha_LTP: float = 0.05  # 权重增强学习率 (Long-Term Potentiation) - 从0.025提升到0.05
+    beta_LTD: float = 0.04   # 权重减弱学习率 (Long-Term Depression) - 从0.02提升到0.04
     
     # 阈值
-    update_threshold: float = 0.0005  # 最小更新阈值 - 降低以增强灵敏度
+    update_threshold: float = 0.0001  # 最小更新阈值 - 从0.0005降低到0.0001，增强灵敏度
     weight_min: float = -1.0  # 权重下界
     weight_max: float = 1.0  # 权重上界
     

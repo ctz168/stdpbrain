@@ -136,15 +136,20 @@ class CA1AttentionGate(nn.Module):
         # ========== 提取记忆特征 ==========
         if 'dg_features' in memory_data and memory_data['dg_features'] is not None:
             mem_features = memory_data['dg_features']
+            # 确保类型匹配
+            if isinstance(mem_features, torch.Tensor):
+                mem_features = mem_features.to(dtype=query.dtype, device=query.device)
+            else:
+                mem_features = torch.tensor(mem_features, dtype=query.dtype, device=query.device)
         else:
-            # 简化处理：随机特征
-            mem_features = torch.randn(self.feature_dim, device=query.device)
+            # 简化处理：随机特征 (匹配 query 的数据类型)
+            mem_features = torch.randn(self.feature_dim, dtype=query.dtype, device=query.device)
         
         # ========== 时序编码 (可选) ==========
         if self.temporal_encoding and 'timestamp' in memory_data:
             timestamp = torch.tensor(
                 [[memory_data['timestamp']]], 
-                dtype=torch.float32, 
+                dtype=query.dtype,  # 匹配 query 的数据类型
                 device=query.device
             )
             temporal_feature = self.temporal_encoder(timestamp)

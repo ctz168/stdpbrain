@@ -35,12 +35,12 @@ class DualWeightLinear(nn.Module):
         self.in_features = base_layer.in_features
         self.out_features = base_layer.out_features
         
-        # 从底座推断设备
+        # 从底座推断设备和数据类型
         try:
             sample_param = next(base_layer.parameters())
             target_device = sample_param.device
-            # 动态层必须保持高精度应对微小 STDP 梯度
-            target_dtype = torch.float16 if target_device.type == "cuda" else torch.float32
+            # 动态层跟随底座的数据类型（支持 FP16 CPU 加载）
+            target_dtype = sample_param.dtype
         except StopIteration:
             target_device = torch.device('cpu')
             target_dtype = torch.float32

@@ -53,6 +53,23 @@ accelerate>=0.24.0
 modelscope>=1.10.0
 
 # ===========================================
+# 注意力优化 - Attention Optimization (可选)
+# ===========================================
+#
+# 以下库可加速推理，但需要编译：
+# - Linux/GPU 环境推荐安装
+# - Windows 环境可能安装失败，不影响正常运行
+#
+# Flash Linear Attention - 快速线性注意力
+# flash-linear-attention>=0.2.0
+#
+# Causal Conv1D - 因果卷积加速
+# causal-conv1d>=1.4.0
+#
+# 安装命令 (Linux/Colab):
+# pip install flash-linear-attention causal-conv1d
+#
+# ===========================================
 # 窄带宽注意力 - Narrow Band Attention
 # ===========================================
 # 

@@ -89,7 +89,9 @@ class EntorhinalEncoder(nn.Module):
         ec_code = F.normalize(ec_code, p=2, dim=-1)
         
         # ========== 3. 稀疏化 ==========
-        ec_code = ec_code * self.sparse_mask.unsqueeze(0).unsqueeze(0)
+        # 自动匹配输入的数据类型 (FP16/FP32)
+        sparse_mask = self.sparse_mask.to(dtype=ec_code.dtype, device=ec_code.device)
+        ec_code = ec_code * sparse_mask.unsqueeze(0).unsqueeze(0)
         
         # 恢复原始形状
         if len(original_shape) == 2:

@@ -78,6 +78,20 @@ class BrainAIInterface:
         # 为流式生成过程中的后台 STDP 触发器提供全链路引擎注入
         config.stdp_engine = self.stdp_engine.full_link_stdp
         
+        # ========== 检测并保存模型数据类型（供后续组件使用）==========
+        self._model_dtype = None
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+            for param in self.model.model.base_model.parameters():
+                self._model_dtype = param.dtype
+                break
+        if self._model_dtype is None:
+            self._model_dtype = torch.float32
+        
+        # ========== 让海马体跟随模型精度 ==========
+        if self._model_dtype != torch.float32:
+            self.hippocampus = self.hippocampus.to(dtype=self._model_dtype)
+        # 注意：STDPEngine 不是 nn.Module，不需要数据类型转换
+        
         # 4. 加载真实自闭环优化器
         self.self_loop = SelfLoopOptimizer(config, model=self.model)
         
@@ -92,6 +106,11 @@ class BrainAIInterface:
         with torch.no_grad():
             self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
         self.feature_adapter.to(self.device)
+        
+        # 自动匹配模型的数据类型 (FP16/FP32)
+        if self._model_dtype != torch.float32:
+            self.feature_adapter = self.feature_adapter.to(dtype=self._model_dtype)
+        
         self.feature_adapter.train() # 开启训练模式以支持在线更新
         
         # 适配器优化器
@@ -105,6 +124,9 @@ class BrainAIInterface:
         
         # 8. 自我状态编码器 (实现真正的自指)
         self.self_encoder = SelfStateEncoder(hidden_size=self.model_hidden_size, device=self.device)
+        # _model_dtype 已在第 82 行初始化，无需 hasattr 检查
+        if self._model_dtype != torch.float32:
+            self.self_encoder = self.self_encoder.to(dtype=self._model_dtype)
         print("[BrainAI] [OK] 自我状态编码器已初始化")
         
         # 9. 真正自指循环模块（增强自指深度）- 默认开启
@@ -114,6 +136,8 @@ class BrainAIInterface:
                 hidden_size=self.model_hidden_size,
                 max_recursion_depth=3
             ).to(self.device)
+            if self._model_dtype != torch.float32:
+                self.true_self_loop = self.true_self_loop.to(dtype=self._model_dtype)
             print("[BrainAI] [OK] 真正自指循环模块已初始化")
         else:
             self.true_self_loop = None
@@ -122,16 +146,21 @@ class BrainAIInterface:
         # 10. 预测编码模块（预测误差最小化）- 默认开启
         enable_predictive = getattr(config, 'enable_predictive_coding', True)
         if enable_predictive:
+            # QwenInterface 必有 tokenizer 属性
             self.predictive_coder = PredictiveCodingModule(
                 hidden_size=self.model_hidden_size,
-                vocab_size=self.model.tokenizer.vocab_size if hasattr(self.model, 'tokenizer') else 50257
+                vocab_size=self.model.tokenizer.vocab_size
             ).to(self.device)
+            if self._model_dtype != torch.float32:
+                self.predictive_coder = self.predictive_coder.to(dtype=self._model_dtype)
             # 追踪上一轮输出
             self.last_output_ids = None
             self.last_output_embedding = None
             print("[BrainAI] [OK] 预测编码模块已初始化")
         else:
             self.predictive_coder = None
+            self.last_output_ids = None
+            self.last_output_embedding = None
             print("[BrainAI] [INFO] 预测编码模块已禁用（配置）")
         
         # 11. 主动意图生成器（主动输出）- 默认开启 (类人脑核心功能)
@@ -195,6 +224,9 @@ class BrainAIInterface:
         self.total_stdp_updates = 0
         self.last_dynamic_weight_norm = 0.0
         
+        # 最近召回的记忆（预初始化，避免 hasattr 检查）
+        self._last_recalled_memories: List[Dict] = []
+        
         # 状态文件路径
         self.state_path = "brain_state.pt"
         
@@ -223,8 +255,8 @@ class BrainAIInterface:
         )
         print("[BrainAI] [OK] 内心思维独白引擎已初始化")
         # 注入自我编码器引用，让独白引擎能感知自身隐状态
-        if hasattr(self, 'self_encoder'):
-            self.inner_thought_engine._self_encoder = self.self_encoder
+        # self_encoder 已在第 126 行初始化，无需 hasattr 检查
+        self.inner_thought_engine._self_encoder = self.self_encoder
         
         # 启动海马体 SWR 监控
         self.hippocampus.start_swr_monitoring()
@@ -302,30 +334,6 @@ class BrainAIInterface:
             )
 
         print("[BrainAI] [OK] KV cache预热完成")
-            # 使用保存的完整记忆字典，而不是传入的tensor
-            recalled_memories = getattr(self, '_current_recalled_memories', None)
-            if not recalled_memories:
-                return None
-            batch_size, num_heads, seq_len, head_dim = query.shape
-            try:
-                gate_signal = self.hippocampus.ca1_gate(
-                    query.transpose(1, 2).reshape(-1, seq_len, num_heads * head_dim),
-                    key.transpose(1, 2).reshape(-1, seq_len, num_heads * head_dim),
-                    recalled_memories  # 传递完整的记忆字典列表
-                )
-                if gate_signal is not None:
-                    bias = gate_signal.mean(dim=-1, keepdim=True)
-                    bias = bias.expand(-1, num_heads, -1, seq_len)
-                    return bias * 0.8  # 进一步增强门控信号：0.5 → 0.8，增加记忆对注意力的拉动作用
-            except Exception as e:
-                logger.debug(f"海马体门控计算失败: {e}")
-            return None
-        
-        try:
-            self.model.model.set_hippocampus_gate(hippocampus_gate_fn)
-            print("[BrainAI] [OK] 海马体门控已连接到注意力层")
-        except Exception as e:
-            logger.warning(f"设置海马体门控失败: {e}")
 
     def chat(
         self,
@@ -355,12 +363,11 @@ class BrainAIInterface:
         
         # 1.5 目标推断（新增）
         if hasattr(self, 'goal_system') and self.goal_system:
-            try:
-                # 使用当前思维状态推断目标
-                goal = self.goal_system.infer_goal(user_input, self.current_thought_state)
-                logger.debug(f"目标推断: {goal.goal_type.value} - {goal.description}")
-            except Exception as e:
-                logger.warning(f"目标推断失败: {e}")
+
+            # 使用当前思维状态推断目标
+            goal = self.goal_system.infer_goal(user_input, self.current_thought_state)
+            logger.debug(f"目标推断: {goal.goal_type.value} - {goal.description}")
+
         
         # 2. 并行执行：记忆召回 和 潜意识独白生成
         def parallel_recall():
@@ -373,42 +380,40 @@ class BrainAIInterface:
             is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
             is_memory_question = any(kw in user_input for kw in ["记得", "记住", "我叫什么", "我的名字", "来自", "还记"])
             
-            try:
-                # 优化: 复用缓存或创建新的
-                inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
-                input_ids = inputs.input_ids
+        
+            # 优化: 复用缓存或创建新的
+            inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
+            input_ids = inputs.input_ids
+            
+            # 获取 embedding（优化：缓存）
+            with torch.no_grad():
+                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
+            query_features = embeddings.mean(dim=1).squeeze(0)
+            
+            if query_features.shape[0] != 1024:
+                query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            
+            # 改进：增加召回数量，确保找到相关记忆
+            topk = 5 if is_memory_question else 3
+            query_semantic = user_input if (is_identity_question or is_memory_question) else None
+            recalled_memories = self.hippocampus.recall(query_features, topk=topk, query_semantic=query_semantic)
+            
+            # 改进：构建更详细的记忆上下文
+            if recalled_memories:
+                memory_parts = []
+                for m in recalled_memories[:3]:  # 最多3条
+                    # 优先使用 semantic_pointer
+                    if m.get('semantic_pointer'):
+                        memory_parts.append(m['semantic_pointer'])
+                    # 如果有context，也加入
+                    elif m.get('context'):
+                        ctx = m['context']
+                        if isinstance(ctx, list) and len(ctx) > 0:
+                            memory_parts.append(ctx[0].get('content', '')[:50])
                 
-                # 获取 embedding（优化：缓存）
-                with torch.no_grad():
-                    embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
-                query_features = embeddings.mean(dim=1).squeeze(0)
-                
-                if query_features.shape[0] != 1024:
-                    query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
-                
-                # 改进：增加召回数量，确保找到相关记忆
-                topk = 5 if is_memory_question else 3
-                query_semantic = user_input if (is_identity_question or is_memory_question) else None
-                recalled_memories = self.hippocampus.recall(query_features, topk=topk, query_semantic=query_semantic)
-                
-                # 改进：构建更详细的记忆上下文
-                if recalled_memories:
-                    memory_parts = []
-                    for m in recalled_memories[:3]:  # 最多3条
-                        # 优先使用 semantic_pointer
-                        if m.get('semantic_pointer'):
-                            memory_parts.append(m['semantic_pointer'])
-                        # 如果有context，也加入
-                        elif m.get('context'):
-                            ctx = m['context']
-                            if isinstance(ctx, list) and len(ctx) > 0:
-                                memory_parts.append(ctx[0].get('content', '')[:50])
-                    
-                    if memory_parts:
-                        memory_context = " | ".join(memory_parts)
+                if memory_parts:
+                    memory_context = " | ".join(memory_parts)
                         
-            except Exception as e:
-                logger.debug(f"并行记忆召回失败: {e}")
                 
             if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
                 memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
@@ -429,82 +434,77 @@ class BrainAIInterface:
         enable_kv_hippocampus = getattr(self.config.hard_constraints, 'ENABLE_KV_HIPPOCAMPUS_INTEGRATION', True)
         
         if enable_kv_hippocampus and recalled_memories:
-            try:
-                # 从海马体检索KV记忆
-                query_features_for_kv = query_features if 'query_features' in locals() else None
-                if query_features_for_kv is None and recalled_memories:
-                    # 使用召回的记忆特征作为查询
-                    if recalled_memories[0].get('dg_features') is not None:
-                        dg_feat = recalled_memories[0]['dg_features']
-                        if isinstance(dg_feat, list):
-                            query_features_for_kv = torch.tensor(dg_feat, dtype=torch.float32)
-                        else:
-                            query_features_for_kv = dg_feat
+           
+            # 从海马体检索KV记忆
+            query_features_for_kv = query_features if 'query_features' in locals() else None
+            if query_features_for_kv is None and recalled_memories:
+                # 使用召回的记忆特征作为查询
+                if recalled_memories[0].get('dg_features') is not None:
+                    dg_feat = recalled_memories[0]['dg_features']
+                    if isinstance(dg_feat, list):
+                        query_features_for_kv = torch.tensor(dg_feat, dtype=torch.float32)
+                    else:
+                        query_features_for_kv = dg_feat
+            
+            if query_features_for_kv is not None and hasattr(self.hippocampus, 'recall_kv'):
+                # 召回KV记忆
+                kv_memories = self.hippocampus.recall_kv(
+                    query_features=query_features_for_kv,
+                    topk=2
+                )
                 
-                if query_features_for_kv is not None and hasattr(self.hippocampus, 'recall_kv'):
-                    # 召回KV记忆
-                    kv_memories = self.hippocampus.recall_kv(
-                        query_features=query_features_for_kv,
-                        topk=2
-                    )
-                    
-                    # 存储KV记忆，供后续生成使用
-                    if kv_memories:
-                        self._current_kv_memories = kv_memories
-                        logger.debug(f"[BrainAI] 从海马体检索到{len(kv_memories)}个KV记忆")
-            except Exception as e:
-                logger.debug(f"[BrainAI] KV记忆检索失败: {e}")
+                # 存储KV记忆，供后续生成使用
+                if kv_memories:
+                    self._current_kv_memories = kv_memories
+                    logger.debug(f"[BrainAI] 从海马体检索到{len(kv_memories)}个KV记忆")
+ 
         
         # 3. GW 广播整合：将记忆、思维状态、目标整合成为统一意识状态
         gw_state = None
         gw_context = ""
-        if hasattr(self, 'global_workspace') and self.global_workspace:
-            try:
-                # 获取记忆特征向量
-                mem_tensor = None
-                if recalled_memories:
-                    mem_feats = []
-                    for m in recalled_memories[:2]:
-                        if m.get('dg_features') is not None:
-                            # 修复：dg_features 可能是 list，需要转换为 Tensor
-                            dg_feat = m['dg_features']
-                            if isinstance(dg_feat, list):
-                                dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
-                            if isinstance(dg_feat, torch.Tensor):
-                                mem_feats.append(dg_feat)
-                    if mem_feats:
-                        mem_tensor = torch.stack(mem_feats).mean(0).to(self.device)
-                
-                # 获取目标状态向量
-                goal_tensor = None
-                if hasattr(self, 'goal_system') and self.goal_system and hasattr(self.goal_system, 'current_goal_vector'):
-                    goal_tensor = self.goal_system.current_goal_vector
-                
-                gw_state = self.global_workspace.integrate(
-                    user_input=user_input,
-                    memory_context=mem_tensor,
-                    thought_state=self.current_thought_state,
-                    goal_state=goal_tensor
-                )
-                
-                # 打通回路：生成基于整合意识的氛围提示
-                if gw_state is not None:
-                    gw_context = f"[意识状态：已整合{len(recalled_memories)}条关联记忆与当前任务目标]"
-            except Exception as e:
-                logger.debug(f"GW广播失败: {e}")
+        if self.global_workspace is not None:
+            
+            # 获取记忆特征向量
+            mem_tensor = None
+            if recalled_memories:
+                mem_feats = []
+                for m in recalled_memories[:2]:
+                    if m.get('dg_features') is not None:
+                        # 修复：dg_features 可能是 list，需要转换为 Tensor
+                        dg_feat = m['dg_features']
+                        if isinstance(dg_feat, list):
+                            dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
+                        if isinstance(dg_feat, torch.Tensor):
+                            mem_feats.append(dg_feat)
+                if mem_feats:
+                    mem_tensor = torch.stack(mem_feats).mean(0).to(self.device)
+            
+            # 获取目标状态向量
+            goal_tensor = None
+            if self.goal_system is not None and self.goal_system.current_goal_vector is not None:
+                goal_tensor = self.goal_system.current_goal_vector
+            
+            gw_state = self.global_workspace.integrate(
+                user_input=user_input,
+                memory_context=mem_tensor,
+                thought_state=self.current_thought_state,
+                goal_state=goal_tensor
+            )
+            
+            # 打通回路：生成基于整合意识的氛围提示
+            if gw_state is not None:
+                gw_context = f"[意识状态：已整合{len(recalled_memories)}条关联记忆与当前任务目标]"
+ 
         
         # 4. 自我感知：生成可读的自指描述
         self_context_str = ""
-        if hasattr(self, 'self_encoder') and self.current_thought_state is not None:
-            try:
-                self_context_str = self.self_encoder.interpret()
-            except Exception as e:
-                logger.debug(f"自我编码失败: {e}")
+        if self.self_encoder is not None and self.current_thought_state is not None:
+            self_context_str = self.self_encoder.interpret() 
         
         # 5. 回复
         # 获取目标信息
         goal_context = ""
-        if hasattr(self, 'goal_system') and self.goal_system and self.goal_system.current_goal:
+        if self.goal_system is not None and self.goal_system.current_goal is not None:
             goal = self.goal_system.current_goal
             goal_context = f"[当前目标：{goal.goal_type.value} - {goal.description}]"
         
@@ -516,48 +516,43 @@ class BrainAIInterface:
         # 准备记忆锚点（保持原有逻辑兼容性）
         memory_anchor = None
         if recalled_memories:
-            try:
-                mem_features = []
-                for mem in recalled_memories[:2]:
-                    if 'dg_features' in mem and mem['dg_features'] is not None:
-                        # 修复：dg_features 可能是 list，需要转换为 Tensor
-                        dg_feat = mem['dg_features']
-                        if isinstance(dg_feat, list):
-                            dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
-                        if isinstance(dg_feat, torch.Tensor):
-                            mem_features.append(dg_feat)
-                if mem_features:
-                    memory_anchor = torch.stack(mem_features).mean(dim=0).unsqueeze(0).to(self.device)
-            except Exception as e:
-                logger.debug(f"准备记忆锚点失败: {e}")
+    
+            mem_features = []
+            for mem in recalled_memories[:2]:
+                if 'dg_features' in mem and mem['dg_features'] is not None:
+                    # 修复：dg_features 可能是 list，需要转换为 Tensor
+                    dg_feat = mem['dg_features']
+                    if isinstance(dg_feat, list):
+                        dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
+                    if isinstance(dg_feat, torch.Tensor):
+                        mem_features.append(dg_feat)
+            if mem_features:
+                memory_anchor = torch.stack(mem_features).mean(dim=0).unsqueeze(0).to(self.device)
+
         
         output = self.model.generate(
             prompt, max_tokens=max_tokens, temperature=0.6, use_self_loop=True, memory_anchor=memory_anchor
         )
         
         # 3.2 更新全局思维状态 (latent continuity)
-        if hasattr(output, 'hidden_state') and output.hidden_state is not None:
+        if output.hidden_state is not None:
             self.current_thought_state = output.hidden_state
             
             # 3.3 应用真正自指循环（增强自指）
-            if hasattr(self, 'true_self_loop') and self.true_self_loop:
-                try:
-                    # 获取当前思维状态
-                    mind_state = self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "FOCUSED"
-                    self.current_thought_state = self.true_self_loop(
-                        self.current_thought_state,
-                        current_mind_state=mind_state,
-                        recursion_depth=0
-                    )
-                except Exception as e:
-                    logger.warning(f"自指循环失败: {e}")
+            if self.true_self_loop is not None:
+                # 获取当前思维状态
+                mind_state = self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "FOCUSED"
+                self.current_thought_state = self.true_self_loop(
+                    self.current_thought_state,
+                    current_mind_state=mind_state,
+                    recursion_depth=0
+                )
+
             
             # 3.4 更新自我编码器：让AI"感知"自己的内部状态
-            if hasattr(self, 'self_encoder'):
-                try:
-                    _, _ = self.self_encoder.encode(output.hidden_state)
-                except Exception:
-                    pass
+            # self_encoder 已在第 126 行初始化
+            _, _ = self.self_encoder.encode(output.hidden_state)
+    
         
         # 3.4 更新思维种子：用刚才的回复内容驱动下一次独白 (增加抗重复校验)
         if output.text and len(output.text.strip()) > 3:
@@ -570,7 +565,7 @@ class BrainAIInterface:
         
         # 3.5 预测编码：计算预测误差（如果启用了预测模块）
         prediction_error = 0.0
-        if hasattr(self, 'predictive_coder') and self.predictive_coder and self.last_output_embedding is not None and self.current_thought_state is not None:
+        if self.predictive_coder is not None and self.last_output_embedding is not None and self.current_thought_state is not None:
             try:
                 # 预测下一状态和 token
                 pred_next_state, pred_token_logits = self.predictive_coder.predict_next(
@@ -711,13 +706,13 @@ class BrainAIInterface:
                     is_core=is_core_memory,
                     semantic_pointer=enhanced_pointer
                 )
-                current_reward = output.confidence if hasattr(output, 'confidence') else 1.0
+                current_reward = output.confidence if output.confidence is not None else 1.0
                 self.model.set_reward(current_reward)
                 self._apply_real_stdp_update(emotional_salience=salience)
                 self._update_adapter_online(thought_state_snapshot, salience)
                 
                 # 更新目标进度（新增）
-                if hasattr(self, 'goal_system') and self.goal_system and self.goal_system.current_goal:
+                if self.goal_system is not None and self.goal_system.current_goal is not None:
                     # 根据目标类型和回复内容判断进度
                     goal = self.goal_system.current_goal
                     if goal.goal_type.value == "remember":
@@ -749,8 +744,8 @@ class BrainAIInterface:
 
     def think(self) -> dict:
         """真实自思考接口"""
-        if hasattr(self.hippocampus, 'swr_consolidation'):
-            self.hippocampus.swr_consolidation.record_activity()
+        # swr_consolidation 在 HippocampusSystem.__init__ 中初始化
+        self.hippocampus.swr_consolidation.record_activity()
         monologue = self._generate_spontaneous_monologue()
         self.cycle_count += 1
         stats = self.get_stats()
@@ -1204,12 +1199,17 @@ class BrainAIInterface:
     def get_stats(self) -> dict:
         dynamic_weight_norm, dynamic_layer_count = 0.0, 0
         try:
+            # 遍历所有模块，查找 DualWeightLinear 层
             for name, module in self.model.model.base_model.named_modules():
                 if hasattr(module, 'dynamic_weight'):
-                    dynamic_weight_norm += module.dynamic_weight.abs().mean().item()
+                    # dynamic_weight 是 Parameter，需要 .data 来访问实际值
+                    weight_mean = module.dynamic_weight.data.abs().mean().item()
+                    dynamic_weight_norm += weight_mean
                     dynamic_layer_count += 1
-            if dynamic_layer_count > 0: dynamic_weight_norm /= dynamic_layer_count
-        except: pass
+            if dynamic_layer_count > 0: 
+                dynamic_weight_norm /= dynamic_layer_count
+        except Exception as e:
+            logger.debug(f"获取动态权重统计失败: {e}")
         
         # 所有核心模块应该都已初始化
         if not self.inner_thought_engine:
@@ -1218,18 +1218,18 @@ class BrainAIInterface:
         # ========== 1. 海马体详细统计 ==========
         hippocampus_stats = {}
         try:
-            if hasattr(self.hippocampus, 'ca3_memory'):
-                ca3_stats = self.hippocampus.ca3_memory.get_stats()
-                hippocampus_stats = {
-                    'num_memories': ca3_stats.get('num_memories', 0),
-                    'memory_usage_mb': ca3_stats.get('memory_usage_mb', 0.0),
-                    'max_memory_mb': ca3_stats.get('max_memory_mb', 2.0),
-                    'avg_activation': ca3_stats.get('avg_activation', 0.0),
-                    'core_memory_count': ca3_stats.get('core_memory_count', 0),
-                    'recall_count': ca3_stats.get('recall_count', 0),
-                    'last_recall_time': ca3_stats.get('last_recall_time', 0.0),
-                }
-            # KV 记忆统计
+            # ca3_memory 在 HippocampusSystem.__init__ 中初始化
+            ca3_stats = self.hippocampus.ca3_memory.get_stats()
+            hippocampus_stats = {
+                'num_memories': ca3_stats.get('num_memories', 0),
+                'memory_usage_mb': ca3_stats.get('memory_usage_mb', 0.0),
+                'max_memory_mb': ca3_stats.get('max_memory_mb', 2.0),
+                'avg_activation': ca3_stats.get('avg_activation', 0.0),
+                'core_memory_count': ca3_stats.get('core_memory_count', 0),
+                'recall_count': ca3_stats.get('recall_count', 0),
+                'last_recall_time': ca3_stats.get('last_recall_time', 0.0),
+            }
+            # KV 记忆统计 - _kv_memories 可能未初始化，保留 hasattr
             if hasattr(self.hippocampus, '_kv_memories'):
                 hippocampus_stats['kv_memory_count'] = len(self.hippocampus._kv_memories)
         except Exception as e:
@@ -1239,13 +1239,13 @@ class BrainAIInterface:
         stdp_stats = {}
         try:
             stdp_stats = {
-                'cycle_count': self.stdp_engine.cycle_count if hasattr(self.stdp_engine, 'cycle_count') else 0,
+                'cycle_count': self.stdp_engine.cycle_count,
                 'total_updates': self.total_stdp_updates,
                 'dynamic_weight_norm': dynamic_weight_norm,
                 'last_update_magnitude': self.last_dynamic_weight_norm,
                 'ltp_count': getattr(self.stdp_engine, 'ltp_count', 0),
                 'ltd_count': getattr(self.stdp_engine, 'ltd_count', 0),
-                'learning_rate': getattr(self.stdp_engine, 'alpha_LTP', 0.0) if hasattr(self.stdp_engine, 'alpha_LTP') else self.config.stdp.alpha_LTP,
+                'learning_rate': self.stdp_engine.alpha_LTP,
             }
         except Exception as e:
             logger.debug(f"获取STDP统计失败: {e}")
@@ -1253,7 +1253,7 @@ class BrainAIInterface:
         # ========== 3. 情绪状态 ==========
         emotion_stats = {}
         try:
-            if hasattr(self, 'self_encoder') and self.self_encoder:
+            if self.self_encoder is not None:
                 emotion = self.self_encoder.get_emotional_state(self.current_thought_state)
                 emotion_stats = {
                     'arousal': emotion.get('arousal', 0.5),
@@ -1267,7 +1267,7 @@ class BrainAIInterface:
         # ========== 4. 目标状态 ==========
         goal_stats = {}
         try:
-            if hasattr(self, 'goal_system') and self.goal_system:
+            if self.goal_system is not None:
                 current_goal = self.goal_system.current_goal
                 goal_stats = {
                     'has_goal': current_goal is not None,

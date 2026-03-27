@@ -127,22 +127,36 @@ class QwenModelWrapper(nn.Module):
                 )
                 print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
             else:
-                # CPU 环境：使用更高兼容性的 FP32 加载
+                # CPU 环境：使用 FP16 加载 + 动态量化（避免内存溢出）
                 print(f"  [!] [CPU] bitsandbytes 的 {self.quantization} 量化完全依赖 CUDA (Nvidia GPU)。")
-                print(f"  [!] [CPU] 正在安全模式下以全精度 (FP32) 加载模型...")
-                if self.quantization == "INT8":
-                    print(f"  [!] [CPU] 提示：全精度加载完成后，系统将为您调用 PyTorch 动态量化模块，在内存中将其转为 INT8。")
+                print(f"  [!] [CPU] 使用 FP16 加载 + 动态量化方式（内存占用减半）...")
                 
+                # Step 1: 以 FP16 加载（比 FP32 节省一半内存）
                 model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    torch_dtype=torch.float32,
+                    torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True
-                ).to("cpu")
-                print("  [OK] [CPU] 纯 FP32 步骤防崩溃加载完成")
+                )
+                print("  [OK] FP16 加载完成，开始动态量化...")
+                
+                # Step 2: 动态量化线性层
+                model = torch.quantization.quantize_dynamic(
+                    model,
+                    {torch.nn.Linear},  # 只量化线性层
+                    dtype=torch.qint8
+                )
+                print(f"  [OK] [CPU] INT8 动态量化完成")
             
         else:  # FP16 或 FP32
-            dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
+            # 尊重用户的量化设置，而非自动判断
+            if self.quantization == "FP16":
+                dtype = torch.float16
+            elif self.quantization == "FP32":
+                dtype = torch.float32
+            else:
+                # AUTO 或其他：根据设备自动选择
+                dtype = torch.float16 if (self.device == "cuda" or is_mac) else torch.float32
             target_device = "mps" if (is_mac and self.device != "cuda") else self.device
             model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
@@ -430,13 +444,18 @@ class QwenInterface:
         # 优化2: 模型加载后只调用一次 eval()，不在每次 forward_step 重复调用
         self.model.eval()
         
-        # 优化1: CPU 线程控制
+        # 优化1: CPU 线程控制 + MKLDNN 加速
         if self.device == "cpu":
             import multiprocessing
             num_cores = multiprocessing.cpu_count()
-            # 设置线程数为物理核心数（通常比逻辑核心数效率更高）
-            torch.set_num_threads(max(1, num_cores // 2))
+            # 使用全部逻辑线程（2C/4T 用 4 线程）
+            torch.set_num_threads(num_cores)
             print(f"[QwenInterface] CPU 优化：设置线程数为 {torch.get_num_threads()}")
+            
+            # MKLDNN 加速：启用 oneDNN 后端优化
+            if torch.backends.mkldnn.is_available():
+                torch.backends.mkldnn.enabled = True
+                print(f"[QwenInterface] MKLDNN 加速已启用")
 
         # 优化4: STDP 后台线程池，不阻塞生成循环
         import concurrent.futures
@@ -445,10 +464,10 @@ class QwenInterface:
         )
         # 每 N 步才提取一次 features 用于 STDP (优化3基础)
         self._step_counter = 0
-        self._stdp_every_n = getattr(config.stdp, 'every_n_tokens', 1)
+        self._stdp_every_n = getattr(config.stdp, 'every_n_tokens', 1)  # 改为默认每步更新
         self._last_reward = 1.0  # 存储最近一次对话的评判得分
         self._step_counter = 0
-        self._stdp_every_n = 50
+        self._stdp_every_n = 5  # 每 5 步更新一次 STDP（平衡性能和学习效果）
         
         # ========== 新增: 性能优化缓存 ==========
         # Token 计数器缓存（避免每步重复 unique）
@@ -469,6 +488,28 @@ class QwenInterface:
         # 统计信息
         self.total_generation_time = 0.0
         self.total_tokens_generated = 0
+    
+    def set_hippocampus_gate(self, gate_fn):
+        """
+        设置海马体注意力门控函数
+        
+        Args:
+            gate_fn: function(query, key, memory_anchor) -> gate_mask
+        """
+        # 委托给内部的 QwenModelWrapper
+        self.model.set_hippocampus_gate(gate_fn)
+    
+    def set_memory_anchors(self, anchors):
+        """
+        设置记忆锚点（用于窄带宽注意力）
+        
+        Args:
+            anchors: 记忆锚点列表
+        """
+        self._memory_anchors_cache = anchors
+        # 同时传递给模型
+        if hasattr(self.model, 'set_memory_anchors'):
+            self.model.set_memory_anchors(anchors)
     
     @property
     def _tokenizer_lock(self):
@@ -961,6 +1002,9 @@ class QwenInterface:
         past_key_values = None
         
         # Initialize internal STDP tracker
+        # 从 kwargs 中移除 use_cache，避免重复传递
+        forward_kwargs = {k: v for k, v in kwargs.items() if k != 'use_cache'}
+        
         for step in range(max_tokens):
             # KV-cache 模式: 只传最后一个 token
             if past_key_values is not None:
@@ -974,7 +1018,7 @@ class QwenInterface:
                 past_key_values=past_key_values,
                 use_cache=True,
                 memory_anchor_gate=memory_anchor,
-                **kwargs
+                **forward_kwargs
             )
             
             next_token_id = step_outputs['token_id']

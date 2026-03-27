@@ -92,6 +92,9 @@ class HippocampusSystem(nn.Module):
         
         # ========== 周期计数器 ==========
         self.cycle_count = 0
+        
+        # ========== 内存使用追踪（预初始化，避免 hasattr 检查）==========
+        self._last_memory_count = 0
     
     def encode(
         self,
@@ -207,8 +210,8 @@ class HippocampusSystem(nn.Module):
             query_features = query_features.unsqueeze(0)
         
         # ========== 优化: 检查编码缓存 ==========
-        # 使用特征哈希作为缓存键
-        cache_key = hash(query_features.tobytes() if hasattr(query_features, 'tobytes') else str(query_features.mean().item()))
+        # 使用特征哈希作为缓存键 - query_features 必定是 torch.Tensor
+        cache_key = hash(query_features.tobytes())
         
         if cache_key in self._query_encoding_cache:
             ec_code, dg_features = self._query_encoding_cache[cache_key]
@@ -222,7 +225,8 @@ class HippocampusSystem(nn.Module):
                 self._query_encoding_cache[cache_key] = (ec_code, dg_features)
         
         # ========== 3. CA3 模式补全召回 ==========
-        recall_threshold = getattr(self.config.hippocampus, 'recall_threshold', 0.75)
+        # recall_threshold 在 HippocampusConfig 中定义，默认 0.75
+        recall_threshold = self.config.hippocampus.recall_threshold
         
         memories = self.ca3_memory.complete_pattern(
             partial_cue={
@@ -234,13 +238,13 @@ class HippocampusSystem(nn.Module):
         )
         
         # ========== 4. 过滤低质量记忆 ==========
-        if hasattr(self.config.hippocampus, 'recall_threshold'):
-            filtered_memories = []
-            for mem in memories:
-                if hasattr(mem, 'activation_strength') and mem.activation_strength < recall_threshold:
-                    continue
-                filtered_memories.append(mem)
-            memories = filtered_memories[:topk * 2]
+        filtered_memories = []
+        for mem in memories:
+            # activation_strength 是 EpisodicMemory 的默认属性，不需要 hasattr
+            if mem.activation_strength < recall_threshold:
+                continue
+            filtered_memories.append(mem)
+        memories = filtered_memories[:topk * 2]
         
         # ========== 5. CA1 时序排序 ==========
         current_timestamp = int(time.time() * 1000)
@@ -254,10 +258,11 @@ class HippocampusSystem(nn.Module):
         memory_dg_features = {}
         memory_kv_features = {}
         for mem in memories:
-            if hasattr(mem, 'dg_features') and mem.dg_features is not None:
+            # dg_features 和 key_features 是 EpisodicMemory 的可选属性，用 is not None 检查
+            if mem.dg_features is not None:
                 memory_dg_features[mem.memory_id] = mem.dg_features
             # 提取 KV 特征（用于窄带宽注意力）
-            if hasattr(mem, 'key_features') and mem.key_features is not None:
+            if mem.key_features is not None:
                 memory_kv_features[mem.memory_id] = {
                     'key': mem.key_features,
                     'value': mem.value_features
@@ -359,27 +364,25 @@ class HippocampusSystem(nn.Module):
             # 基础数据结构大小
             memory_size = sys.getsizeof(memory_id)
             
-            # 特征向量大小
-            if hasattr(memory, 'features') and memory.features is not None:
+            # 特征向量大小 - features 是可选属性
+            if memory.features is not None:
                 memory_size += memory.features.element_size() * memory.features.nelement()
             
-            # 文本数据大小
-            if hasattr(memory, 'semantic_pointer'):
-                memory_size += sys.getsizeof(memory.semantic_pointer)
+            # 文本数据大小 - semantic_pointer 是 EpisodicMemory 的必需属性
+            memory_size += sys.getsizeof(memory.semantic_pointer)
             
+            # context 是可选属性
             if hasattr(memory, 'context'):
                 memory_size += sys.getsizeof(str(memory.context))
             
             total_size += memory_size
         
-        # 加上EC和DG组件的内存
-        if hasattr(self, 'ec_encoder') and self.ec_encoder is not None:
-            for param in self.ec_encoder.parameters():
-                total_size += param.element_size() * param.nelement()
+        # 加上EC和DG组件的内存 - 在 __init__ 中已初始化
+        for param in self.ec_encoder.parameters():
+            total_size += param.element_size() * param.nelement()
         
-        if hasattr(self, 'dg_separator') and self.dg_separator is not None:
-            for param in self.dg_separator.parameters():
-                total_size += param.element_size() * param.nelement()
+        for param in self.dg_separator.parameters():
+            total_size += param.element_size() * param.nelement()
         
         return total_size
 
@@ -387,9 +390,7 @@ class HippocampusSystem(nn.Module):
         """增量更新内存使用统计"""
         # 只在有新记忆时才更新
         current_count = len(self.ca3_memory.memories)
-        if not hasattr(self, '_last_memory_count'):
-            self._last_memory_count = 0
-        
+        # _last_memory_count 在 __init__ 中初始化为 0
         if current_count > self._last_memory_count:
             # 增量计算新增记忆的大小
             delta = current_count - self._last_memory_count
@@ -419,8 +420,8 @@ class HippocampusSystem(nn.Module):
     
     def trigger_swr_consolidation(self):
         """手动触发海马体 SWR 记忆巩固"""
-        if hasattr(self, 'swr_consolidation'):
-            self.swr_consolidation.trigger_manual_consolidation()
+        # swr_consolidation 在 __init__ 中已初始化
+        self.swr_consolidation.trigger_manual_consolidation()
 
     def record_activity(self):
         """记录用户活动 (重置空闲计时器)"""
