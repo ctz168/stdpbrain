@@ -746,7 +746,7 @@ class QwenInterface:
         input_text: str,
         max_tokens: int = 150,
         temperature: float = 0.45,
-        repetition_penalty: float = 1.15,  # 提高重复惩罚，防止循环生成
+        repetition_penalty: float = 1.3,  # 提高重复惩罚到1.3
         **kwargs
     ):
         """
@@ -797,6 +797,11 @@ class QwenInterface:
         im_end_token_id = 151645  # <|im_end|>
         stop_token_ids = {eos_token_id, im_end_token_id}
         
+        # 重复检测变量
+        recent_tokens = []  # 最近生成的token
+        ngram_repeat_count = {}  # n-gram重复计数
+        max_repeat_allowed = 3  # 允许的最大重复次数
+        
         for step in range(max_tokens):
             # KV-cache 模式: 只传最后一个 token
             if past_key_values is not None:
@@ -809,6 +814,7 @@ class QwenInterface:
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=True,
+                repetition_penalty=repetition_penalty,  # 传递重复惩罚
                 **kwargs
             )
             
@@ -842,7 +848,20 @@ class QwenInterface:
             full_decode = self.decode_safe(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
             if any(kw in full_decode for kw in unsafe_keywords):
                 break
-                
+            
+            # ========== N-gram 重复检测 ==========
+            recent_tokens.append(next_token_id.item())
+            if len(recent_tokens) > 10:
+                recent_tokens.pop(0)
+            
+            # 检测3-gram重复
+            if len(recent_tokens) >= 3:
+                ngram = tuple(recent_tokens[-3:])
+                ngram_repeat_count[ngram] = ngram_repeat_count.get(ngram, 0) + 1
+                if ngram_repeat_count[ngram] > max_repeat_allowed:
+                    # 发现重复，停止生成
+                    break
+            
             yield token_text
             
             if next_token_id in stop_token_ids:
@@ -864,7 +883,7 @@ class QwenInterface:
         input_text: str,
         max_tokens: int = 150,
         temperature: float = 0.35,
-        repetition_penalty: float = 1.15,  # 提高重复惩罚，防止循环生成
+        repetition_penalty: float = 1.3,  # 提高重复惩罚到1.3
         **kwargs
     ):
         """
@@ -903,6 +922,12 @@ class QwenInterface:
         im_end_token_id = 151645  # <|im_end|>
         stop_token_ids = {eos_token_id, im_end_token_id}
         
+        # 重复检测变量
+        recent_tokens = []
+        ngram_repeat_count = {}
+        max_repeat_allowed = 3
+        step_outputs = None  # 初始化，用于循环后提取隐藏状态
+        
         for step in range(max_tokens):
             # KV-cache 模式: 只传最后一个 token
             if past_key_values is not None:
@@ -915,6 +940,7 @@ class QwenInterface:
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 use_cache=True,
+                repetition_penalty=repetition_penalty,  # 传递重复惩罚
                 **kwargs
             )
             
@@ -949,13 +975,24 @@ class QwenInterface:
             if any(kw in full_decode for kw in unsafe_keywords):
                 break
             
-            # ========== 新增：重复模式检测 ==========
-            # 检测连续重复（如 "月租金：月租金：月租金"）
-            if cur_len > prompt_len + 5:
-                recent_tokens = input_ids_buf[0, cur_len-4:cur_len+1].tolist()
-                # 如果最近5个token完全重复，立即停止
-                if len(recent_tokens) == 5 and len(set(recent_tokens)) <= 2:
-                    logger.warning(f"[重复检测] 检测到重复模式，停止生成")
+            # ========== N-gram 重复检测 ==========
+            recent_tokens.append(next_token_id.item())
+            if len(recent_tokens) > 10:
+                recent_tokens.pop(0)
+            
+            # 检测3-gram重复
+            if len(recent_tokens) >= 3:
+                ngram = tuple(recent_tokens[-3:])
+                ngram_repeat_count[ngram] = ngram_repeat_count.get(ngram, 0) + 1
+                if ngram_repeat_count[ngram] > max_repeat_allowed:
+                    logger.warning(f"[重复检测] 3-gram重复超过阈值，停止生成")
+                    break
+            
+            # 检测连续重复字符
+            if len(full_decode) > 20:
+                last_10 = full_decode[-10:]
+                if len(set(last_10)) <= 2:
+                    logger.warning(f"[重复检测] 检测到字符重复模式，停止生成")
                     break
             
             yield token_text
@@ -973,6 +1010,14 @@ class QwenInterface:
             attention_mask = torch.cat(
                 [attention_mask, torch.ones((1, 1), device=self.device, dtype=torch.long)], dim=-1
             )
+        
+        # ========== 生成结束后返回隐藏状态 ==========
+        if step_outputs is not None:
+            last_hidden_state = step_outputs.get('hidden_states')
+            if last_hidden_state is not None:
+                # 取最后一层，最后一个 token
+                last_hidden_state = last_hidden_state[-1][:, -1, :].clone()
+                yield {"type": "hidden_state", "hidden_state": last_hidden_state}
 
 
     def generate(
@@ -982,7 +1027,7 @@ class QwenInterface:
         temperature: float = 0.35,
         use_self_loop: bool = False,
         memory_anchor: Optional[torch.Tensor] = None,
-        repetition_penalty: float = 1.15,  # 提高重复惩罚，防止循环生成
+        repetition_penalty: float = 1.3,  # 提高重复惩罚到1.3
         **kwargs
     ):
         """
@@ -1009,6 +1054,7 @@ class QwenInterface:
         
         generated_tokens = []
         past_key_values = None
+        step_outputs = None  # 初始化，用于循环后提取隐藏状态
         
         # Initialize internal STDP tracker
         # 从 kwargs 中移除 use_cache，避免重复传递
@@ -1083,10 +1129,12 @@ class QwenInterface:
         from core.interfaces import BrainAIOutput
         
         # 获取最后一个 token 的隐藏状态 (核心：维持意识连续性)
-        last_hidden_state = step_outputs.get('hidden_states')
-        if last_hidden_state is not None:
-            # 取最后一层，最后一个 token
-            last_hidden_state = last_hidden_state[-1][:, -1, :].clone()
+        last_hidden_state = None
+        if step_outputs is not None:
+            last_hidden_state = step_outputs.get('hidden_states')
+            if last_hidden_state is not None:
+                # 取最后一层，最后一个 token
+                last_hidden_state = last_hidden_state[-1][:, -1, :].clone()
 
         return BrainAIOutput(
             text=output_text,

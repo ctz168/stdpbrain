@@ -1002,19 +1002,44 @@ class BrainAIInterface:
         print(f"⏱️ [步骤4] 提示构建: {(t_step4-t_step3)*1000:.0f}ms", flush=True)
         
         full_response = ""
+        final_hidden_state = None
         try:
             async for chunk in self.model.generate_stream(prompt, max_tokens=max_tokens, temperature=0.6):
-                full_response += chunk
-                yield {"type": "chunk", "content": chunk}
+                # 检查是否是隐藏状态标记
+                if isinstance(chunk, dict) and chunk.get("type") == "hidden_state":
+                    final_hidden_state = chunk.get("hidden_state")
+                else:
+                    full_response += chunk
+                    yield {"type": "chunk", "content": chunk}
         except Exception as e:
             logger.error(f"流式生成失败: {e}")
             output = self.model.generate(prompt, max_tokens=max_tokens, temperature=0.6)
             full_response = output.text
+            final_hidden_state = output.hidden_state
             yield {"type": "chunk", "content": full_response}
         
         t_step5 = time.time()
         print(f"⏱️ [步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms", flush=True)
+        
+        # ========== 更新隐藏状态（维持意识连续性）==========
+        if final_hidden_state is not None:
+            self.current_thought_state = final_hidden_state
             
+            # 运行自指循环（如果有）
+            if self.true_self_loop is not None:
+                mind_state = self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "FOCUSED"
+                self.current_thought_state = self.true_self_loop(
+                    self.current_thought_state,
+                    current_mind_state=mind_state,
+                    recursion_depth=0
+                )
+            
+            # 更新自我编码器
+            if self.self_encoder:
+                _, _ = self.self_encoder.encode(final_hidden_state)
+            
+            logger.debug("[chat_stream] 已更新隐藏状态，维持意识连续性")
+        
         thought_state_snapshot = self.current_thought_state
         def post_processing():
             try:

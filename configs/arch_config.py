@@ -80,15 +80,20 @@ class HippocampusConfig:
     DG_sparsity: float = 0.85  # 齿状回稀疏度 - 降低以提升记忆容量
     DG_orthogonalization: bool = True  # 模式分离正交化
     
-    # 情景记忆存储
+    # 情景记忆存储 - 增强容量
     CA3_memory_format: str = "ID+timestamp+skeleton+semantic_pointer+causal"
-    CA3_max_capacity: int = 10000  # 最大记忆容量
+    CA3_max_capacity: int = 50000  # 最大记忆容量 - 从10000提升到50000（支持10个来回x1000字）
     CA3_timestamp_precision_ms: int = 10  # 时间戳精度 10ms
+    CA3_semantic_pointer_max_len: int = 200  # 语义指针最大长度 - 新增，支持更长记忆摘要
     
     # 时序编码与门控 - 优化召回质量
     CA1_temporal_encoding: bool = True
     CA1_attention_gate: bool = True
-    recall_topk: int = 3  # 每个周期召回 3 个记忆锚点 - 从2提升到3
+    recall_topk: int = 5  # 每个周期召回 5 个记忆锚点 - 从3提升到5
+    
+    # 模糊记忆召回 - 新增
+    fuzzy_recall_enabled: bool = True  # 启用模糊召回（记不清时可以找回）
+    fuzzy_recall_threshold: float = 0.5  # 模糊召回阈值（低于此值尝试更广泛搜索）
     
     # 离线回放巩固
     SWR_enabled: bool = True
@@ -96,11 +101,11 @@ class HippocampusConfig:
     SWR_replay_frequency: float = 0.1  # 回放频率
     
     # 内存约束
-    max_memory_bytes: int = 5 * 1024 * 1024  # 5MB (2B模型需要更大内存)
+    max_memory_bytes: int = 10 * 1024 * 1024  # 10MB (提升以支持更多记忆)
     use_cycle_buffer: bool = True  # 循环缓存
     
     # 召回阈值优化
-    recall_threshold: float = 0.75  # 提升召回阈值，减少噪声记忆
+    recall_threshold: float = 0.65  # 降低召回阈值，更容易找到相关记忆
 
 
 # ==================== 自闭环优化系统配置 ====================

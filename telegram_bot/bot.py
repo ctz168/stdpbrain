@@ -68,6 +68,7 @@ class BrainAIBot:
         self.last_active_chat_id: Optional[int] = None
         self.thinking_task: Optional[asyncio.Task] = None
         self.is_thinking_enabled = True
+        self.is_user_interacting = False  # 用户正在交互时暂停后台思考
         self.monologue_buffer: List[str] = []
         self.max_monologue_buffer = 5
         
@@ -87,6 +88,11 @@ class BrainAIBot:
                 if self.ai:
                     delay = random.randint(20, 40)
                     await asyncio.sleep(delay)
+                    
+                    # 检查用户是否正在交互（只在交互期间暂停，回答后立即恢复）
+                    if self.is_user_interacting:
+                        logger.debug("[Thinking] 用户正在交互，跳过本次内心独白")
+                        continue
                     
                     chat_id = self.last_active_chat_id
                     
@@ -463,7 +469,11 @@ class BrainAIBot:
         
         self.last_active_chat_id = chat_id
         
+        # 设置用户交互状态（暂停后台思考）
+        self.is_user_interacting = True
+        
         if not user_message:
+            self.is_user_interacting = False
             return
         
         logger.info(f"收到用户 {user_id} 消息：{user_message[:50]}...")
@@ -816,10 +826,14 @@ class BrainAIBot:
                 except Exception as e:
                     logger.error(f"[STDP学习] 应用反馈失败: {e}")
             
+            # 重置用户交互状态（允许后台思考继续）
+            self.is_user_interacting = False
+            
         except Exception as e:
             logger.error(f"流式生成失败: {e}", exc_info=True)
             await typing.stop_typing()
             await update.message.reply_text(f"[FAIL] 生成失败: {str(e)}")
+            self.is_user_interacting = False  # 异常时也重置
     
     def _update_history(self, user_id: int, user_message: str, assistant_response: str):
         if user_id not in self.user_history:
