@@ -99,9 +99,20 @@ class BrainAIBot:
         while self.is_thinking_enabled:
             try:
                 if self.ai:
+                    # 检查用户是否正在交互
+                    if self.is_user_interacting:
+                        logger.debug("[Thinking] 用户正在交互，暂停后台思考")
+                        await asyncio.sleep(2)  # 短暂等待
+                        continue
+                    
                     # 缩短等待时间，让潜意识更频繁地运行
-                    delay = random.randint(8, 15)  # 8-15秒
+                    delay = random.randint(15, 25)  # 增加到15-25秒，避免过于频繁
                     await asyncio.sleep(delay)
+                    
+                    # 再次检查用户是否正在交互
+                    if self.is_user_interacting:
+                        logger.debug("[Thinking] 用户开始交互，取消本轮思考")
+                        continue
                     
                     chat_id = self.last_active_chat_id
                     if not chat_id:
@@ -112,17 +123,18 @@ class BrainAIBot:
                         logger.info(f"[Thinking] 潜意识处理用户输入: {self.pending_user_input[:30]}...")
                         # 潜意识处理用户输入（不发送消息，只更新内部状态）
                         try:
+                            self.is_user_interacting = True  # 标记为交互状态
                             async for event in self.ai.chat_stream(self.pending_user_input, []):
                                 if event["type"] == "monologue":
                                     logger.debug(f"[潜意识] {event['content'][:50]}...")
+                                # 随时检查是否需要停止
+                                if not self.is_thinking_enabled:
+                                    break
                             self.pending_user_input = None  # 清除待处理输入
+                            self.is_user_interacting = False  # 恢复状态
                         except Exception as e:
                             logger.error(f"[Thinking] 潜意识处理输入失败: {e}")
-                        continue
-                    
-                    # 用户正在交互时，降低更新频率但不停止
-                    if self.is_user_interacting:
-                        await asyncio.sleep(5)  # 等待用户交互完成
+                            self.is_user_interacting = False
                         continue
                     
                     # ========== 生成自由独白 + 思维修改缓冲区 ==========
@@ -140,6 +152,11 @@ class BrainAIBot:
                         last_confidence = 0.0  # 上次反思的置信度
                         
                         async for chunk in self.ai.generate_monologue_stream(max_tokens=100):
+                            # 检查是否需要停止
+                            if not self.is_thinking_enabled or self.is_user_interacting:
+                                logger.info("[Thinking] 检测到用户交互或停止信号，中断思考")
+                                break
+                            
                             full_monologue += chunk
                             draft_buffer += chunk
                             tokens_since_reflect += len(chunk)

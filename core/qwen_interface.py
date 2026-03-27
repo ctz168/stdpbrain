@@ -851,15 +851,22 @@ class QwenInterface:
             
             # ========== N-gram 重复检测 ==========
             recent_tokens.append(next_token_id)  # next_token_id 已经是 int
-            if len(recent_tokens) > 10:
+            if len(recent_tokens) > 25:  # 增加到25个token
                 recent_tokens.pop(0)
             
-            # 检测3-gram重复
+            # 检测2-gram和3-gram重复
+            if len(recent_tokens) >= 2:
+                # 2-gram检测（更严格）
+                ngram2 = tuple(recent_tokens[-2:])
+                ngram_repeat_count[ngram2] = ngram_repeat_count.get(ngram2, 0) + 1
+                if ngram_repeat_count[ngram2] > max_repeat_allowed:
+                    break
+            
             if len(recent_tokens) >= 3:
-                ngram = tuple(recent_tokens[-3:])
-                ngram_repeat_count[ngram] = ngram_repeat_count.get(ngram, 0) + 1
-                if ngram_repeat_count[ngram] > max_repeat_allowed:
-                    # 发现重复，停止生成
+                # 3-gram检测
+                ngram3 = tuple(recent_tokens[-3:])
+                ngram_repeat_count[ngram3] = ngram_repeat_count.get(ngram3, 0) + 1
+                if ngram_repeat_count[ngram3] > max_repeat_allowed:
                     break
             
             yield token_text
@@ -925,7 +932,7 @@ class QwenInterface:
         # 重复检测变量
         recent_tokens = []
         ngram_repeat_count = {}
-        max_repeat_allowed = 3
+        max_repeat_allowed = 2  # 降低到2，更严格
         step_outputs = None  # 初始化，用于循环后提取隐藏状态
         
         for step in range(max_tokens):
@@ -977,23 +984,45 @@ class QwenInterface:
             
             # ========== N-gram 重复检测 ==========
             recent_tokens.append(next_token_id)  # next_token_id 已经是 int
-            if len(recent_tokens) > 10:
+            if len(recent_tokens) > 25:  # 增加到25个token
                 recent_tokens.pop(0)
             
-            # 检测3-gram重复
+            # 检测2-gram和3-gram重复
+            if len(recent_tokens) >= 2:
+                # 2-gram检测（更严格）
+                ngram2 = tuple(recent_tokens[-2:])
+                ngram_repeat_count[ngram2] = ngram_repeat_count.get(ngram2, 0) + 1
+                if ngram_repeat_count[ngram2] > max_repeat_allowed:
+                    logger.warning(f"[重复检测] 2-gram重复超过阈值，停止生成")
+                    break
+            
             if len(recent_tokens) >= 3:
-                ngram = tuple(recent_tokens[-3:])
-                ngram_repeat_count[ngram] = ngram_repeat_count.get(ngram, 0) + 1
-                if ngram_repeat_count[ngram] > max_repeat_allowed:
+                # 3-gram检测
+                ngram3 = tuple(recent_tokens[-3:])
+                ngram_repeat_count[ngram3] = ngram_repeat_count.get(ngram3, 0) + 1
+                if ngram_repeat_count[ngram3] > max_repeat_allowed:
                     logger.warning(f"[重复检测] 3-gram重复超过阈值，停止生成")
                     break
             
-            # 检测连续重复字符
-            if len(full_decode) > 20:
-                last_10 = full_decode[-10:]
-                if len(set(last_10)) <= 2:
+            # 检测连续重复字符（更严格）
+            if len(full_decode) > 15:
+                last_15 = full_decode[-15:]
+                # 如果最后15个字符中，不重复的字符数少于5个，停止
+                if len(set(last_15)) <= 4:
                     logger.warning(f"[重复检测] 检测到字符重复模式，停止生成")
                     break
+            
+            # 检测词组重复（新增）
+            if len(full_decode) > 30:
+                # 检查最后30个字符中是否有重复的词组
+                last_30 = full_decode[-30:]
+                words = last_30.split()
+                if len(words) >= 4:
+                    # 检查是否有连续的词重复
+                    for i in range(len(words) - 1):
+                        if words[i] == words[i+1] and len(words[i]) > 2:
+                            logger.warning(f"[重复检测] 检测到词组重复: {words[i]}")
+                            break
             
             yield token_text
             
