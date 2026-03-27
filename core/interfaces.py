@@ -385,16 +385,9 @@ class BrainAIInterface:
 
         
         # 2. 并行执行：记忆召回 和 潜意识独白生成
-        def parallel_recall():
-            """并行记忆召回 - 调用公共方法"""
-            memory_context, recalled_memories, _ = self._parallel_recall_and_monologue(user_input, 3)
-            return memory_context, recalled_memories
-
-        future_recall = self.executor.submit(parallel_recall)
-        future_monologue = self.executor.submit(self._generate_spontaneous_monologue, 35, 0.75)
-        
-        memory_context, recalled_memories = future_recall.result()
-        monologue = future_monologue.result()
+        # 优化：_parallel_recall_and_monologue已经包含了独白生成，不需要重复生成
+        memory_context, recalled_memories, monologue_raw = self._parallel_recall_and_monologue(user_input, 3)
+        monologue = self._clean_monologue(monologue_raw, user_input)
         
         t_step3 = time.time()
         print(f"⏱️ [步骤3] 并行召回+独白: {(t_step3-t_step2)*1000:.0f}ms", flush=True)
@@ -1215,8 +1208,8 @@ class BrainAIInterface:
         if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
             memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
         
-        # 独白生成
-        monologue_raw = self._generate_spontaneous_monologue(30, 0.75)
+        # 独白生成（优化：减少token数量以加速CPU推理）
+        monologue_raw = self._generate_spontaneous_monologue(20, 0.8)  # 从30减少到20个token
         
         return memory_context, recalled_memories, monologue_raw
 

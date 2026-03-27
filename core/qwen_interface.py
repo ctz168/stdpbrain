@@ -1096,28 +1096,50 @@ class QwenInterface:
         
         # ========== 1.5. 目标向量注入（新增）==========
         if goal_vector is not None:
-            # 获取输入embedding
-            with torch.no_grad():
-                input_embeddings = self.model.base_model.get_input_embeddings()(input_ids)
-                # input_embeddings: [batch, seq_len, hidden_size]
+            # 检查goal_vector维度
+            expected_dim = self.model.config.hidden_size
+            if goal_vector.dim() != 1 or goal_vector.shape[0] != expected_dim:
+                print(f"⚠️ [目标向量] 维度不匹配: 期望{expected_dim}, 实际{goal_vector.shape}")
+                print(f"⚠️ [目标向量] 尝试调整维度...")
                 
-                # 将目标向量扩展到序列长度
-                # goal_vector: [hidden_size] -> [1, seq_len, hidden_size]
-                goal_expanded = goal_vector.unsqueeze(0).unsqueeze(0).expand(
-                    input_embeddings.shape[0], 
-                    input_embeddings.shape[1], 
-                    -1
-                )
-                
-                # 注入目标向量（加权融合）
-                goal_injection_weight = 0.15  # 目标向量权重
-                modified_embeddings = input_embeddings * (1 - goal_injection_weight) + goal_expanded * goal_injection_weight
-                
-                print(f"🎯 [目标注入] 已将目标向量注入到输入embedding (权重={goal_injection_weight})")
-                
-                # 使用修改后的embedding（需要修改forward调用）
-                # 这里我们先记录，稍后在第一次forward时使用
-                self._modified_embeddings = modified_embeddings
+                # 尝试调整维度
+                if goal_vector.dim() == 1:
+                    if goal_vector.shape[0] < expected_dim:
+                        # 填充到正确维度
+                        padding = torch.zeros(expected_dim - goal_vector.shape[0], device=self.device)
+                        goal_vector = torch.cat([goal_vector, padding])
+                    elif goal_vector.shape[0] > expected_dim:
+                        # 裁剪到正确维度
+                        goal_vector = goal_vector[:expected_dim]
+                else:
+                    print(f"❌ [目标向量] 无法处理多维goal_vector，跳过注入")
+                    goal_vector = None
+            
+            if goal_vector is not None:
+                # 获取输入embedding
+                with torch.no_grad():
+                    input_embeddings = self.model.base_model.get_input_embeddings()(input_ids)
+                    # input_embeddings: [batch, seq_len, hidden_size]
+                    
+                    # 将目标向量扩展到序列长度
+                    # goal_vector: [hidden_size] -> [1, seq_len, hidden_size]
+                    goal_expanded = goal_vector.unsqueeze(0).unsqueeze(0).expand(
+                        input_embeddings.shape[0], 
+                        input_embeddings.shape[1], 
+                        -1
+                    )
+                    
+                    # 注入目标向量（加权融合）
+                    goal_injection_weight = 0.15  # 目标向量权重
+                    modified_embeddings = input_embeddings * (1 - goal_injection_weight) + goal_expanded * goal_injection_weight
+                    
+                    print(f"🎯 [目标注入] 已将目标向量注入到输入embedding (权重={goal_injection_weight})")
+                    
+                    # 使用修改后的embedding（需要修改forward调用）
+                    # 这里我们先记录，稍后在第一次forward时使用
+                    self._modified_embeddings = modified_embeddings
+            else:
+                self._modified_embeddings = None
         else:
             self._modified_embeddings = None
         
@@ -1214,6 +1236,11 @@ class QwenInterface:
             if last_hidden_state is not None:
                 # 取最后一层，最后一个 token
                 last_hidden_state = last_hidden_state[-1][:, -1, :].clone()
+
+        # ========== 清理临时变量 ==========
+        # 清理modified_embeddings，避免影响下一次生成
+        if hasattr(self, '_modified_embeddings'):
+            del self._modified_embeddings
 
         return BrainAIOutput(
             text=output_text,
