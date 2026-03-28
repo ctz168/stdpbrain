@@ -17,6 +17,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, List, Dict, Tuple, Any
 import math
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== Global Memory Anchor Store ====================
@@ -118,6 +122,47 @@ class SparseAttentionCompressor:
         
         return key_rotated
     
+    @staticmethod
+    def apply_rope_with_positions(
+        key_states: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        positions: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        对指定位置索引应用RoPE（仅用于新构造的anchor keys）。
+
+        Args:
+            key_states: [batch, num_heads, seq_len, head_dim]
+            cos, sin: RoPE缓存
+            positions: [seq_len]，每个token对应的位置索引
+        """
+        if key_states.shape[2] == 0:
+            return key_states
+
+        # 统一取出 [seq_len, head_dim]
+        if cos.dim() == 3:
+            base_cos = cos[0]
+            base_sin = sin[0]
+        else:
+            base_cos = cos
+            base_sin = sin
+
+        max_pos = base_cos.shape[0] - 1
+        positions = positions.clamp(min=0, max=max_pos).to(torch.long).to(key_states.device)
+
+        cos_pos = base_cos.index_select(0, positions).unsqueeze(0).unsqueeze(0)
+        sin_pos = base_sin.index_select(0, positions).unsqueeze(0).unsqueeze(0)
+        cos_pos = cos_pos.expand(key_states.shape[0], key_states.shape[1], -1, -1)
+        sin_pos = sin_pos.expand(key_states.shape[0], key_states.shape[1], -1, -1)
+
+        def rotate_half(x):
+            x1 = x[..., : x.shape[-1] // 2]
+            x2 = x[..., x.shape[-1] // 2 :]
+            return torch.cat((-x2, x1), dim=-1)
+
+        return key_states * cos_pos + rotate_half(key_states) * sin_pos
+
     @staticmethod
     def compress_kv(
         key_states: torch.Tensor,
@@ -250,30 +295,32 @@ class SparseAttentionCompressor:
             anchor_keys_tensor = torch.cat(anchor_keys_list, dim=2) * strength
             anchor_values_tensor = torch.cat(anchor_values_list, dim=2) * strength
             
-            # ========== 关键修复：拼接前先移除RoPE，拼接后重新应用 ==========
-            # 但实际上RoPE不可逆，所以我们采用另一种策略：
-            # 为拼接后的KV统一应用新的RoPE
-            
-            # 策略：Anchors使用虚拟position（如负数或固定值）
-            #       Window使用正确的连续position
-            
             num_anchors = anchor_keys_tensor.shape[2]
             num_window = window_keys.shape[2]
+
+            # 只对anchor应用RoPE，window部分保持原始RoPE编码，避免“二次RoPE”
+            if cos is not None and sin is not None and num_anchors > 0:
+                window_start_pos = max(0, seq_len - num_window)
+                anchor_start_pos = max(0, window_start_pos - num_anchors)
+                anchor_positions = torch.arange(
+                    anchor_start_pos,
+                    anchor_start_pos + num_anchors,
+                    device=device
+                )
+                anchor_keys_tensor = SparseAttentionCompressor.apply_rope_with_positions(
+                    anchor_keys_tensor, cos, sin, anchor_positions
+                )
             
             # Concatenate: anchors + recent window
             compressed_keys = torch.cat([anchor_keys_tensor, window_keys], dim=2)
             compressed_values = torch.cat([anchor_values_tensor, window_values], dim=2)
             
-            # ========== 重新应用RoPE ==========
-            if cos is not None and sin is not None:
-                # 为整个拼接后的KV重新应用position embedding
-                # 使用连续的position: 0, 1, 2, ..., total_len-1
-                compressed_keys = SparseAttentionCompressor.reapply_rope(
-                    compressed_keys, cos, sin, position_offset=0
-                )
-                # Values不需要RoPE，只需要Keys
-            
-            print(f"[SparseAttn] KV拼接完成: {num_anchors} anchors + {num_window} window = {compressed_keys.shape[2]} total")
+            logger.debug(
+                "[SparseAttn] KV拼接完成: %s anchors + %s window = %s total",
+                num_anchors,
+                num_window,
+                compressed_keys.shape[2],
+            )
         else:
             # No anchors, use only window
             compressed_keys = window_keys
@@ -458,7 +505,12 @@ def patch_qwen_attention():
                 # Performance logging (降低日志频率，每50个token输出一次)
                 if original_seq_len % 50 == 0 and original_seq_len > 0:
                     compression_ratio = key_states.shape[2] / original_seq_len
-                    print(f"[SparseAttn] KV compressed: {original_seq_len} -> {key_states.shape[2]} (ratio: {compression_ratio:.1%})")
+                    logger.info(
+                        "[SparseAttn] KV compressed: %s -> %s (ratio: %.1f%%)",
+                        original_seq_len,
+                        key_states.shape[2],
+                        compression_ratio * 100,
+                    )
 
             # Continue with second half of original forward
             from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
@@ -546,4 +598,3 @@ def eager_attention_forward(
 
 # Try to apply patch on module import
 # auto_patch()  # Uncomment to auto-apply on import
-
