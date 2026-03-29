@@ -15,6 +15,10 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import time
 from collections import OrderedDict
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,6 +101,9 @@ class CA3EpisodicMemory(nn.Module):
         
         # ========== 当前时间戳 ==========
         self.current_timestamp = 0
+        self.last_recall_trace: List[Dict] = []
+        self.recall_count: int = 0
+        self.last_recall_time: float = 0.0
     
     def store(
         self,
@@ -186,7 +193,10 @@ class CA3EpisodicMemory(nn.Module):
         Returns:
             memories: 召回的记忆列表
         """
+        self.recall_count += 1
+        self.last_recall_time = time.time()
         candidates = []
+        recall_trace: List[Dict] = []
         
         # ========== 1. 优先召回核心记忆（关键词匹配） ==========
         core_memories = [m for m in self.memories.values() if m.is_core]
@@ -257,13 +267,14 @@ class CA3EpisodicMemory(nn.Module):
                         query_keywords.update(keywords)
                     
                     for i, sim in enumerate(top_sim):
-                        memory_id = all_ids[top_indices[i]]
+                        idx = top_indices[i].item() if hasattr(top_indices[i], "item") else int(top_indices[i])
+                        memory_id = all_ids[idx]
                         memory = self.memories[memory_id]
                         
                         # 计算语义匹配分数
                         semantic_score = 0.0
-                        if query_keywords and i < len(all_semantics):
-                            semantic_text = all_semantics[i]
+                        if query_keywords and idx < len(all_semantics):
+                            semantic_text = all_semantics[idx]
                             # 检查关键词匹配
                             matched_keywords = sum(1 for kw in query_keywords if kw in semantic_text)
                             semantic_score = matched_keywords / len(query_keywords) if query_keywords else 0.0
@@ -271,11 +282,24 @@ class CA3EpisodicMemory(nn.Module):
                         # 综合评分：特征相似度 + 语义匹配
                         # 如果语义匹配度高，即使特征相似度低也召回
                         final_score = sim * 0.6 + semantic_score * 0.4
+                        sim_val = sim.item() if hasattr(sim, "item") else float(sim)
+                        final_val = final_score.item() if hasattr(final_score, "item") else float(final_score)
                         
                         # 核心记忆使用更低的召回阈值
                         threshold = 0.35 if memory.is_core else 0.40  # 进一步降低阈值
+                        is_selected = bool(final_val > threshold or sim_val > 0.5 or semantic_score > 0.5)
+                        recall_trace.append({
+                            "memory_id": memory_id,
+                            "rank": int(i),
+                            "similarity": float(sim_val),
+                            "semantic_score": float(semantic_score),
+                            "final_score": float(final_val),
+                            "threshold": float(threshold),
+                            "selected": is_selected,
+                            "is_core": bool(memory.is_core),
+                        })
                         
-                        if final_score > threshold or sim > 0.5 or semantic_score > 0.5:
+                        if is_selected:
                             candidates.append(memory)
         
         # ========== 3. 如果召回结果不足，直接返回核心记忆 ==========
@@ -295,6 +319,16 @@ class CA3EpisodicMemory(nn.Module):
                 unique_candidates.append(cand)
         
         # ========== 5. 按激活强度排序并返回 TopK ==========
+        self.last_recall_trace = recall_trace
+        if recall_trace:
+            selected = [item for item in recall_trace if item["selected"]]
+            logger.debug(
+                "[CA3Recall] query_semantic=%s evaluated=%s selected=%s",
+                query_semantic,
+                len(recall_trace),
+                len(selected),
+            )
+
         unique_candidates.sort(key=lambda m: m.activation_strength, reverse=True)
         return unique_candidates[:topk]
     
@@ -309,7 +343,9 @@ class CA3EpisodicMemory(nn.Module):
             'memories': memories_dict,
             'time_index': self.time_index,
             'semantic_index': self.semantic_index,
-            'current_timestamp': self.current_timestamp
+            'current_timestamp': self.current_timestamp,
+            'recall_count': self.recall_count,
+            'last_recall_time': self.last_recall_time,
         }
     
     def set_state(self, state: dict):
@@ -345,6 +381,8 @@ class CA3EpisodicMemory(nn.Module):
         self.time_index = state.get('time_index', {})
         self.semantic_index = state.get('semantic_index', {})
         self.current_timestamp = state.get('current_timestamp', 0)
+        self.recall_count = int(state.get('recall_count', 0))
+        self.last_recall_time = float(state.get('last_recall_time', 0.0))
     
     def complete_pattern(
         self,
@@ -470,8 +508,15 @@ class CA3EpisodicMemory(nn.Module):
             'capacity_usage': len(self.memories) / self.max_capacity,
             'avg_activation': sum(activations) / len(activations),
             'max_activation': max(activations),
-            'min_activation': min(activations)
+            'min_activation': min(activations),
+            'core_memory_count': sum(1 for m in self.memories.values() if m.is_core),
+            'recall_count': self.recall_count,
+            'last_recall_time': self.last_recall_time,
         }
+
+    def get_last_recall_trace(self) -> List[Dict]:
+        """返回最近一次 recall 的评分明细。"""
+        return list(self.last_recall_trace)
     
     def forward(
         self,
