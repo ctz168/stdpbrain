@@ -29,6 +29,7 @@ from core.self_encoder import SelfStateEncoder
 from core.true_self_referential_loop import TrueSelfReferentialLoop
 from core.predictive_coding import PredictiveCodingModule
 from core.proactive_intent_generator import ProactiveIntent, ProactiveIntentGenerator, ProactiveContext
+from core.prompt_safety import summarize_internal_thought, build_guided_user_input
 
 logger = logging.getLogger(__name__)
 
@@ -1363,14 +1364,10 @@ class BrainAIInterface:
             for msg in history[-4:]:
                 messages.append(msg)
         
-        # ========== 关键修改：整合独白到用户输入 ==========
-        # 让模型理解这是"边思考边回答"的过程
-        if monologue and monologue != "思考中...":
-            # 将独白作为"思考过程"附加到用户问题前
-            enhanced_input = f"[思考过程]\n{monologue}\n\n[基于上述思考回答问题]\n{user_input}"
-            messages.append({"role": "user", "content": enhanced_input})
-        else:
-            messages.append({"role": "user", "content": user_input})
+        # ========== 半耦合：思考指导回复，但不直接注入原始独白 ==========
+        thought_summary = summarize_internal_thought(monologue)
+        guided_user_input = build_guided_user_input(user_input, thought_summary)
+        messages.append({"role": "user", "content": guided_user_input})
         
         try:
             prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)

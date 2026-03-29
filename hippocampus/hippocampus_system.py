@@ -210,8 +210,9 @@ class HippocampusSystem(nn.Module):
             query_features = query_features.unsqueeze(0)
         
         # ========== 优化: 检查编码缓存 ==========
-        # 使用特征哈希作为缓存键 - query_features 必定是 torch.Tensor
-        cache_key = hash(query_features.tobytes())
+        # 使用特征哈希作为缓存键 - 统一转为CPU连续字节，避免设备/stride导致不稳定
+        query_for_hash = query_features.detach().to('cpu').contiguous()
+        cache_key = hash(query_for_hash.numpy().tobytes())
         
         if cache_key in self._query_encoding_cache:
             ec_code, dg_features = self._query_encoding_cache[cache_key]
