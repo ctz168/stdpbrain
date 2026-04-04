@@ -194,10 +194,10 @@ class HippocampusSystem(nn.Module):
         ai_response = ""
         if context and len(context) > 0:
             for ctx in context:
-                if 'user_input' in ctx:
-                    user_input = ctx['user_input']
-                if 'ai_response' in ctx:
-                    ai_response = ctx['ai_response']
+                if 'user_input' in ctx and ctx['user_input']:
+                    user_input = str(ctx['user_input'])
+                if 'ai_response' in ctx and ctx['ai_response']:
+                    ai_response = str(ctx['ai_response'])
 
         self.ca3_memory.store(
             memory_id=memory_id,
@@ -256,50 +256,105 @@ class HippocampusSystem(nn.Module):
                 self._query_encoding_cache[cache_key] = (ec_code, dg_features)
         
         # ========== 3. CA3 模式补全召回 ==========
-        # recall_threshold 在 HippocampusConfig 中定义，默认 0.75
-        recall_threshold = self.config.hippocampus.recall_threshold
+        # Build partial cue for CA3 recall
+        partial_cue = {
+            'features': dg_features,
+            'semantic': query_semantic,
+            'timestamp': query_timestamp
+        }
         
-        memories = self.ca3_memory.complete_pattern(
-            partial_cue={
-                'features': dg_features,
-                'semantic': query_semantic,
-                'timestamp': query_timestamp
-            },
-            topk=topk * 3  # 多召回一些，后续过滤
+        memories = self.ca3_memory.recall(
+            query_features=partial_cue.get('features'),
+            query_semantic=partial_cue.get('semantic'),
+            query_timestamp=partial_cue.get('timestamp'),
+            topk=topk * 5,  # Get more candidates
+            return_all=True  # Skip internal tier threshold filtering
         )
         
-        # ========== 4. 过滤低质量记忆 ==========
+        # ========== 4. 过滤低质量记忆（基于语义相关性，而非时间衰减）==========
+        # BUG FIX: activation_strength 是时间衰减指标（从1.0开始随时间衰减），
+        # 不是语义相关性指标。旧的 activation_strength < recall_threshold 过滤会
+        # 错误地丢弃语义高度相关但只是较旧的记忆。
+        # 现在改为：只过滤掉完全没有相关性信号的记忆。
         filtered_memories = []
         for mem in memories:
-            # activation_strength 是 EpisodicMemory 的默认属性，不需要 hasattr
-            if mem.activation_strength < recall_threshold:
-                continue
-            filtered_memories.append(mem)
+            # Only filter out memories with truly zero relevance signal
+            has_similarity = hasattr(mem, '_embedding_score') and mem._embedding_score > 0.01
+            has_keyword = hasattr(mem, '_recall_keyword_score') and mem._recall_keyword_score > 0
+            has_dg_match = hasattr(mem, '_dg_match_score') and mem._dg_match_score > 0.01
+            # Keep if ANY signal exists, OR if memory is core (never auto-filter core memories)
+            if has_similarity or has_keyword or has_dg_match or getattr(mem, 'is_core', False):
+                filtered_memories.append(mem)
+            elif len(filtered_memories) < topk:
+                # Keep some low-signal memories as fallback when we don't have enough
+                filtered_memories.append(mem)
         memories = filtered_memories[:topk * 2]
         
-        # ========== 5. CA1 时序排序 ==========
-        current_timestamp = int(time.time() * 1000)
-        sorted_memories = self.ca1_gate.sort_by_temporal(
-            memories=[mem.to_dict() for mem in memories],
-            current_timestamp=current_timestamp,
-            topk=topk
-        )
-        
-        # ========== 6. 添加记忆本身的 DG 和 KV 特征到返回结果 ==========
+        # ========== 5. 构建记忆字典并计算综合相关性分数 ==========
         memory_dg_features = {}
         memory_kv_features = {}
+        memory_dicts = []
+        current_timestamp = int(time.time() * 1000)
+        
         for mem in memories:
-            # dg_features 和 key_features 是 EpisodicMemory 的可选属性，用 is not None 检查
+            mem_dict = mem.to_dict()
+            mem_id = mem_dict.get('memory_id', '')
+            
+            # --- 5a. 收集 DG 和 KV 特征 ---
             if mem.dg_features is not None:
-                memory_dg_features[mem.memory_id] = mem.dg_features
-            # 提取 KV 特征（用于窄带宽注意力）
+                memory_dg_features[mem_id] = mem.dg_features
             if mem.key_features is not None:
-                memory_kv_features[mem.memory_id] = {
+                memory_kv_features[mem_id] = {
                     'key': mem.key_features,
                     'value': mem.value_features
                 }
+            
+            # --- 5b. 确保关键字段存在 ---
+            if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:
+                mem_dict['content'] = self.ca3_memory.memories[mem_id].content
+            if 'is_core' not in mem_dict and mem_id in self.ca3_memory.memories:
+                mem_dict['is_core'] = self.ca3_memory.memories[mem_id].is_core
+            
+            # Include semantic_pointer, key_entities, semantic_summary from the memory object
+            if 'semantic_pointer' not in mem_dict and mem_id in self.ca3_memory.memories:
+                mem_dict['semantic_pointer'] = self.ca3_memory.memories[mem_id].semantic_pointer
+            if 'key_entities' not in mem_dict and hasattr(self.ca3_memory.memories[mem_id], 'key_entities'):
+                mem_dict['key_entities'] = self.ca3_memory.memories[mem_id].key_entities
+            if 'semantic_summary' not in mem_dict and hasattr(self.ca3_memory.memories[mem_id], 'semantic_summary'):
+                mem_dict['semantic_summary'] = self.ca3_memory.memories[mem_id].semantic_summary
+            
+            # --- 5c. 计算综合相关性分数 ---
+            embedding_score = getattr(mem, '_embedding_score', 0.0) or 0.0
+            keyword_score = getattr(mem, '_recall_keyword_score', 0.0) or 0.0
+            dg_match_score = getattr(mem, '_dg_match_score', 0.0) or 0.0
+            activation = getattr(mem, 'activation_strength', 1.0) or 1.0
+            is_core = getattr(mem, 'is_core', False)
+            
+            # Tier bonus: long-term memories get a small boost
+            tier = getattr(mem, 'tier', 'short_term')
+            tier_bonus = {'short_term': 0.0, 'mid_term': 0.05, 'long_term': 0.1}.get(tier, 0.0)
+            
+            # Core bonus
+            core_bonus = 0.15 if is_core else 0.0
+            
+            # Combined relevance: weighted sum of all signals
+            relevance_score = (
+                0.4 * embedding_score +
+                0.3 * min(keyword_score / 10.0, 1.0) +  # normalize keyword score
+                0.2 * dg_match_score +
+                tier_bonus +
+                core_bonus
+            )
+            # Small decay factor so very old but irrelevant memories don't rank high
+            relevance_score *= (0.5 + 0.5 * activation)
+            
+            mem_dict['relevance_score'] = round(relevance_score, 6)
+            mem_dict['_activation_strength'] = activation
+            
+            memory_dicts.append(mem_dict)
         
-        for mem_dict in sorted_memories:
+        # --- 5d. 附加 DG 和 KV 特征到字典 ---
+        for mem_dict in memory_dicts:
             mem_id = mem_dict.get('memory_id', '')
             
             # DG 特征（统一转 float32 避免 BFloat16 序列化错误）
@@ -313,13 +368,35 @@ class HippocampusSystem(nn.Module):
                 kv = memory_kv_features[mem_id]
                 mem_dict['key_features'] = kv['key'].detach().cpu().float().numpy().tolist() if kv['key'] is not None else None
                 mem_dict['value_features'] = kv['value'].detach().cpu().float().numpy().tolist() if kv['value'] is not None else None
-            
-            if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:
-                mem_dict['content'] = self.ca3_memory.memories[mem_id].content
-            if 'is_core' not in mem_dict and mem_id in self.ca3_memory.memories:
-                mem_dict['is_core'] = self.ca3_memory.memories[mem_id].is_core
         
-        return sorted_memories
+        # ========== 6. 按综合相关性分数排序（替代纯时序排序）==========
+        memory_dicts.sort(key=lambda x: x.get('relevance_score', 0.0), reverse=True)
+        
+        # CA1 时序重排作为辅助信号（混合相关性+时序）
+        if len(memory_dicts) > 1:
+            try:
+                temporal_sorted = self.ca1_gate.sort_by_temporal(
+                    memories=memory_dicts,
+                    current_timestamp=current_timestamp,
+                    topk=topk
+                )
+                # Merge: use CA1 temporal order but respect relevance filtering
+                # Keep only memories that passed our relevance filter
+                temporal_ids = {m.get('memory_id') for m in temporal_sorted}
+                # Prioritize temporal order but include high-relevance memories too
+                final = []
+                for m in temporal_sorted:
+                    final.append(m)
+                # Add any high-relevance memories missed by temporal sort
+                final_ids = {m.get('memory_id') for m in final}
+                for m in memory_dicts:
+                    if m.get('memory_id') not in final_ids and m.get('relevance_score', 0) > 0.3:
+                        final.append(m)
+                memory_dicts = final
+            except Exception as e:
+                logger.debug(f"[Hippocampus] CA1 temporal sort skipped: {e}")
+        
+        return memory_dicts[:topk]
 
     def get_state(self) -> dict:
         """获取海马体系统的完整状态"""

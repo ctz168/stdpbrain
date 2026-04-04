@@ -1018,21 +1018,20 @@ class BrainAIInterface:
         """
         存储记忆到海马体 - 支持 KV 特征（用于窄带宽注意力）
         
-        改进：semantic_pointer 优先使用结构化实体信息，而非原始文本拼接
+        COUPLING FIX: 特征提取与召回路径完全一致
+        - 存储：使用 user_input 文本通过深层 hidden states + 加权 mean pooling
+        - 召回：使用 user_input 文本通过深层 hidden states + 加权 mean pooling
+        - 保证两者在同一特征空间，余弦相似度有意义
         """
         try:
-            if hidden_state is not None:
-                features = hidden_state[0, -1, :] if hidden_state.dim() == 3 else hidden_state.squeeze(0) if hidden_state.dim() == 2 else hidden_state
-            else:
-                # 修复：添加attention_mask避免警告（线程安全）
-                input_ids = self.model.encode_safe(monologue[:20], return_tensors="pt").to(self.device)
-                attention_mask = torch.ones_like(input_ids)  # 添加attention_mask
-                
-                with torch.no_grad():
-                    emb = self.model.model.base_model.get_input_embeddings()(input_ids)
-                    features = emb.mean(dim=1).squeeze(0)
+            # ========== COUPLING FIX: 使用与召回完全一致的特征提取方法 ==========
+            # 之前：存储用 hidden_state[0,-1,:]（单token），召回用深层mean pooling（全序列）
+            # 导致 DG 特征相似度接近随机，记忆永远召不回
+            # 现在：存储也使用 user_input 的深层 hidden states + mean pooling
+            store_text = user_input if user_input else monologue
+            features = self._extract_query_features(store_text[:50])
             
-            if features.shape[0] == self.model_hidden_size:
+            if features is not None and features.shape[0] == self.model_hidden_size:
                 with torch.no_grad():
                     adapter_dtype = next(self.feature_adapter.parameters()).dtype
                     features = features.to(dtype=adapter_dtype)
@@ -1066,6 +1065,41 @@ class BrainAIInterface:
             )
         except Exception as e:
             logger.warning(f"记忆存储失败: {e}")
+
+    def _extract_query_features(self, text: str) -> Optional[torch.Tensor]:
+        """
+        从文本提取深层特征向量（存储和召回共用）
+        
+        COUPLING FIX: 这是存储和召回路径的特征提取统一入口
+        保证两者在同一特征空间
+        """
+        if not text or not text.strip():
+            return None
+        try:
+            inputs = self.model.tokenize_safe(text, return_tensors="pt").to(self.device)
+            input_ids = inputs.input_ids
+            
+            with torch.no_grad():
+                base_model = self.model.model.base_model
+                outputs = base_model(input_ids, output_hidden_states=True, return_dict=True)
+                # 使用最后2层 hidden states 的加权平均（与召回路径完全一致）
+                last_layers = outputs.hidden_states[-2:]
+                stacked = torch.stack(last_layers)  # [2, 1, seq_len, hidden_size]
+                deep_features = stacked.mean(dim=0)  # [1, seq_len, hidden_size]
+                # 加权 mean pooling（首尾token权重更高）
+                seq_len = deep_features.shape[1]
+                weights = torch.ones(seq_len, device=deep_features.device)
+                weights[0] = 1.5
+                if seq_len > 1:
+                    weights[-1] = 2.0
+                if seq_len > 2:
+                    weights[1:-1] = 0.5
+                weights = weights / weights.sum()
+                query_features = (deep_features * weights.unsqueeze(0).unsqueeze(-1)).sum(dim=1).squeeze(0)
+            return query_features
+        except Exception as e:
+            logger.debug(f"[BrainAI] 特征提取失败: {e}")
+            return None
 
     def _apply_real_stdp_update(self, emotional_salience: float = 1.0):
         """调用真实的 STDP 引擎进行闭环学习，替代之前的伪 Hebbian 规则"""
@@ -1539,49 +1573,34 @@ class BrainAIInterface:
         identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
         is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
         is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
-        # ===== COUPLING FIX: 扩展记忆查询关键词检测 =====
+        # ===== COUPLING FIX: 扩展记忆查询关键词检测（覆盖更多用户表达方式）=====
         is_memory_question = any(kw in user_input for kw in [
             "记得", "记住", "我叫什么", "我的名字", "来自", "还记",
             "我的电话", "我的手机", "我的邮箱", "我的职业", "我的年龄",
             "我之前说", "我刚说", "我告诉过你", "手机号", "电话", "住哪",
             "什么工作", "什么职业", "多大", "几岁", "生日", "爱好", "喜欢什么",
-            "哪里工作", "在哪儿", "什么颜色", "学什么", "哪个学校"
+            "哪里工作", "在哪儿", "什么颜色", "学什么", "哪个学校",
+            # 新增：更多表达方式
+            "知道我是", "你知道我", "你还记得我", "猜猜我是",
+            "我是什么", "我叫啥", "我的姓", "我姓",
+            "我说过", "之前提到", "刚才说", "才说",
+            "什么名字", "啥名字", "联系方式",
+            "哪个人", "哪个城市", "什么公司", "在哪上班",
+            "我的专业", "什么专业", "学什么专业",
+            "什么学校", "哪个大学", "毕业",
+            "你记得我", "还记得吗", "忘了没",
+            "我有没有告诉", "我说了什么"
         ])
         
         # 记忆召回
         memory_context = ""
         recalled_memories = []
         try:
-            # ===== COUPLING FIX 1: 使用模型前向传播获取深层 hidden states 作为召回特征 =====
-            # 之前使用 input_embeddings（浅层静态查表），与存储时使用的 hidden_state（深层上下文表示）
-            # 特征空间完全不同，导致 DG 分离后余弦相似度接近随机
-            # 现在：召回和存储都使用深层 hidden states，保证特征空间一致
-            inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
-            input_ids = inputs.input_ids
-            
-            with torch.no_grad():
-                base_model = self.model.model.base_model
-                outputs = base_model(input_ids, output_hidden_states=True, return_dict=True)
-                # 使用最后2层 hidden states 的加权平均（与 semantic_engine.get_text_embedding 一致）
-                last_layers = outputs.hidden_states[-2:]
-                stacked = torch.stack(last_layers)  # [2, 1, seq_len, hidden_size]
-                deep_features = stacked.mean(dim=0)  # [1, seq_len, hidden_size]
-                # 加权 mean pooling
-                seq_len = deep_features.shape[1]
-                weights = torch.ones(seq_len, device=deep_features.device)
-                weights[0] = 1.5
-                if seq_len > 1:
-                    weights[-1] = 2.0
-                if seq_len > 2:
-                    weights[1:-1] = 0.5
-                weights = weights / weights.sum()
-                query_features = (deep_features * weights.unsqueeze(0).unsqueeze(-1)).sum(dim=1).squeeze(0)
+            # ===== COUPLING FIX: 使用统一特征提取方法（与存储路径完全一致）=====
+            query_features = self._extract_query_features(user_input[:50])
             
             # 通过 feature_adapter 适配维度（与存储路径一致）
-            # ===== COUPLING FIX: 确保 dtype 一致 =====
-            # 深层 features 可能是 FP16，权重乘法后变成 float32
-            # feature_adapter 权重可能是 FP16，需要统一 dtype
-            if query_features.shape[0] == self.model_hidden_size:
+            if query_features is not None and query_features.shape[0] == self.model_hidden_size:
                 with torch.no_grad():
                     adapter_dtype = next(self.feature_adapter.parameters()).dtype
                     query_features = query_features.to(dtype=adapter_dtype)
@@ -1742,7 +1761,16 @@ class BrainAIInterface:
             "记得", "记住", "我叫什么", "我的名字", "来自", "还记",
             "我的电话", "我的手机", "我的邮箱", "我的职业", "我的年龄",
             "我之前说", "我刚说", "我告诉过你", "手机号", "电话", "住哪",
-            "什么工作", "什么职业", "多大", "几岁", "生日", "爱好", "喜欢什么"
+            "什么工作", "什么职业", "多大", "几岁", "生日", "爱好", "喜欢什么",
+            # 新增：覆盖更多用户表达方式
+            "知道我是", "你知道我", "你还记得我", "猜猜我是",
+            "我是什么", "我叫啥", "我的姓", "我姓",
+            "我说过", "之前提到", "刚才说", "才说",
+            "什么名字", "啥名字", "联系方式",
+            "哪个人", "哪个城市", "什么公司", "在哪上班",
+            "什么颜色", "最喜欢", "爱吃", "爱玩",
+            "你记得我", "还记得吗", "忘了没",
+            "我有没有告诉", "我说了什么"
         ])
         is_identity_question = any(kw in user_input for kw in 
             ["你是谁", "你的身份", "谁创造", "你的名字", "介绍你自己", "自我介绍"])

@@ -170,15 +170,35 @@ class CA3EpisodicMemory(nn.Module):
             except Exception as e:
                 logger.debug(f"[CA3] 语义摘要生成失败: {e}")
         
-        # 0.5 生成语义 embedding（如果语义引擎可用）
+        # 0.5 生成语义 embedding（如果语义引擎可用，带重试逻辑）
         semantic_embedding = None
         if self.semantic_engine:
             embed_text = key_entities if key_entities else (semantic_summary if semantic_summary else content)
             if embed_text:
-                try:
-                    semantic_embedding = self.semantic_engine.get_text_embedding(embed_text)
-                except Exception as e:
-                    logger.debug(f"[CA3] 语义embedding生成失败: {e}")
+                # Fix 2: Retry up to 3 times with progressively shorter text
+                truncation_lengths = [None, 100, 50, 20]
+                for trunc_len in truncation_lengths:
+                    try:
+                        _text = embed_text[:trunc_len] if trunc_len else embed_text
+                        semantic_embedding = self.semantic_engine.get_text_embedding(_text)
+                        if semantic_embedding is not None:
+                            break
+                    except Exception as e:
+                        logger.debug(f"[CA3] 语义embedding生成失败(trunc={trunc_len}): {e}")
+
+                # Fix 2: Fallback to hash-based manual embedding placeholder
+                if semantic_embedding is None:
+                    logger.warning(f"[CA3] 所有embedding重试失败，使用hash占位向量 (is_core={is_core})")
+                    # Build a deterministic hash-based vector as fallback
+                    _text_for_hash = embed_text[:200]
+                    _hash = hash(_text_for_hash)
+                    embed_dim = self.feature_dim
+                    manual_vec = [(((_hash * (i + 1) * 2654435761) >> 16) % 10000) / 10000.0 for i in range(embed_dim)]
+                    # Normalize to unit vector
+                    _norm = sum(v * v for v in manual_vec) ** 0.5
+                    if _norm > 0:
+                        manual_vec = [v / _norm for v in manual_vec]
+                    semantic_embedding = torch.tensor(manual_vec, dtype=torch.float32)
         
         # 1. 创建记忆对象（含增强字段）
         memory = EpisodicMemory(
@@ -243,7 +263,8 @@ class CA3EpisodicMemory(nn.Module):
                 tokens.add(seg.lower())
             chinese_chars = re.findall(r'[\u4e00-\u9fff]+', seg)
             for chunk in chinese_chars:
-                if len(chunk) >= 2:
+                # Fix 5: len >= 1 for Chinese characters (preserve single-char tokens like names)
+                if len(chunk) >= 1:
                     tokens.add(chunk.lower())
                 for i in range(len(chunk) - 1):
                     tokens.add(chunk[i:i+2].lower())
@@ -330,7 +351,8 @@ class CA3EpisodicMemory(nn.Module):
         query_features: Optional[torch.Tensor] = None,
         query_semantic: Optional[str] = None,
         query_timestamp: Optional[int] = None,
-        topk: int = 2
+        topk: int = 2,
+        return_all: bool = False,
     ) -> List[EpisodicMemory]:
         """
         记忆召回（增强版 - Embedding 语义匹配 + 记忆分层）
@@ -339,15 +361,29 @@ class CA3EpisodicMemory(nn.Module):
         1. Embedding 语义匹配（主力）: 使用模型自身 embedding 做语义相似度
         2. 关键词匹配（辅助）: 保留正则关键词作为补充
         3. 分层加权: 长期记忆 > 中期记忆 > 短期记忆
+        
+        Args:
+            return_all: 当为 True 时，跳过 _embedding_recall 中的层级阈值过滤，
+                         返回所有候选记忆及其相似度分数（供 HippocampusSystem 使用，
+                         避免在上层按 activation_strength 错误过滤）。
         """
         self.recall_count += 1
         self.last_recall_time = time.time()
         candidates = []
         recall_trace: List[Dict] = []
+
+        # ========== Fix 6: 记忆查询意图关键词加速 ==========
+        memory_query_boosters = [
+            "记得", "记住", "名字", "电话", "手机", "邮箱", "职业",
+            "年龄", "城市", "爱好", "喜欢", "来自", "工作", "学校"
+        ]
+        is_memory_query = any(bw in (query_semantic or "") for bw in memory_query_boosters)
+        if is_memory_query:
+            topk = max(topk, 10)  # recall more candidates for memory queries
         
         # ========== 1. Embedding 语义匹配（主力召回方式）==========
         if query_semantic and self.semantic_engine is not None:
-            embedding_scores = self._embedding_recall(query_semantic, topk=topk * 3)
+            embedding_scores = self._embedding_recall(query_semantic, topk=topk * 3, return_all=return_all)
             for score_info in embedding_scores:
                 mid = score_info['memory_id']
                 if mid in self.memories:
@@ -455,9 +491,13 @@ class CA3EpisodicMemory(nn.Module):
                 unique_candidates.append(cand)
         
         # ========== 6. 分层加权排序 ==========
+        # Fix 4: Use composite scoring with similarity, recall frequency, and core bonus
         def tier_sort_key(m):
-            tier_weight = int(m.tier) + 1 if hasattr(m, 'tier') else 1
-            return (tier_weight, m.activation_strength)
+            tier_weight = (int(m.tier) + 1) * 0.3  # tier contribution
+            sim_score = getattr(m, '_embedding_score', 0.0)  # embedding similarity
+            recall_bonus = min(getattr(m, 'recall_count', 0) * 0.05, 0.3)  # recall frequency bonus
+            core_bonus = 0.5 if getattr(m, 'is_core', False) else 0.0  # core memory priority
+            return tier_weight + sim_score + recall_bonus + core_bonus
         
         self.last_recall_trace = recall_trace
         
@@ -475,17 +515,33 @@ class CA3EpisodicMemory(nn.Module):
         unique_candidates.sort(key=tier_sort_key, reverse=True)
         return unique_candidates[:topk]
     
-    def _embedding_recall(self, query_text: str, topk: int = 6) -> List[Dict]:
+    def _embedding_recall(self, query_text: str, topk: int = 6, return_all: bool = False) -> List[Dict]:
         """
         使用 Embedding 做语义召回（核心优化）
         
         用模型自身的 embedding 层将查询和记忆文本编码为向量，
         通过余弦相似度找到语义最相关的记忆。
         能够理解"你记得我的名字吗"和"我叫张三"之间的语义关联。
+        
+        Args:
+            return_all: 当为 True 时，跳过层级阈值过滤，返回所有候选及其相似度。
         """
         if not query_text or not self.semantic_engine:
             return []
         
+        # Fix 3: Lazy embedding generation for memories with None semantic_embedding
+        for mid, mem in list(self.memories.items()):
+            if mem.semantic_embedding is None and self.semantic_engine is not None:
+                embed_source = mem.key_entities or mem.semantic_summary or mem.content or mem.semantic_pointer
+                if embed_source:
+                    try:
+                        generated_emb = self.semantic_engine.get_text_embedding(embed_source[:100])
+                        if generated_emb is not None:
+                            mem.semantic_embedding = generated_emb
+                            logger.debug(f"[CA3] 惰性生成embedding成功: {mid}")
+                    except Exception as e:
+                        logger.debug(f"[CA3] 惰性生成embedding失败: {mid}, {e}")
+
         valid_memories = []
         for mid, mem in self.memories.items():
             if mem.semantic_embedding is not None:
@@ -514,7 +570,8 @@ class CA3EpisodicMemory(nn.Module):
             tier_bonus = int(tier) * 0.05
             adjusted_sim = sim + tier_bonus
             
-            if adjusted_sim > threshold:
+            # Fix 1: When return_all=True, skip the tier threshold filtering
+            if return_all or adjusted_sim > threshold:
                 results.append({
                     'memory_id': mid,
                     'similarity': adjusted_sim,
