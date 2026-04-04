@@ -539,6 +539,21 @@ class CA3EpisodicMemory(nn.Module):
                 elif isinstance(mem_dict['semantic_embedding'], torch.Tensor):
                     semantic_embedding = mem_dict['semantic_embedding']
             
+            # 修复: 恢复 key_features 和 value_features（之前遗漏导致 save/load 后 KV 特征丢失）
+            key_features = None
+            if 'key_features' in mem_dict and mem_dict['key_features'] is not None:
+                if isinstance(mem_dict['key_features'], list):
+                    key_features = torch.tensor(mem_dict['key_features'], dtype=torch.float32)
+                elif isinstance(mem_dict['key_features'], torch.Tensor):
+                    key_features = mem_dict['key_features']
+            
+            value_features = None
+            if 'value_features' in mem_dict and mem_dict['value_features'] is not None:
+                if isinstance(mem_dict['value_features'], list):
+                    value_features = torch.tensor(mem_dict['value_features'], dtype=torch.float32)
+                elif isinstance(mem_dict['value_features'], torch.Tensor):
+                    value_features = mem_dict['value_features']
+            
             memory = EpisodicMemory(
                 memory_id=mem_dict.get('memory_id', mem_id),
                 timestamp=mem_dict.get('timestamp', 0),
@@ -553,6 +568,8 @@ class CA3EpisodicMemory(nn.Module):
                 key_entities=mem_dict.get('key_entities', ''),
                 emotion_tag=mem_dict.get('emotion_tag', '中性'),
                 semantic_embedding=semantic_embedding,
+                key_features=key_features,
+                value_features=value_features,
                 tier=MemoryTier(mem_dict.get('tier', 0)),
                 recall_count=mem_dict.get('recall_count', 0),
                 consecutive_misses=mem_dict.get('consecutive_misses', 0),

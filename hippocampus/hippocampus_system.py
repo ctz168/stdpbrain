@@ -657,8 +657,9 @@ class HippocampusSystem(nn.Module):
         # 过滤出包含KV特征的记忆
         kv_memories = []
         for mem in memories:
-            # 检查是否是KV记忆
-            if mem.get('type') == 'kv_memory' or 'kv_features' in mem:
+            # 修复: 检查 key_features 字段（to_dict() 序列化为 'key_features'）
+            # 之前的条件 mem.get('type')=='kv_memory' 和 'kv_features' in mem 永远不匹配
+            if mem.get('key_features') is not None or mem.get('value_features') is not None:
                 kv_memories.append({
                     'memory_id': mem.get('memory_id', ''),
                     'kv_features': {
