@@ -264,23 +264,28 @@ class CA3EpisodicMemory(nn.Module):
         if name_intent:
             keywords.append('名字')
             keywords.append('用户名字')
+            keywords.append('name')
         
         loc_intent = re.search(r'哪里|哪里人|来自|住在|住哪|城市|地方|地址|位置|在哪', query)
         if loc_intent:
             keywords.append('地点')
             keywords.append('城市')
+            keywords.append('location')
         
         job_intent = re.search(r'职业|工作|做什么|干什么|专业|上班|职位|岗位|行业', query)
         if job_intent:
             keywords.append('职业')
+            keywords.append('job')
         
         age_intent = re.search(r'多大|年龄|几岁|生日|出生|岁数|年级', query)
         if age_intent:
             keywords.append('年龄')
+            keywords.append('age')
         
         hobby_intent = re.search(r'喜欢|爱好|兴趣|爱做什么|平时做|擅长|业余', query)
         if hobby_intent:
             keywords.append('爱好')
+            keywords.append('hobby')
         
         remember_intent = re.search(r'记得|回忆|想起|忘记|忘了|记不记得|有没有告诉你|我说过', query)
         if remember_intent:
@@ -289,6 +294,22 @@ class CA3EpisodicMemory(nn.Module):
         event_intent = re.search(r'之前说|上次|上次聊|上次提到|之前告诉|曾经说|说过什么', query)
         if event_intent:
             keywords.append('事件')
+        
+        # BUG FIX: 增加更多查询意图关键词（覆盖更多用户表达方式）
+        contact_intent = re.search(r'电话|手机|邮箱|联系|怎么找|怎么联系', query)
+        if contact_intent:
+            keywords.append('联系方式')
+            keywords.append('phone')
+            keywords.append('email')
+        
+        school_intent = re.search(r'学校|大学|毕业|上学|就读', query)
+        if school_intent:
+            keywords.append('学校')
+        
+        company_intent = re.search(r'公司|在哪工作|什么单位|哪个公司', query)
+        if company_intent:
+            keywords.append('公司')
+            keywords.append('职业')
         
         stop_words = set('的了是在有不也这那他她你我都它们可以会要能和与或但是如果因为所以虽然然而而且以及对于关于通过没有不是已经还又再更最被把给让向到得地着过吗呢吧啊哦哈呀嗯么个什么怎么怎样多少几哪请告诉知道想希望应该可能需要觉得认为说一样一个就是那个这个自己'.encode('utf-8').decode('utf-8'))
         
@@ -354,10 +375,12 @@ class CA3EpisodicMemory(nn.Module):
             recall_keywords.update(chinese_tokens)
         
         existing_ids = {c.memory_id for c in candidates}
-        core_memories = [m for m in self.memories.values() if m.is_core]
+        # BUG FIX: 关键词匹配应该搜索所有记忆，而不仅是核心记忆
+        # 之前只搜索core_memories导致大量非核心记忆无法通过关键词召回
+        all_searchable = [m for m in self.memories.values()]
         
         if recall_keywords:
-            for memory in core_memories:
+            for memory in all_searchable:
                 if memory.memory_id in existing_ids:
                     continue
                 # 匹配语义摘要 + 关键实体（新增的富语义信息）
@@ -414,9 +437,10 @@ class CA3EpisodicMemory(nn.Module):
                                         "is_core": bool(memory.is_core),
                                     })
         
-        # ========== 4. 补充核心记忆 ==========
-        if len(candidates) < topk and core_memories:
-            for memory in core_memories:
+        # ========== 4. 补充核心记忆（确保不遗漏重要信息）==========
+        # BUG FIX: 先用all_searchable中的非核心记忆补充，再用核心记忆兜底
+        if len(candidates) < topk:
+            for memory in all_searchable:
                 if memory.memory_id not in {c.memory_id for c in candidates}:
                     candidates.append(memory)
                     if len(candidates) >= topk:

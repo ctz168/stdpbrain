@@ -686,106 +686,50 @@ class BrainAIInterface:
         # 提取关键实体并构建记忆内容
         memory_content = f"{user_input} -> {output.text}"
         
-        # ========== 新增：提取数值和关键信息 ==========
+        # ========== 解耦：实体提取统一委托给 semantic_engine ==========
+        # BUG FIX: 之前 interfaces.py 有一套独立的正则提取逻辑（~100行），
+        # 与 semantic_engine.py 中的逻辑不一致，导致存储的语义指针和召回时提取的关键词不匹配。
+        # 现在统一使用 semantic_engine.extract_entities()，消除耦合。
         import re
         entities = []
         
-        # 1. 金额信息（租金、押金、费用等）
-        # 匹配"XX元"、"XX块钱"、"XX万"
-        money_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(元|块钱|万|千元)', user_input)
-        money_keywords = re.findall(r'(房租|押金|卫生费|水电费|物业费|费用|租金|定金|预付款)', user_input)
-        if money_matches or money_keywords:
-            for i, (amount, unit) in enumerate(money_matches):
-                # 尝试关联关键词
-                if i < len(money_keywords):
-                    entities.append(f"{money_keywords[i]}:{amount}{unit}")
-                else:
-                    entities.append(f"金额:{amount}{unit}")
-        
-        # 2. 日期时间信息
-        date_matches = re.findall(r'(\d{1,2}月\d{1,2}[日号]?|\d{4}年\d{1,2}月\d{1,2}[日号]?|\d{1,2}号|\d{1,2}日)', user_input)
-        for date in date_matches:
-            entities.append(f"日期:{date}")
-        
-        # 3. 个人信息（名字、年龄、职业等）- 扩展匹配模式
-        # BUG FIX: 疑问句中不提取实体（避免将"来自哪个城市"的"哪个城市"提取为地点）
-        if not is_question:
-            name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
-            age_match = re.search(r"我今年(\d+)|我(\d+)岁", user_input)
-            # BUG FIX: 增加"做/当"模式匹配（如"在腾讯做程序员"），原来只匹配"是"模式
-            job_match = re.search(r"(?:是|做|当|担任)(.{0,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", user_input)
-            # BUG FIX: 提取公司/机构名称（如"在腾讯做程序员" → 公司=腾讯）
+        if not is_question and self.hippocampus.semantic_engine is not None:
+            # 委托给语义引擎提取结构化实体
+            entities = self.hippocampus.semantic_engine._extract_entities(user_input)
+            # 额外提取金额/日期/数量信息（semantic_engine已有但返回格式不同）
+            money_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(元|块钱|万|千元)', user_input)
+            money_keywords = re.findall(r'(房租|押金|卫生费|水电费|物业费|费用|租金|定金|预付款)', user_input)
+            if money_matches or money_keywords:
+                for i, (amount, unit) in enumerate(money_matches):
+                    if i < len(money_keywords):
+                        entities.append(f"{money_keywords[i]}:{amount}{unit}")
+                    else:
+                        entities.append(f"金额:{amount}{unit}")
+            date_matches = re.findall(r'(\d{1,2}月\d{1,2}[日号]?|\d{4}年\d{1,2}月\d{1,2}[日号]?|\d{1,2}号|\d{1,2}日)', user_input)
+            for date in date_matches:
+                entities.append(f"日期:{date}")
+            number_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(平方|平米|平方米|天|个月|年|个|件|次)', user_input)
+            for num, unit in number_matches:
+                entities.append(f"{unit}:{num}")
+            # 提取公司/机构（semantic_engine中未包含的扩展匹配）
             company_match = re.search(r"在([\u4e00-\u9fa5a-zA-Z0-9]{2,15}?)(?:做|当|担任|工作|上班|实习|研发)", user_input)
-            # BUG FIX: 排除疑问词（哪/什么/多少），避免"来自哪个城市"被错误提取
-            # 使用简单的两步法：先匹配，再过滤（比 negative lookahead 更可靠）
-            location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
-            if location_match:
-                loc_val = location_match.group(1) or location_match.group(2) or location_match.group(4)
-                # 过滤疑问词：如果匹配到的是疑问词则忽略
-                question_words = ['哪个', '什么', '哪里', '哪儿', '多少', '几岁']
-                if loc_val and any(qw in loc_val for qw in question_words):
-                    location_match = None
-
-            hobby_match = re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
-            phone_match = re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
-            email_match = re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
-            school_match = re.search(r"(?:毕业于|在.{2,8}?上学|就读于)([\u4e00-\u9fa5a-zA-Z]{2,15})", user_input)
-        else:
-            # 疑问句中跳过所有实体提取
-            name_match = age_match = job_match = location_match = hobby_match = phone_match = email_match = school_match = company_match = None
-        
-        if name_match:
-            name = name_match.group(1) or name_match.group(3)
-            entities.append(f"用户名字:{name}")
-            is_core_memory = True  # 有名字信息标记为核心记忆
-        if age_match:
-            age = age_match.group(1) or age_match.group(2)
-            entities.append(f"年龄:{age}岁")
-            is_core_memory = True
-        if job_match:
-            # BUG FIX: job_match.group(0) 包含"是/做/当"前缀，提取更精确的职位信息
-            job_text = job_match.group(0)
-            # 去掉开头的"是"、"做"、"当"、"担任"
-            for prefix in ['是', '做', '当', '担任']:
-                if job_text.startswith(prefix):
-                    job_text = job_text[len(prefix):].lstrip()
-                    break
-            entities.append(f"职业:{job_text}")
-            is_core_memory = True
-        if location_match:
-            location = location_match.group(1) or location_match.group(2) or location_match.group(4)
-            if location:
-                entities.append(f"地点:{location}")
-                is_core_memory = True
-        if hobby_match:
-            hobby = hobby_match.group(1) or hobby_match.group(2)
-            if hobby:
-                entities.append(f"爱好:{hobby}")
-        if phone_match:
-            phone = phone_match.group(1) or phone_match.group(2)
-            if phone:
-                entities.append(f"联系方式:{phone}")
-                is_core_memory = True
-        if email_match:
-            entities.append(f"联系方式:{email_match.group(1)}")
-            is_core_memory = True
-        if company_match:
-            company = company_match.group(1).strip()
-            if company:
-                entities.append(f"公司:{company}")
-                is_core_memory = True
-        if school_match:
-            entities.append(f"学校:{school_match.group(1)}")
-            is_core_memory = True
-        
-        # 4. 数值信息（面积、数量等）
-        number_matches = re.findall(r'(\d+(?:\.\d+)?)\s*(平方|平米|平方米|天|个月|年|个|件|次)', user_input)
-        for num, unit in number_matches:
-            entities.append(f"{unit}:{num}")
+            if company_match:
+                company = company_match.group(1).strip()
+                if company and not any(qw in company for qw in ['哪个', '什么', '哪里', '哪儿']):
+                    entities.append(f"公司:{company}")
+                    is_core_memory = True
         
         # 5. 如果提取到实体，优化语义指针：实体信息放前面（优先匹配），原始对话放后面
         if entities:
+            # 检查是否包含核心实体类型（用于标记核心记忆）
+            core_entity_types = {'name', 'age', 'phone', 'email', 'location', 'job', 'school'}
             entity_str = " | ".join(entities)
+            # 解析 semantic_engine 返回的格式（如 "name:张三"）判断是否为核心实体
+            for ent in entities:
+                ent_type = ent.split(':')[0] if ':' in ent else ''
+                if ent_type in core_entity_types:
+                    is_core_memory = True
+                    break
 
             # 核心记忆：只存储结构化实体信息（简洁、精准、易于召回）
             if is_core_memory:
@@ -1554,6 +1498,13 @@ class BrainAIInterface:
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             query_features = embeddings.mean(dim=1).squeeze(0)
             
+            # ===== BUG FIX: 召回时也必须经过feature_adapter =====
+            # 存储时特征经过feature_adapter变换后才送入EC编码器
+            # 召回时如果不经过同样的变换，特征空间完全不匹配导致召回率极低
+            if query_features.shape[0] == self.model_hidden_size:
+                with torch.no_grad():
+                    query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            
             actual_topk = 5 if is_memory_question else topk
             query_semantic = user_input
             recalled_memories = self.hippocampus.recall(query_features, topk=actual_topk, query_semantic=query_semantic)
@@ -1603,10 +1554,13 @@ class BrainAIInterface:
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             query_features = embeddings.mean(dim=1).squeeze(0)
             
-            # ========== 修复：不需要适配，海马体EC编码器期望2048维输入 ==========
-            # 之前的适配逻辑是错误的，海马体内部会处理维度转换（2048 -> 256 -> 512）
-            # if query_features.shape[0] != 1024:  # 错误的逻辑
-            #     query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
+            # ===== BUG FIX: 召回时必须经过feature_adapter（与存储路径一致） =====
+n            # 存储时: hidden_state -> feature_adapter -> hippocampus.encode() -> EC -> DG -> CA3
+            # 召回时: embedding -> feature_adapter -> hippocampus.recall() -> EC -> DG -> CA3.complete_pattern()
+            # 之前注释说"不需要适配"是错误的——存储和召回必须在同一特征空间
+            if query_features.shape[0] == self.model_hidden_size:
+                with torch.no_grad():
+                    query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
             actual_topk = 5 if is_memory_question else topk
             query_semantic = user_input

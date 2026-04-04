@@ -31,17 +31,20 @@ class TierConfig:
     # 短期记忆配置
     short_term_decay_rate: float = 0.990       # 每次衰减后的保留比例（快速衰减）
     short_term_max_capacity: int = 5000        # 短期记忆最大容量
-    short_term_recall_threshold: float = 0.5   # 短期记忆召回阈值
+    # BUG FIX: 从0.5降到0.15 - embedding相似度通常在0.3-0.5，0.5会过滤大部分有效记忆
+    short_term_recall_threshold: float = 0.15   # 短期记忆召回阈值
     
     # 中期记忆配置
     mid_term_decay_rate: float = 0.998         # 中期衰减（较慢）
     mid_term_max_capacity: int = 20000         # 中期记忆最大容量
-    mid_term_recall_threshold: float = 0.4     # 中期记忆召回阈值
+    # BUG FIX: 从0.4降到0.10 - 中期记忆也应更容易被召回
+    mid_term_recall_threshold: float = 0.10     # 中期记忆召回阈值
     
     # 长期记忆配置
     long_term_decay_rate: float = 0.9999       # 长期衰减（极慢）
     long_term_max_capacity: int = 30000        # 长期记忆最大容量
-    long_term_recall_threshold: float = 0.3    # 长期记忆召回阈值
+    # BUG FIX: 从0.3降到0.08 - 长期记忆是最重要的，应最容易被召回
+    long_term_recall_threshold: float = 0.08    # 长期记忆召回阈值
     
     # 固化规则
     promote_stm_to_mtm_min_recalls: int = 2    # 短期→中期: 最小被召回次数

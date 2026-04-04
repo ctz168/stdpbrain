@@ -75,7 +75,9 @@ class HippocampusSystem(nn.Module):
             max_capacity=hc_config.CA3_max_capacity,
             feature_dim=hc_config.EC_feature_dim * 2,
             timestamp_precision_ms=hc_config.CA3_timestamp_precision_ms,
-            recall_threshold=0.7,
+            # BUG FIX: 使用统一阈值，而非硬编码0.7
+            # 之前recall_threshold=0.7远高于实际embedding相似度，导致记忆在CA3层就被丢弃
+            recall_threshold=hc_config.recall_threshold,
             decay_rate=0.999,
             semantic_engine=self.semantic_engine,
             tier_config=tier_config,

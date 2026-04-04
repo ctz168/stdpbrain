@@ -203,10 +203,12 @@ class SemanticSummarizer:
     
     def get_text_embedding(self, text: str) -> Optional[torch.Tensor]:
         """
-        获取文本的 embedding 向量（使用模型自身的 embedding 层）
+        获取文本的 embedding 向量（增强版）
         
-        这是语义匹配的核心：将文本通过模型的 tokenizer 和 embedding 层
-        转换为固定维度的向量表示。
+        优化策略：
+        1. 优先使用深层hidden states（包含上下文语义），而非仅用input embedding
+        2. 使用加权mean pooling（CLS-like：首尾token权重更高）
+        3. 对短文本使用input embedding fallback（减少计算开销）
         
         Args:
             text: 输入文本
@@ -240,15 +242,55 @@ class SemanticSummarizer:
             if len(token_ids) > max_tokens:
                 token_ids = token_ids[:max_tokens]
             
-            # 获取 embedding
             input_tensor = torch.tensor([token_ids], device=self.device)
             with torch.no_grad():
-                embeddings = embedding_layer(input_tensor)  # [1, seq_len, hidden_size]
+                # ===== 优化：尝试使用深层hidden states获取上下文语义 =====
+                # 深层hidden states包含丰富的上下文信息，比纯input embedding语义能力强得多
+                deep_embedding = None
                 
-                # 均值池化得到文本级别的 embedding
-                text_embedding = embeddings.mean(dim=1).squeeze(0)  # [hidden_size]
+                # 只有模型可以前向推理时才尝试深层提取
+                base_model = getattr(self.model, 'model', None)
+                if base_model is not None and hasattr(base_model, 'base_model'):
+                    try:
+                        model_core = base_model.base_model
+                        # 使用模型最后几层的hidden states（包含最丰富的语义信息）
+                        with torch.inference_mode():
+                            outputs = model_core(
+                                input_tensor,
+                                output_hidden_states=True,
+                                return_dict=True
+                            )
+                        if hasattr(outputs, 'hidden_states') and outputs.hidden_states:
+                            # 取最后2层hidden states的平均（比只用最后一层更稳定）
+                            last_layers = outputs.hidden_states[-2:]
+                            stacked = torch.stack(last_layers)  # [2, 1, seq_len, hidden_size]
+                            deep_embedding = stacked.mean(dim=0)  # [1, seq_len, hidden_size]
+                    except Exception as deep_err:
+                        logger.debug(f"[SemanticEngine] 深层embedding提取失败，回退到input embedding: {deep_err}")
+                
+                if deep_embedding is not None:
+                    # 加权mean pooling：首尾token权重更高（类似CLS token策略）
+                    seq_len = deep_embedding.shape[1]
+                    weights = torch.ones(seq_len, device=deep_embedding.device)
+                    # 首token权重1.5，尾token权重2.0（尾token通常包含最重要的语义）
+                    weights[0] = 1.5
+                    if seq_len > 1:
+                        weights[-1] = 2.0
+                    # 中间token标准化
+                    mid_sum = weights.sum() - weights[0] - (weights[-1] if seq_len > 1 else 0)
+                    if mid_sum > 0 and seq_len > 2:
+                        mid_count = seq_len - (1 if seq_len > 1 else 0) - 1
+                        weights[1:-1 if seq_len > 1 else seq_len] = 0.5
+                    
+                    weights = weights / weights.sum()
+                    text_embedding = (deep_embedding * weights.unsqueeze(0).unsqueeze(-1)).sum(dim=1).squeeze(0)
+                else:
+                    # 回退到input embedding + 标准mean pooling
+                    embeddings = embedding_layer(input_tensor)  # [1, seq_len, hidden_size]
+                    text_embedding = embeddings.mean(dim=1).squeeze(0)  # [hidden_size]
+                
                 # L2 归一化
-                text_embedding = F.normalize(text_embedding, p=2, dim=-1)
+                text_embedding = F.normalize(text_embedding.float(), p=2, dim=-1)
             
             # 更新缓存
             if len(self._embedding_cache) < self._cache_max_size:

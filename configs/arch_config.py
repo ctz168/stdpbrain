@@ -105,7 +105,10 @@ class HippocampusConfig:
     use_cycle_buffer: bool = True  # 循环缓存
     
     # 召回阈值优化
-    recall_threshold: float = 0.65  # 降低召回阈值，更容易找到相关记忆
+    # BUG FIX: 从0.65降到0.30 - embedding相似度天然偏低，0.65会过滤掉大量有效记忆
+    # 特别是在用户用不同措辞查询同一信息时（如"记得我名字吗" vs "我叫张三"），
+    # 余弦相似度通常在0.3-0.5之间，0.65的阈值导致几乎所有语义召回都失败
+    recall_threshold: float = 0.30
 
 
 # ==================== 自闭环优化系统配置 ====================
