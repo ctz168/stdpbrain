@@ -418,11 +418,8 @@ class BrainAIInterface:
         # 1.5 目标推断（新增）
         if self.goal_system is not None:
             # 使用当前思维状态推断目标
-            print("\n" + "="*60, flush=True)
-            print("🎯 [目标系统] 开始推断目标", flush=True)
-            print("="*60, flush=True)
+            # COUPLING FIX: 静默执行，不打印大量日志
             goal = self.goal_system.infer_goal(user_input, self.current_thought_state)
-            print("="*60 + "\n", flush=True)
         
         t_step2 = time.time()
         # print(f"[步骤2] 目标推断: {(t_step2-t_step1)*1000:.0f}ms")
@@ -777,8 +774,7 @@ class BrainAIInterface:
                 
                 # 更新目标进度（新增）
                 if self.goal_system is not None and self.goal_system.current_goal is not None:
-                    print("\n🎯 [目标进度] 根据回复内容更新进度", flush=True)
-                    # 根据目标类型和回复内容判断进度
+                    # COUPLING FIX: 静默执行
                     goal = self.goal_system.current_goal
                     # 目标类型检查
                     
@@ -1038,6 +1034,8 @@ class BrainAIInterface:
             
             if features.shape[0] == self.model_hidden_size:
                 with torch.no_grad():
+                    adapter_dtype = next(self.feature_adapter.parameters()).dtype
+                    features = features.to(dtype=adapter_dtype)
                     features = self.feature_adapter(features.unsqueeze(0)).squeeze(0)
             
             # 改进：semantic_pointer 优先使用传入的结构化实体信息
@@ -1541,76 +1539,111 @@ class BrainAIInterface:
         identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
         is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
         is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
-        is_memory_question = any(kw in user_input for kw in ["记得", "记住", "我叫什么", "我的名字", "来自", "还记"])
+        # ===== COUPLING FIX: 扩展记忆查询关键词检测 =====
+        is_memory_question = any(kw in user_input for kw in [
+            "记得", "记住", "我叫什么", "我的名字", "来自", "还记",
+            "我的电话", "我的手机", "我的邮箱", "我的职业", "我的年龄",
+            "我之前说", "我刚说", "我告诉过你", "手机号", "电话", "住哪",
+            "什么工作", "什么职业", "多大", "几岁", "生日", "爱好", "喜欢什么",
+            "哪里工作", "在哪儿", "什么颜色", "学什么", "哪个学校"
+        ])
         
         # 记忆召回
         memory_context = ""
         recalled_memories = []
         try:
+            # ===== COUPLING FIX 1: 使用模型前向传播获取深层 hidden states 作为召回特征 =====
+            # 之前使用 input_embeddings（浅层静态查表），与存储时使用的 hidden_state（深层上下文表示）
+            # 特征空间完全不同，导致 DG 分离后余弦相似度接近随机
+            # 现在：召回和存储都使用深层 hidden states，保证特征空间一致
             inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
             input_ids = inputs.input_ids
             
             with torch.no_grad():
-                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
-            query_features = embeddings.mean(dim=1).squeeze(0)
+                base_model = self.model.model.base_model
+                outputs = base_model(input_ids, output_hidden_states=True, return_dict=True)
+                # 使用最后2层 hidden states 的加权平均（与 semantic_engine.get_text_embedding 一致）
+                last_layers = outputs.hidden_states[-2:]
+                stacked = torch.stack(last_layers)  # [2, 1, seq_len, hidden_size]
+                deep_features = stacked.mean(dim=0)  # [1, seq_len, hidden_size]
+                # 加权 mean pooling
+                seq_len = deep_features.shape[1]
+                weights = torch.ones(seq_len, device=deep_features.device)
+                weights[0] = 1.5
+                if seq_len > 1:
+                    weights[-1] = 2.0
+                if seq_len > 2:
+                    weights[1:-1] = 0.5
+                weights = weights / weights.sum()
+                query_features = (deep_features * weights.unsqueeze(0).unsqueeze(-1)).sum(dim=1).squeeze(0)
             
-            # ===== BUG FIX: 召回时必须经过feature_adapter（与存储路径一致） =====
-n            # 存储时: hidden_state -> feature_adapter -> hippocampus.encode() -> EC -> DG -> CA3
-            # 召回时: embedding -> feature_adapter -> hippocampus.recall() -> EC -> DG -> CA3.complete_pattern()
-            # 之前注释说"不需要适配"是错误的——存储和召回必须在同一特征空间
+            # 通过 feature_adapter 适配维度（与存储路径一致）
+            # ===== COUPLING FIX: 确保 dtype 一致 =====
+            # 深层 features 可能是 FP16，权重乘法后变成 float32
+            # feature_adapter 权重可能是 FP16，需要统一 dtype
             if query_features.shape[0] == self.model_hidden_size:
                 with torch.no_grad():
+                    adapter_dtype = next(self.feature_adapter.parameters()).dtype
+                    query_features = query_features.to(dtype=adapter_dtype)
                     query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
-            actual_topk = 5 if is_memory_question else topk
+            actual_topk = 10 if is_memory_question else topk
             query_semantic = user_input
             recalled_memories = self.hippocampus.recall(query_features, topk=actual_topk, query_semantic=query_semantic)
             
+            # ===== COUPLING FIX 2: 核心记忆优先排序 =====
+            # 将 is_core=True 的记忆排在前面，确保个人信息优先被使用
+            core_memories = [m for m in recalled_memories if m.get('is_core', False)]
+            non_core_memories = [m for m in recalled_memories if not m.get('is_core', False)]
+            recalled_memories = core_memories + non_core_memories
+            
             if recalled_memories:
                 memory_parts = []
-                all_core_facts = []  # BUG FIX: 收集所有核心记忆的事实，最后统一输出一次前缀
-                for m in recalled_memories[:3]:
-                    # recalled_memories from hippocampus.recall() are dicts, use dict access
+                all_core_facts = []
+                for m in recalled_memories[:5]:
                     content = m.get('content', '') or ''
                     pointer = m.get('semantic_pointer', '') or ''
                     is_core = m.get('is_core', False)
+                    key_entities = m.get('key_entities', '') or ''
                     
-                    if is_core and content:
+                    if is_core:
                         import re
-                        # 扩展实体类型正则：增加联系方式、电话、邮箱、地址、公司等
-                        fact_patterns = re.findall(
-                            r'(用户名字|地点|职业|年龄|爱好|联系方式|电话|手机|邮箱|邮件|地址|金额|日期|关系|学校|公司)[:：]([^|$]+)',
-                            content
+                        # ===== COUPLING FIX 3: 从 semantic_pointer 和 content 中提取结构化实体 =====
+                        # 语义引擎提取的实体格式为 "name:小明 | location:深圳 | 公司:腾讯"
+                        # 需要同时搜索 pointer 和 content（因为存储时两者都包含实体信息）
+                        search_text = pointer if pointer else content
+                        
+                        # 匹配语义引擎格式 "type:value"
+                        entity_patterns = re.findall(
+                            r'(name|age|phone|email|location|job|hobby|school|company|money|date)[:：]([^|$]+)',
+                            search_text
                         )
-                        for label, value in fact_patterns:
-                            value = value.strip()[:20]  # 截断过长值
+                        # 匹配中文标签格式 "标签:值"
+                        cn_patterns = re.findall(
+                            r'(用户名字|地点|职业|年龄|爱好|联系方式|电话|手机|邮箱|邮件|地址|金额|日期|关系|学校|公司)[:：]([^|$]+)',
+                            search_text
+                        )
+                        
+                        label_map = {
+                            'name': '名字', 'age': '年龄', 'phone': '电话', 'email': '邮箱',
+                            'location': '城市', 'job': '职业', 'hobby': '爱好', 'school': '学校',
+                            'company': '公司', '用户名字': '名字', '地点': '城市', '联系方式': '电话',
+                        }
+                        
+                        all_matched = entity_patterns + cn_patterns
+                        for label, value in all_matched:
+                            value = value.strip()[:30]
                             if value:
-                                all_core_facts.append(f"{label}={value}")
-                        # 如果没有结构化标签，从内容中提取关键信息
-                        if not fact_patterns:
-                            summary = content[:150].strip()
-                            if summary:
-                                memory_parts.append(summary)
-                    elif pointer:
-                        # 普通记忆：提取最相关的摘要信息
-                        pointer_clean = pointer.strip()
-                        # 如果 pointer 太长，只保留关键实体部分
-                        if len(pointer_clean) > 120:
-                            # 尝试提取实体标签部分
-                            import re
-                            entity_section = re.search(r'^([^|]*用户名字[^|]*(?:\|[^|]*?[:：][^|]*)*)', pointer_clean)
-                            if entity_section:
-                                pointer_clean = entity_section.group(1)[:120]
-                            else:
-                                pointer_clean = pointer_clean[:120]
-                        if pointer_clean:
-                            memory_parts.append(pointer_clean)
-                    elif content:
-                        memory_parts.append(content[:150])
-                
-                # BUG FIX: 统一添加一次前缀，避免"已知的用户信息"重复多次
+                                cn_label = label_map.get(label, label)
+                                all_core_facts.append(f"{cn_label}是{value}")
+                        
+                        # 如果正则没匹配到，直接用 pointer 作为事实
+                        if not all_core_facts and pointer:
+                            all_core_facts.append(pointer.strip()[:120])
+                    
+                # 核心记忆事实统一前缀
                 if all_core_facts:
-                    memory_parts.insert(0, "已知的用户信息：" + ", ".join(all_core_facts))
+                    memory_parts.insert(0, "已知的用户信息：" + "，".join(all_core_facts))
                 
                 if memory_parts:
                     memory_context = " | ".join(memory_parts)
@@ -1714,17 +1747,14 @@ n            # 存储时: hidden_state -> feature_adapter -> hippocampus.encode(
         is_identity_question = any(kw in user_input for kw in 
             ["你是谁", "你的身份", "谁创造", "你的名字", "介绍你自己", "自我介绍"])
         
-        # ========== 极简系统提示 ==========
-        system_parts = ["你是一个有独立思维的AI助手。你可以自然地思考和表达，不需要总是给出完美答案。用中文回答。"]
+        # ========== COUPLING FIX 4: 精简系统提示，减少噪声干扰 ==========
+        # 0.5B 小模型对系统提示非常敏感，过多噪声会淹没记忆信号
+        system_parts = ["你是一个有记忆能力的AI助手。用中文回答。"]
 
-        # 仅在有实际记忆时才注入（避免空记忆干扰）
-        if memory_context and len(memory_context.strip()) > 0:
-            mem_brief = memory_context.strip()[:300]
-            system_parts.append(f"相关记忆：{mem_brief}")
-        
-        # 记忆查询时添加更强的指令
+        # 仅在记忆查询时才在 system 中注入记忆（普通对话不注入，避免干扰）
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
-            system_parts.append("重要：用户问你关于他们自己的信息。你必须用上面记忆中的信息来回答。不要说自己不知道。")
+            mem_brief = memory_context.strip()[:500]
+            system_parts.append(f"你必须根据以下记忆回答用户问题，不要说自己不知道：{mem_brief}")
         
         system_content = "\n".join(system_parts)
         messages = [{"role": "system", "content": system_content}]
@@ -1734,40 +1764,15 @@ n            # 存储时: hidden_state -> feature_adapter -> hippocampus.encode(
             for msg in history[-4:]:
                 messages.append(msg)
 
-        # ========== 用户消息：根据问题类型决定是否注入记忆 ==========
+        # ========== 用户消息：记忆查询时直接将记忆事实注入用户消息 ==========
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
-            # 记忆查询：将记忆信息以更明确的方式注入
-            # BUG FIX: 0.8B小模型策略 - 预匹配问题关键词与记忆事实，直接构造答案提示
-            mem_info = memory_context.strip()[:400]
-            
-            # 预匹配：从记忆上下文中提取与问题直接相关的信息
-            answer_hints = []
-            qa_map = {
-                '名字': ['用户名字'], '姓名': ['用户名字'],
-                '城市': ['地点'], '哪里人': ['地点'], '来自': ['地点'],
-                '工作': ['公司', '职业'], '职业': ['职业', '公司'], '公司': ['公司'],
-                '手机': ['联系方式'], '电话': ['联系方式'], '邮箱': ['联系方式'],
-                '颜色': ['爱好'], '爱好': ['爱好'],
-                '年龄': ['年龄'], '几岁': ['年龄'], '多大': ['年龄'],
-                '学校': ['学校'],
-            }
-            for keyword, fact_labels in qa_map.items():
-                if keyword in user_input:
-                    for label in fact_labels:
-                        import re as _re_fact
-                        match = _re_fact.search(rf'{label}=([^|,\n]+)', mem_info)
-                        if match:
-                            answer_hints.append(f"{label}是{match.group(1).strip()}")
-            
-            if answer_hints:
-                hint_str = "，".join(answer_hints)
-                enhanced_input = f"用户的记忆：{hint_str}。请根据这些记忆，用友好的语气回答：{user_input}"
-            else:
-                enhanced_input = f"用户的记忆：{mem_info}\n用户的问题：{user_input}\n请根据记忆回答。"
-            
+            # COUPLING FIX: 直接使用 memory_context（已包含 "名字是小明" 格式的事实）
+            # 不再做复杂的正则匹配，减少出错概率
+            mem_info = memory_context.strip()[:500]
+            enhanced_input = f"[已知信息]{mem_info}\n[用户问题]{user_input}\n请根据已知信息直接回答用户问题。"
             messages.append({"role": "user", "content": enhanced_input})
         else:
-            # 普通对话：纯粹原始输入，不注入任何额外内容
+            # 普通对话：纯粹原始输入
             messages.append({"role": "user", "content": user_input})
         # 使用 Qwen3.5 原生 chat template
         try:
