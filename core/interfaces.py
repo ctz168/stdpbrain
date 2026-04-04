@@ -1393,12 +1393,98 @@ class BrainAIInterface:
             logger.debug("[chat_stream] 已更新隐藏状态，维持意识连续性")
         
         thought_state_snapshot = self.current_thought_state
+
+        # ========== 核心：chat_stream 也必须执行实体提取和核心记忆检测 ==========
+        # Bug修复：之前 chat_stream 的 post_processing 直接调用
+        # _store_with_real_features(full_response, ...) 没有传 user_input/ai_response
+        # 也没有做 is_core_memory 检测和实体提取，导致正常对话模式下记忆完全不工作
+        import re as _re
+        emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
+        salience_stream = 1.0 + 0.5 * sum(1 for kw in emotional_keywords if kw in user_input or kw in monologue)
+        salience_stream = min(salience_stream, 3.0)
+
+        identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住", "我在", "我的电话", "我的手机", "联系方式", "我的邮箱", "我来自", "我毕业于", "我的学校"]
+        is_core_memory = any(pattern in user_input for pattern in identity_patterns)
+
+        enhanced_pointer_stream = f"用户: {user_input[:80]} | 回复: {full_response[:80]}"
+        memory_content_stream = f"{user_input} -> {full_response}"
+        entities_stream = []
+
+        name_match = _re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
+        if name_match:
+            name = name_match.group(1) or name_match.group(3)
+            entities_stream.append(f"用户名字:{name}")
+            is_core_memory = True
+        age_match = _re.search(r"我今年(\d+)|我(\d+)岁", user_input)
+        if age_match:
+            age = age_match.group(1) or age_match.group(2)
+            entities_stream.append(f"年龄:{age}岁")
+            is_core_memory = True
+        location_match = _re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
+        if location_match:
+            location = location_match.group(1) or location_match.group(2) or location_match.group(4)
+            if location:
+                entities_stream.append(f"地点:{location}")
+                is_core_memory = True
+        hobby_match = _re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
+        if hobby_match:
+            hobby = hobby_match.group(1) or hobby_match.group(2)
+            if hobby:
+                entities_stream.append(f"爱好:{hobby}")
+        phone_match = _re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
+        if phone_match:
+            phone = phone_match.group(1) or phone_match.group(2)
+            if phone:
+                entities_stream.append(f"联系方式:{phone}")
+                is_core_memory = True
+        email_match = _re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
+        if email_match:
+            entities_stream.append(f"联系方式:{email_match.group(1)}")
+                is_core_memory = True
+
+        if entities_stream:
+            entity_str = " | ".join(entities_stream)
+            if is_core_memory:
+                enhanced_pointer_stream = entity_str
+                memory_content_stream = entity_str + " | " + user_input[:100]
+            else:
+                enhanced_pointer_stream = entity_str + " | " + user_input[:40] + " -> " + full_response[:40]
+                memory_content_stream = entity_str + " | " + memory_content_stream[:200]
+
+        # ========== 核心：核心记忆必须同步存储（确保下一轮能召回）==========
+        # 修复：之前所有记忆都走异步 executor.submit，导致下一轮 recall 时记忆还未存储
+        # 核心记忆（is_core=True）必须同步存储，普通记忆可异步
+        if is_core_memory:
+            try:
+                self._store_with_real_features(
+                    memory_content_stream,
+                    thought_state_snapshot,
+                    is_core=True,
+                    semantic_pointer=enhanced_pointer_stream,
+                    user_input=user_input,
+                    ai_response=full_response
+                )
+            except Exception as e:
+                logger.warning(f"chat_stream核心记忆同步存储失败: {e}")
+
         def post_processing():
             try:
-                self._store_with_real_features(full_response, thought_state_snapshot)
-                self._apply_real_stdp_update(emotional_salience=salience)
-                self._update_adapter_online(thought_state_snapshot, salience)
-            except: pass
+                # 核心记忆已同步存储，只存普通记忆
+                if not is_core_memory:
+                    self._store_with_real_features(
+                        memory_content_stream,
+                        thought_state_snapshot,
+                        is_core=False,
+                        semantic_pointer=enhanced_pointer_stream,
+                        user_input=user_input,
+                        ai_response=full_response
+                    )
+                current_reward = 1.0
+                self.model.set_reward(current_reward)
+                self._apply_real_stdp_update(emotional_salience=salience_stream)
+                self._update_adapter_online(thought_state_snapshot, salience_stream)
+            except Exception as e:
+                logger.error(f"chat_stream后台处理失败: {e}")
         self.executor.submit(post_processing)
         
         t_end = time.time()

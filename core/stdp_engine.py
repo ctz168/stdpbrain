@@ -337,11 +337,15 @@ class FullLinkSTDP:
         self.record_activation('hippocampus_gate', hash(memory_anchor_id) % 1000, timestamp)
         self.set_contribution('hippocampus_gate', contribution)
         
-        # 计算权重更新量
+        # [FIX] compute_update 期望 torch.Tensor 参数，原代码传入 float 标量会导致崩溃。
+        # 包装为标量 Tensor 以兼容向量化计算。
+        pre_time_val = self.activation_times.get('hippocampus_gate', {}).get(
+            hash(memory_anchor_id) % 1000, timestamp - 5
+        )
         delta_w = self.stdp_rule.compute_update(
-            pre_times=self.activation_times.get('hippocampus_gate', {}).get(hash(memory_anchor_id) % 1000, timestamp - 5),
-            post_times=timestamp,
-            contributions=contribution
+            pre_times=torch.tensor([pre_time_val], device=self.device, dtype=torch.float32),
+            post_times=torch.tensor([timestamp], device=self.device, dtype=torch.float32),
+            contributions=torch.tensor([contribution], device=self.device, dtype=torch.float32)
         )
         
         # 更新海马体中的记忆连接强度

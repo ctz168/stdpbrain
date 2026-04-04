@@ -128,7 +128,10 @@ class UserFeedbackHandler:
         
         # 弱负面（需要结合上下文判断）
         # 只有消息很短且包含多个问号时才判断为负面
-        if len(msg) < 20 and msg.count("？") >= 2 or msg.count("?") >= 2:
+        # [FIX] 原代码: len(msg) < 20 and msg.count("？") >= 2 or msg.count("?") >= 2
+        # 由于 and 优先级高于 or，导致长消息中只要含有2个 ? 就被误判为负面反馈。
+        # 修正: 添加括号确保只有短消息才触发弱负面检测。
+        if len(msg) < 20 and (msg.count("？") >= 2 or msg.count("?") >= 2):
             return FeedbackResult(
                 is_feedback=True,
                 is_positive=False,

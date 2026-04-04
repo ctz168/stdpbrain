@@ -580,17 +580,33 @@ class QwenInterface:
         # 委托给内部的 QwenModelWrapper
         self.model.set_hippocampus_gate(gate_fn)
     
-    def set_memory_anchors(self, anchors):
+    # [FIX] 合并两个重复的 set_memory_anchors 方法定义。
+    # 原代码有两个同名方法：第583行（简单版）和第628行（带参数版），
+    # Python 中后者会覆盖前者，导致简单调用签名丢失。
+    # 现统一为带完整参数的版本，同时保持向后兼容。
+    def set_memory_anchors(self, anchors, max_anchors: int = 5, strength: float = 1.0):
         """
         设置记忆锚点（用于窄带宽注意力）
         
+        对应大脑机制: 海马体向前额叶/新皮层传递记忆锚点
+        
         Args:
-            anchors: 记忆锚点列表
+            anchors: 记忆锚点列表，每个锚点包含:
+                - key_features: 注意力 Key 特征
+                - value_features: 注意力 Value 特征
+                - activation_strength: 记忆强度
+                - dg_features: DG 特征（如果没有 KV 特征，会从此生成）
+            max_anchors: 最大锚点数量（工作记忆容量限制）
+            strength: 锚点强度
         """
-        self._memory_anchors_cache = anchors
-        # 同时传递给模型
-        if hasattr(self.model, 'set_memory_anchors'):
-            self.model.set_memory_anchors(anchors)
+        # 使用全局存储
+        if NARROW_BAND_PATCHED:
+            anchor_store = get_memory_anchor_store()
+            anchor_store.set_anchors(anchors, max_anchors, strength)
+            logger.debug(f"[QwenInterface] 设置 {len(anchors)} 个记忆锚点")
+        else:
+            # 回退到本地缓存
+            self._memory_anchors_cache = anchors[:max_anchors]
     
     @property
     def _tokenizer_lock(self):
@@ -624,30 +640,6 @@ class QwenInterface:
     def apply_chat_template_safe(self, messages, **kwargs):
         """传递调用到模型包装器"""
         return self.model.apply_chat_template_safe(messages, **kwargs)
-    
-    def set_memory_anchors(self, anchors: list, max_anchors: int = 5, strength: float = 1.0):
-        """
-        设置记忆锚点（用于窄带宽注意力）
-        
-        对应大脑机制: 海马体向前额叶/新皮层传递记忆锚点
-        
-        Args:
-            anchors: 记忆锚点列表，每个锚点包含:
-                - key_features: 注意力 Key 特征
-                - value_features: 注意力 Value 特征
-                - activation_strength: 记忆强度
-                - dg_features: DG 特征（如果没有 KV 特征，会从此生成）
-            max_anchors: 最大锚点数量（工作记忆容量限制）
-            strength: 锚点强度
-        """
-        # 使用全局存储
-        if NARROW_BAND_PATCHED:
-            anchor_store = get_memory_anchor_store()
-            anchor_store.set_anchors(anchors, max_anchors, strength)
-            logger.debug(f"[QwenInterface] 设置 {len(anchors)} 个记忆锚点")
-        else:
-            # 回退到本地缓存
-            self._memory_anchors_cache = anchors[:max_anchors]
     
     def enable_narrow_band(self, enabled: bool = True):
         """启用/禁用窄带宽注意力"""
@@ -1270,6 +1262,10 @@ class QwenInterface:
         max_repeat_allowed = 6  # 从3提升到6，允许自然的语言重复（如排比、强调）
         
         for step in range(max_tokens):
+            # Bug修复：在最后一步强制提取隐藏状态（维持意识连续性）
+            # 之前只每 _stdp_every_n 步提取一次，最后一个token大概率hidden_state=None
+            if step == max_tokens - 1:
+                self._step_counter = (self._stdp_every_n - 1)
             if past_key_values is not None:
                 model_input_ids = input_ids_buf[:, cur_len-1:cur_len]
                 step_inputs_embeds = None

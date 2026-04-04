@@ -376,6 +376,15 @@ class RefreshCycleEngine:
                 weights = [a.get('activation_strength', 0.5) for a in memory_anchors]
                 total_weight = sum(weights)
                 gate_signal = torch.zeros(self.model_hidden_size, device=self.device)
+                # [FIX] 原代码在此处截断，缺失加权平均计算和 return 语句。
+                # 补全：按权重叠加各锚点特征，归一化后返回。
+                for i, feat in enumerate(anchor_features):
+                    w = weights[i] / total_weight if total_weight > 0 else 1.0 / len(anchor_features)
+                    gate_signal = gate_signal + feat * w
+                return gate_signal
+        
+        # 最终回退：返回零门控信号
+        return torch.zeros(self.model_hidden_size, device=self.device)
     
     def _extract_features(self, token_id: int) -> torch.Tensor:
         """

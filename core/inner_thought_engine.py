@@ -323,8 +323,11 @@ class InnerThoughtEngine:
         
         # 高唤醒 → 偏向 ANALYTICAL / DEDUCTIVE
         if arousal > 0.65:
-            mode_scores[ThinkingMode.ANALYTICAL.value.__hash__() % 5] += 0.3
-            mode_scores[ThinkingMode.DEDUCTIVE.value.__hash__() % 5] += 0.2
+            # [FIX] 原代码使用 .value.__hash__() % 5，但 Python 3.3+ 的 str.__hash__()
+            # 是随机化的，每次进程启动结果不同，导致修改了错误的索引。
+            # 改用 list(ThinkingMode).index() 确保正确映射。
+            mode_scores[list(ThinkingMode).index(ThinkingMode.ANALYTICAL)] += 0.3
+            mode_scores[list(ThinkingMode).index(ThinkingMode.DEDUCTIVE)] += 0.2
         # 负效价 → 偏向 CRITICAL
         if valence < -0.25:
             mode_scores[list(ThinkingMode).index(ThinkingMode.CRITICAL)] += 0.4

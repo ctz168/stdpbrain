@@ -393,6 +393,10 @@ class GoalSystem:
         """更新父目标进度"""
         if parent.sub_goals:
             parent.progress = sum(g.progress for g in parent.sub_goals) / len(parent.sub_goals)
+        # [FIX] 原来这段代码误放在 _generate_goal_vector 中作为不可达死代码。
+        # 子目标全部完成后，应在此处触发父目标的完成检查。
+        if parent.is_complete():
+            self._complete_goal(parent)
     
     def _generate_goal_vector(self, goal: Goal) -> torch.Tensor:
         """
@@ -442,8 +446,6 @@ class GoalSystem:
                 print(f"   └─ 子目标数量: {num_subgoals}", flush=True)
             
             return goal_vector
-            if parent.is_complete():
-                self._complete_goal(parent)
     
     def get_reward_signal(self) -> float:
         """
