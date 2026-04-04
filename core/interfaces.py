@@ -343,15 +343,22 @@ class BrainAIInterface:
     
     def _setup_hippocampus_gate(self):
         """设置海马体门控，让CA1门控信号影响注意力"""
+        # BUG FIX: CA1AttentionGate 的正确入口方法是 forward(query, key, memory_anchors)，
+        # 而非不存在的 compute_gate(query_features=, memory_anchors=)。
+        # 原代码调用 compute_gate 导致 AttributeError，海马体门控完全失效。
         def hippocampus_gate_fn(query, key, memory_anchors):
             """CA1门控函数"""
             if memory_anchors and len(memory_anchors) > 0:
-                # 计算注意力门控信号
-                gate_signal = self.hippocampus.ca1_gate.compute_gate(
-                    query_features=query,
-                    memory_anchors=memory_anchors
-                )
-                return gate_signal
+                # 计算注意力门控信号（使用 CA1AttentionGate.forward 的正确签名）
+                try:
+                    gate_signal = self.hippocampus.ca1_gate.forward(
+                        query=query,
+                        key=key,
+                        memory_anchors=memory_anchors
+                    )
+                    return gate_signal
+                except Exception as e:
+                    logger.warning(f"CA1门控计算失败: {e}")
             return None
 
         # 注入到模型
@@ -671,7 +678,7 @@ class BrainAIInterface:
         # 检测是否为核心记忆（个人身份信息）- 扩展模式
         # BUG FIX: 跳过疑问句（以？结尾或包含疑问词的句子），避免将召回问题存为核心记忆
         is_question = user_input.rstrip().endswith('？') or user_input.rstrip().endswith('?')
-        interrogative_words = ['什么', '哪个', '哪里', '谁', '多少', '几岁', '吗', '呢', '多少']
+        interrogative_words = ['什么', '哪个', '哪里', '谁', '多少', '几岁', '吗', '呢']
         is_question = is_question or any(w in user_input for w in interrogative_words)
         
         identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住", "我在", "我的电话", "我的手机", "联系方式", "我的邮箱", "我来自", "我毕业于", "我的学校"]

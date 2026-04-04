@@ -349,8 +349,11 @@ class FullLinkSTDP:
         )
         
         # 更新海马体中的记忆连接强度
+        # BUG FIX: delta_w 是 shape [1] 的 tensor，但 update_memory_strength 期望 float。
+        # 原代码直接传入 tensor，虽然 PyTorch 允许 float+tensor 运算，但语义不正确——
+        # 应该取标量值（该 tensor 只有1个元素）。
         if hasattr(hippocampus_module, 'update_memory_strength'):
-            hippocampus_module.update_memory_strength(memory_anchor_id, delta_w)
+            hippocampus_module.update_memory_strength(memory_anchor_id, delta_w.item())
 
 
 class STDPEngine:
@@ -440,7 +443,9 @@ class STDPEngine:
                 )
         
         # ========== 4. 海马体门控 STDP 更新 ==========
-        if 'hippocampus' in model_components and 'memory_anchor' in inputs:
+        # BUG FIX: 原代码检查 'memory_anchor' in inputs，但 refresh_engine 传入的键是 'memory_anchor_id'。
+        # 导致 update_hippocampus_gate 从未被调用，海马体门控的 STDP 权重永远不更新。
+        if 'hippocampus' in model_components and 'memory_anchor_id' in inputs:
             self.full_link_stdp.update_hippocampus_gate(
                 memory_anchor_id=inputs.get('memory_anchor_id', 'unknown'),
                 contribution=outputs.get('memory_contribution', 0.5),

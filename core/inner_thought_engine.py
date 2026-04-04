@@ -779,9 +779,15 @@ class InnerThoughtEngine:
         # 1. 尝试从海马体召回随机记忆
         if self.hippocampus:
             # 随机语义种子（不依赖关键词，而是用随机向量探测记忆）
-            # 使用海马体的设备和数据类型
+            # BUG FIX: 原代码硬编码维度 1024，不匹配实际模型 hidden_size（可能是 896、1536 等）。
+            # 改用 hippocampus 配置中的 EC 编码器 input_dim，确保维度正确。
             hc_device = getattr(self.hippocampus, 'device', 'cpu')
-            random_query = torch.randn(1024, device=hc_device) * 0.5
+            # 获取 EC 编码器的输入维度（= model_hidden_size）
+            if hasattr(self.hippocampus, 'ec_encoder') and hasattr(self.hippocampus.ec_encoder, 'input_dim'):
+                query_dim = self.hippocampus.ec_encoder.input_dim
+            else:
+                query_dim = 1024  # 安全回退
+            random_query = torch.randn(query_dim, device=hc_device) * 0.5
             memories = self.hippocampus.recall(random_query, topk=1)
             if memories:
                 pointer = memories[0].get('semantic_pointer', '')
