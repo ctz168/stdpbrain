@@ -452,9 +452,8 @@ class BrainAIInterface:
             if recalled_memories:
                 mem_feats = []
                 for m in recalled_memories[:2]:
-                    if m.get('dg_features') is not None:
-                        # 修复：dg_features 可能是 list，需要转换为 Tensor
-                        dg_feat = m['dg_features']
+                    dg_feat = getattr(m, 'dg_features', None)
+                    if dg_feat is not None:
                         if isinstance(dg_feat, list):
                             dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
                         if isinstance(dg_feat, torch.Tensor):
@@ -502,9 +501,8 @@ class BrainAIInterface:
     
             mem_features = []
             for mem in recalled_memories[:2]:
-                if 'dg_features' in mem and mem['dg_features'] is not None:
-                    # 修复：dg_features 可能是 list，需要转换为 Tensor
-                    dg_feat = mem['dg_features']
+                dg_feat = getattr(mem, 'dg_features', None)
+                if dg_feat is not None:
                     if isinstance(dg_feat, list):
                         dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
                     if isinstance(dg_feat, torch.Tensor):
@@ -555,12 +553,16 @@ class BrainAIInterface:
             _, _ = self.self_encoder.encode(output.hidden_state)
     
         
-        # 3.4 更新思维种子：用刚才的回复内容驱动下一次独白 (增加抗重复校验)
-        if output.text and len(output.text.strip()) > 3:
+        # 3.4 更新思维种子：用用户输入+回复内容驱动下一次独白
+        # 优先使用用户输入作为下一轮的思维种子（更自然的话题引导）
+        # 这样下次独白就会围绕用户关心的话题展开
+        if user_input and len(user_input.strip()) > 3:
+            self.thought_seed = user_input.strip()[:40]
+        elif output.text and len(output.text.strip()) > 3:
             candidate = output.text.strip()[:40]
-            # 校验种子质量：如果包含过多重复字符（如点、横杠）或字符种类太少，则重置种子
+            # 校验种子质量：如果包含过多重复字符或字符种类太少，则重置种子
             if candidate.count('.') > 5 or candidate.count('-') > 4 or len(set(candidate)) < 6:
-                self.thought_seed = "现在感觉如何？" # 重置为启发式种子
+                self.thought_seed = "现在感觉如何？"
             else:
                 self.thought_seed = candidate
         
@@ -568,10 +570,19 @@ class BrainAIInterface:
         prediction_error = 0.0
         if self.predictive_coder is not None and self.last_output_embedding is not None and self.current_thought_state is not None:
             try:
-                # 预测下一状态和 token
-                pred_next_state, pred_token_logits, pred_state_proj = self.predictive_coder.predict_next(
-                    current_state=self.current_thought_state,
-                    last_output_embedding=self.last_output_embedding
+                # 确保张量维度正确：predict_next 期望 [batch, hidden]
+                current_state = self.current_thought_state
+                if current_state.dim() == 1:
+                    current_state = current_state.unsqueeze(0)
+                
+                last_emb = self.last_output_embedding
+                if last_emb.dim() == 1:
+                    last_emb = last_emb.unsqueeze(0)
+                
+                # 预测下一状态和 token（返回2个值：pred_next_state, pred_token_logits）
+                pred_next_state, pred_token_logits = self.predictive_coder.predict_next(
+                    current_state=current_state,
+                    last_output_embedding=last_emb
                 )
                 
                 # 获取实际输出的 token ids（取第一个 token 作为实际观测）
@@ -588,7 +599,7 @@ class BrainAIInterface:
                 error_metrics = self.predictive_coder.compute_prediction_error(
                     predicted_logits=pred_token_logits,
                     actual_token_ids=actual_token_ids,
-                    predicted_state=pred_state_proj,
+                    predicted_state=pred_next_state,
                     actual_next_state=self.current_thought_state
                 )
                 prediction_error = error_metrics["combined_error"]
@@ -838,6 +849,7 @@ class BrainAIInterface:
             BrainAIOutput: 包含 text, tokens, confidence, hidden_state, memory_anchors
         """
         self.hippocampus.record_activity()
+        self._last_user_input = input_text
         
         # 1. 记忆召回
         memory_context, recalled_memories, _ = self._parallel_recall_and_monologue(input_text, 2)
@@ -1425,18 +1437,17 @@ class BrainAIInterface:
             if recalled_memories:
                 memory_parts = []
                 for m in recalled_memories[:3]:
-                    if m.get('semantic_pointer'):
-                        memory_parts.append(m['semantic_pointer'][:150])
-                    elif m.get('context'):
-                        ctx = m['context']
-                        if isinstance(ctx, list) and len(ctx) > 0:
-                            memory_parts.append(ctx[0].get('content', '')[:50])
+                    sp = getattr(m, 'semantic_pointer', '')
+                    if sp:
+                        memory_parts.append(sp[:150])
+                    elif hasattr(m, 'content') and m.content:
+                        memory_parts.append(m.content[:50])
                 if memory_parts:
                     memory_context = " | ".join(memory_parts)
         except Exception as e:
             logger.debug(f"记忆召回失败: {e}")
         
-        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
+        if is_identity_question and not any("身份" in getattr(m, 'semantic_pointer', '') or "创造" in getattr(m, 'semantic_pointer', '') for m in recalled_memories):
             memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
         
         return memory_context, recalled_memories
@@ -1480,9 +1491,10 @@ class BrainAIInterface:
             if recalled_memories:
                 memory_parts = []
                 for m in recalled_memories[:3]:
-                    content = m.get('content', '')
-                    pointer = m.get('semantic_pointer', '')
-                    is_core = m.get('is_core', False)
+                    # EpisodicMemory 是 dataclass，不是 dict，需要用属性访问
+                    content = getattr(m, 'content', '') or ''
+                    pointer = getattr(m, 'semantic_pointer', '') or ''
+                    is_core = getattr(m, 'is_core', False)
                     
                     if is_core and content:
                         facts = []
@@ -1525,7 +1537,7 @@ class BrainAIInterface:
         except Exception as e:
             logger.debug(f"记忆召回失败: {e}")
         
-        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
+        if is_identity_question and not any("身份" in getattr(m, 'semantic_pointer', '') or "创造" in getattr(m, 'semantic_pointer', '') for m in recalled_memories):
             memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
         
         # 独白生成（优化：CPU环境下大幅减少token数量）
@@ -1605,34 +1617,34 @@ class BrainAIInterface:
             self.cycle_count += 1
 
     def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "", gw_context: str = "") -> str:
-        """格式化对话提示 - 使用 Qwen3.5 原生 chat template，最小化干扰
+        """格式化对话提示 - 使用 Qwen3.5 原生 chat template
         
-        修复要点：
-        - Qwen3.5 有内置思维链，过于复杂的系统提示会严重干扰推理
-        - 移除所有 [标签] 和过度指令，让模型专注于用户问题
+        优化要点：
+        - Qwen3.5 有内置思维链，不过度复杂系统提示
         - 记忆注入优化：区分记忆查询和普通对话，记忆查询时将记忆注入用户消息
-        - 仅保留核心身份和必要记忆上下文
+        - 使用自然语言而非标签格式
         """
         # ========== 检测是否为记忆查询类问题 ==========
         is_memory_query = any(kw in user_input for kw in [
             "记得", "记住", "我叫什么", "我的名字", "来自", "还记",
             "我的电话", "我的手机", "我的邮箱", "我的职业", "我的年龄",
-            "我之前说", "我刚说", "我告诉过你"
+            "我之前说", "我刚说", "我告诉过你", "手机号", "电话", "住哪",
+            "什么工作", "什么职业", "多大", "几岁", "生日", "爱好", "喜欢什么"
         ])
+        is_identity_question = any(kw in user_input for kw in 
+            ["你是谁", "你的身份", "谁创造", "你的名字", "介绍你自己", "自我介绍"])
         
         # ========== 极简系统提示 ==========
         system_parts = ["你是一个有独立思维的AI助手。你可以自然地思考和表达，不需要总是给出完美答案。用中文回答。"]
 
         # 仅在有实际记忆时才注入（避免空记忆干扰）
         if memory_context and len(memory_context.strip()) > 0:
-            mem_brief = memory_context.strip()[:300]  # 从200增加到300，保留更多记忆细节
+            mem_brief = memory_context.strip()[:300]
             system_parts.append(f"相关记忆：{mem_brief}")
-
         system_content = "\n".join(system_parts)
-
         messages = [{"role": "system", "content": system_content}]
-
-        # 添加历史对话 (最近4轮，保持对话连贯性)
+        
+        # ========== 添加历史对话 ==========
         if history:
             for msg in history[-4:]:
                 messages.append(msg)
@@ -1640,14 +1652,12 @@ class BrainAIInterface:
         # ========== 用户消息：根据问题类型决定是否注入记忆 ==========
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
             # 记忆查询：将记忆信息直接放在用户消息中（更靠近模型注意力焦点）
-            # 使用自然语言而非标签，避免模型学到标签格式
             mem_info = memory_context.strip()[:400]
             enhanced_input = f"以下是之前交流中提到的相关信息：\n{mem_info}\n\n基于以上信息，请回答：{user_input}"
             messages.append({"role": "user", "content": enhanced_input})
         else:
             # 普通对话：纯粹原始输入，不注入任何额外内容
             messages.append({"role": "user", "content": user_input})
-
         # 使用 Qwen3.5 原生 chat template
         try:
             prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)
@@ -1811,14 +1821,14 @@ class BrainAIInterface:
     def save_state(self, path: Optional[str] = None):
         """保存状态 - 优化版本：只保存动态权重，不重复保存基础模型
         
-        修复：CPU 环境下 BFloat16 tensor 无法直接 torch.save()，
+        修复：CPU 环境下 BFloat16/FP16 tensor 无法直接 torch.save()，
         在保存前将所有 tensor 转换为 Float32。
         """
         if path is None:
             path = getattr(self, 'state_path', 'brain_state.pt')
         print(f"[BrainAI] 正在固化记忆与学习成果...")
         try:
-            # 只保存动态权重部分
+            # 只保存动态权重部分（转为float32避免CPU上BFloat16/FP16不支持的问题）
             dynamic_weights = {}
             for name, param in self.model.model.named_parameters():
                 if 'dynamic_weight' in name:

@@ -439,13 +439,13 @@ class SelfLoopOptimizer:
         if self.model:
             # 如果有真实的模型接口，调用它
             # 修复：QwenInterface.generate() 第一个参数是 str（input_text），不是 tensor
-            if hasattr(self.model, 'generate'):
+            try:
                 # 构建完整输入文本（包含上下文）
                 full_text = input_text
                 if context:
                     recent_context = context[-2:]
                     context_str = " | ".join(recent_context)
-                    full_text = f"[上下文] {context_str} [问题] {input_text}"
+                    full_text = f"{context_str}\n{input_text}"
                 
                 # 生成
                 generated_text = self.model.generate(
@@ -458,20 +458,16 @@ class SelfLoopOptimizer:
                 if hasattr(generated_text, 'text'):
                     return generated_text.text
                 return str(generated_text)
+            except Exception as e:
+                logger.warning(f"[SelfLoop] 模型生成失败，使用降级: {e}")
         
         # ========== 降级实现 (当模型不可用时) ==========
-        # 使用更智能的模板匹配
         response_templates = self._get_response_templates(input_text)
-        
-        # 根据温度选择响应
         if temperature < 0.5:
-            # 低温：选择最保守的响应
             return response_templates[0] if response_templates else input_text
         elif temperature < 0.8:
-            # 中温：随机选择一个合理的响应
             return random.choice(response_templates[:3]) if response_templates else input_text
         else:
-            # 高温：创造性响应
             return random.choice(response_templates) if response_templates else f"{input_text} [创意回答]"
     
     def _tokenize_input(self, text: str, context: Optional[List[str]] = None) -> torch.Tensor:

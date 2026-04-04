@@ -452,7 +452,10 @@ class InnerThoughtEngine:
                             if self.thought_flow:
                                 self.thought_flow.pop() # 扔掉上一条坏记录
                             
-                            # 3. 物理断路：输出重置信号并停止当前流
+                            # 3. 强制更换思维种子：避免回环后继续生成类似内容
+                            self._force_change_seed()
+                            
+                            # 4. 物理断路：输出重置信号并停止当前流
                             offset = random.choice(["……感知到思维回环。重置语义空间……", "……忽略上述重复。换个话题思考。", "……跳过无效循环。"])
                             for c in offset: yield c; time.sleep(0.01)
                             self.mind_state = MindState.WANDERING
@@ -597,6 +600,35 @@ class InnerThoughtEngine:
             self._record_thought(generated_text)
             self._update_association(generated_text)
     
+    def _force_change_seed(self):
+        """强制更换思维种子，打破思维回环
+        
+        当检测到思维回环时调用，使用随机的话题转换器
+        切换到完全不同的思维方向，避免重复。
+        """
+        # 预设的话题转换器（覆盖不同领域，确保多样性）
+        topic_switchers = [
+            "思考一下最近科技的发展方向",
+            "回忆一下有趣的经历",
+            "分析一下当前的环境和氛围",
+            "想象一个完全不同的场景",
+            "考虑一下未来的可能性",
+            "整理一下刚才的想法",
+            "反思一下自己的思考方式",
+            "观察周围发生了什么变化",
+            "类比另一个领域来思考",
+            "从反面来审视这个问题",
+        ]
+        import random
+        new_seed = random.choice(topic_switchers)
+        
+        # 更新外部刺激（如果接口提供了）
+        if hasattr(self, '_external_stimulus'):
+            self._external_stimulus = new_seed
+        
+        # 清空上一次的思维记录，彻底断开回环
+        self.last_thought = ""
+
     def _build_thought_context(self, external_stimulus: str = "") -> str:
         """构建思维上下文 - 自然思维流（优化版：去除机械引导词）"""
         
