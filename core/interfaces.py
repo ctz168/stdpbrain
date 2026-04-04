@@ -527,7 +527,7 @@ class BrainAIInterface:
         output = self.model.generate(
             prompt, 
             max_tokens=max_tokens, 
-            temperature=0.6, 
+            temperature=0.3,  # BUG FIX: 0.8B小模型需要低温度(0.3)才能稳定遵循指令
             use_self_loop=True, 
             memory_anchor=memory_anchor,
             goal_vector=goal_vector  # 传递目标向量
@@ -672,8 +672,13 @@ class BrainAIInterface:
         salience = min(salience, 3.0)
         
         # 检测是否为核心记忆（个人身份信息）- 扩展模式
+        # BUG FIX: 跳过疑问句（以？结尾或包含疑问词的句子），避免将召回问题存为核心记忆
+        is_question = user_input.rstrip().endswith('？') or user_input.rstrip().endswith('?')
+        interrogative_words = ['什么', '哪个', '哪里', '谁', '多少', '几岁', '吗', '呢', '多少']
+        is_question = is_question or any(w in user_input for w in interrogative_words)
+        
         identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住", "我在", "我的电话", "我的手机", "联系方式", "我的邮箱", "我来自", "我毕业于", "我的学校"]
-        is_core_memory = any(pattern in user_input for pattern in identity_patterns)
+        is_core_memory = (not is_question) and any(pattern in user_input for pattern in identity_patterns)
         
         # 提取实体信息增强semantic_pointer - 改进：存储结构化信息，增加保存长度
         enhanced_pointer = f"用户: {user_input[:80]} | 回复: {output.text[:80]}"  # 增加到80字符
@@ -703,14 +708,31 @@ class BrainAIInterface:
             entities.append(f"日期:{date}")
         
         # 3. 个人信息（名字、年龄、职业等）- 扩展匹配模式
-        name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
-        age_match = re.search(r"我今年(\d+)|我(\d+)岁", user_input)
-        job_match = re.search(r"是(.{0,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", user_input)
-        location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
-        hobby_match = re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
-        phone_match = re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
-        email_match = re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
-        school_match = re.search(r"(?:毕业于|在.{2,8}?上学|就读于)([\u4e00-\u9fa5a-zA-Z]{2,15})", user_input)
+        # BUG FIX: 疑问句中不提取实体（避免将"来自哪个城市"的"哪个城市"提取为地点）
+        if not is_question:
+            name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
+            age_match = re.search(r"我今年(\d+)|我(\d+)岁", user_input)
+            # BUG FIX: 增加"做/当"模式匹配（如"在腾讯做程序员"），原来只匹配"是"模式
+            job_match = re.search(r"(?:是|做|当|担任)(.{0,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", user_input)
+            # BUG FIX: 提取公司/机构名称（如"在腾讯做程序员" → 公司=腾讯）
+            company_match = re.search(r"在([\u4e00-\u9fa5a-zA-Z0-9]{2,15}?)(?:做|当|担任|工作|上班|实习|研发)", user_input)
+            # BUG FIX: 排除疑问词（哪/什么/多少），避免"来自哪个城市"被错误提取
+            # 使用简单的两步法：先匹配，再过滤（比 negative lookahead 更可靠）
+            location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
+            if location_match:
+                loc_val = location_match.group(1) or location_match.group(2) or location_match.group(4)
+                # 过滤疑问词：如果匹配到的是疑问词则忽略
+                question_words = ['哪个', '什么', '哪里', '哪儿', '多少', '几岁']
+                if loc_val and any(qw in loc_val for qw in question_words):
+                    location_match = None
+
+            hobby_match = re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
+            phone_match = re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
+            email_match = re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
+            school_match = re.search(r"(?:毕业于|在.{2,8}?上学|就读于)([\u4e00-\u9fa5a-zA-Z]{2,15})", user_input)
+        else:
+            # 疑问句中跳过所有实体提取
+            name_match = age_match = job_match = location_match = hobby_match = phone_match = email_match = school_match = company_match = None
         
         if name_match:
             name = name_match.group(1) or name_match.group(3)
@@ -721,7 +743,14 @@ class BrainAIInterface:
             entities.append(f"年龄:{age}岁")
             is_core_memory = True
         if job_match:
-            entities.append(f"职业:{job_match.group(0)}")
+            # BUG FIX: job_match.group(0) 包含"是/做/当"前缀，提取更精确的职位信息
+            job_text = job_match.group(0)
+            # 去掉开头的"是"、"做"、"当"、"担任"
+            for prefix in ['是', '做', '当', '担任']:
+                if job_text.startswith(prefix):
+                    job_text = job_text[len(prefix):].lstrip()
+                    break
+            entities.append(f"职业:{job_text}")
             is_core_memory = True
         if location_match:
             location = location_match.group(1) or location_match.group(2) or location_match.group(4)
@@ -740,6 +769,11 @@ class BrainAIInterface:
         if email_match:
             entities.append(f"联系方式:{email_match.group(1)}")
             is_core_memory = True
+        if company_match:
+            company = company_match.group(1).strip()
+            if company:
+                entities.append(f"公司:{company}")
+                is_core_memory = True
         if school_match:
             entities.append(f"学校:{school_match.group(1)}")
             is_core_memory = True
@@ -752,6 +786,7 @@ class BrainAIInterface:
         # 5. 如果提取到实体，优化语义指针：实体信息放前面（优先匹配），原始对话放后面
         if entities:
             entity_str = " | ".join(entities)
+
             # 核心记忆：只存储结构化实体信息（简洁、精准、易于召回）
             if is_core_memory:
                 enhanced_pointer = entity_str
@@ -1440,7 +1475,7 @@ class BrainAIInterface:
         email_match = _re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
         if email_match:
             entities_stream.append(f"联系方式:{email_match.group(1)}")
-                is_core_memory = True
+            is_core_memory = True
 
         if entities_stream:
             entity_str = " | ".join(entities_stream)
@@ -1579,6 +1614,7 @@ class BrainAIInterface:
             
             if recalled_memories:
                 memory_parts = []
+                all_core_facts = []  # BUG FIX: 收集所有核心记忆的事实，最后统一输出一次前缀
                 for m in recalled_memories[:3]:
                     # recalled_memories from hippocampus.recall() are dicts, use dict access
                     content = m.get('content', '') or ''
@@ -1586,9 +1622,8 @@ class BrainAIInterface:
                     is_core = m.get('is_core', False)
                     
                     if is_core and content:
-                        facts = []
                         import re
-                        # 扩展实体类型正则：增加联系方式、电话、邮箱、地址等
+                        # 扩展实体类型正则：增加联系方式、电话、邮箱、地址、公司等
                         fact_patterns = re.findall(
                             r'(用户名字|地点|职业|年龄|爱好|联系方式|电话|手机|邮箱|邮件|地址|金额|日期|关系|学校|公司)[:：]([^|$]+)',
                             content
@@ -1596,11 +1631,9 @@ class BrainAIInterface:
                         for label, value in fact_patterns:
                             value = value.strip()[:20]  # 截断过长值
                             if value:
-                                facts.append(f"{label}={value}")
-                        if facts:
-                            memory_parts.append("已知的用户信息：" + ", ".join(facts))
-                        else:
-                            # 如果没有结构化标签，从内容中提取关键信息
+                                all_core_facts.append(f"{label}={value}")
+                        # 如果没有结构化标签，从内容中提取关键信息
+                        if not fact_patterns:
                             summary = content[:150].strip()
                             if summary:
                                 memory_parts.append(summary)
@@ -1620,6 +1653,10 @@ class BrainAIInterface:
                             memory_parts.append(pointer_clean)
                     elif content:
                         memory_parts.append(content[:150])
+                
+                # BUG FIX: 统一添加一次前缀，避免"已知的用户信息"重复多次
+                if all_core_facts:
+                    memory_parts.insert(0, "已知的用户信息：" + ", ".join(all_core_facts))
                 
                 if memory_parts:
                     memory_context = " | ".join(memory_parts)
@@ -1730,6 +1767,11 @@ class BrainAIInterface:
         if memory_context and len(memory_context.strip()) > 0:
             mem_brief = memory_context.strip()[:300]
             system_parts.append(f"相关记忆：{mem_brief}")
+        
+        # 记忆查询时添加更强的指令
+        if is_memory_query and memory_context and len(memory_context.strip()) > 0:
+            system_parts.append("重要：用户问你关于他们自己的信息。你必须用上面记忆中的信息来回答。不要说自己不知道。")
+        
         system_content = "\n".join(system_parts)
         messages = [{"role": "system", "content": system_content}]
         
@@ -1741,10 +1783,34 @@ class BrainAIInterface:
         # ========== 用户消息：根据问题类型决定是否注入记忆 ==========
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
             # 记忆查询：将记忆信息以更明确的方式注入
-            # 关键：用"用户的名字是X"这种断言语句，而非模糊的"相关信息"
-            # 小模型(0.8B)需要更直接明确的指令才能正确利用上下文
+            # BUG FIX: 0.8B小模型策略 - 预匹配问题关键词与记忆事实，直接构造答案提示
             mem_info = memory_context.strip()[:400]
-            enhanced_input = f"已知用户信息：{mem_info}\n\n请根据以上已知信息直接回答：{user_input}"
+            
+            # 预匹配：从记忆上下文中提取与问题直接相关的信息
+            answer_hints = []
+            qa_map = {
+                '名字': ['用户名字'], '姓名': ['用户名字'],
+                '城市': ['地点'], '哪里人': ['地点'], '来自': ['地点'],
+                '工作': ['公司', '职业'], '职业': ['职业', '公司'], '公司': ['公司'],
+                '手机': ['联系方式'], '电话': ['联系方式'], '邮箱': ['联系方式'],
+                '颜色': ['爱好'], '爱好': ['爱好'],
+                '年龄': ['年龄'], '几岁': ['年龄'], '多大': ['年龄'],
+                '学校': ['学校'],
+            }
+            for keyword, fact_labels in qa_map.items():
+                if keyword in user_input:
+                    for label in fact_labels:
+                        import re as _re_fact
+                        match = _re_fact.search(rf'{label}=([^|,\n]+)', mem_info)
+                        if match:
+                            answer_hints.append(f"{label}是{match.group(1).strip()}")
+            
+            if answer_hints:
+                hint_str = "，".join(answer_hints)
+                enhanced_input = f"用户的记忆：{hint_str}。请根据这些记忆，用友好的语气回答：{user_input}"
+            else:
+                enhanced_input = f"用户的记忆：{mem_info}\n用户的问题：{user_input}\n请根据记忆回答。"
+            
             messages.append({"role": "user", "content": enhanced_input})
         else:
             # 普通对话：纯粹原始输入，不注入任何额外内容
