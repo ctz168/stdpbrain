@@ -120,8 +120,7 @@ class QwenModelWrapper(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(
            self.model_path,
             trust_remote_code=True,
-           padding_side="left",
-           local_files_only=True
+           padding_side="left"
         )
         print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         
@@ -172,8 +171,7 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     quantization_config=quantization_config,
                     device_map={"": self.device},
-                    trust_remote_code=True,
-                    local_files_only=True
+                    trust_remote_code=True
                 )
                 print(f"  [OK] [CUDA] {self.quantization} 量化加载成功")
             elif is_mac:
@@ -182,8 +180,7 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     torch_dtype=torch.float16,
                     device_map={"": "mps"},
-                    trust_remote_code=True,
-                    local_files_only=True
+                    trust_remote_code=True
                 )
                 print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
             else:
@@ -196,8 +193,7 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
-                    trust_remote_code=True,
-                    local_files_only=True
+                    trust_remote_code=True
                 )
                 print("  [OK] FP16 加载完成，开始动态量化...")
                 
@@ -223,8 +219,7 @@ class QwenModelWrapper(nn.Module):
                 self.model_path,
                 torch_dtype=dtype,
                 device_map={"": target_device} if target_device != "cpu" else None,
-                trust_remote_code=True,
-                local_files_only=True
+                trust_remote_code=True
             )
             print(f"  [OK] {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
         
