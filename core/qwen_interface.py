@@ -118,7 +118,7 @@ class QwenModelWrapper(nn.Module):
         
         # ========== 1. 加载 Tokenizer ==========
         self.tokenizer = AutoTokenizer.from_pretrained(
-           model_path,
+           self.model_path,
             trust_remote_code=True,
            padding_side="left"
         )
