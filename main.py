@@ -12,28 +12,64 @@
 """
 
 # ============================================================
-# [HOTFIX] 新版 huggingface_hub 的 validate_repo_id 对本地路径
-# 校验过于严格（连绝对路径也拒绝），导致 from_pretrained 无法
-# 加载本地模型。在所有 import 之前 monkey-patch 掉它。
+# [HOTFIX] 新版 transformers/huggingface_hub 将本地绝对路径误判
+# 为 HuggingFace repo ID，导致 from_pretrained 请求远程 Hub
+# 而非直接读取本地文件。彻底 monkey-patch cached_file 和
+# cached_files，在路径为本地目录时直接返回本地文件路径。
 # ============================================================
-import os
+import os as _os
+
+def _is_local_path(path):
+    """判断是否为本地路径（目录存在且不是 HF repo 格式）"""
+    if not path or not isinstance(path, str):
+        return False
+    # 以 / 或 ~ 或 . 开头的路径
+    if path.startswith('/') or path.startswith('~') or path.startswith('.'):
+        return _os.path.isdir(path)
+    # 路径中含 3 个以上 / 分段 → 不可能是 namespace/repo
+    if len(path.split('/')) > 2 and _os.path.isdir(path):
+        return True
+    return False
+
+try:
+    from transformers.utils.hub import cached_file as _orig_cached_file
+    from transformers.utils.hub import cached_files as _orig_cached_files
+
+    def _patched_cached_file(path_or_repo_id, filename, cache_dir=None, **kwargs):
+        if _is_local_path(path_or_repo_id):
+            local_path = _os.path.join(path_or_repo_id, filename)
+            if _os.path.isfile(local_path):
+                return local_path
+        return _orig_cached_file(path_or_repo_id, filename, cache_dir=cache_dir, **kwargs)
+
+    def _patched_cached_files(path_or_repo_id, filenames, cache_dir=None, **kwargs):
+        if _is_local_path(path_or_repo_id):
+            results = []
+            for fname in filenames:
+                local_path = _os.path.join(path_or_repo_id, fname)
+                if _os.path.isfile(local_path):
+                    results.append(local_path)
+            if results:
+                return results
+        return _orig_cached_files(path_or_repo_id, filenames, cache_dir=cache_dir, **kwargs)
+
+    import transformers.utils.hub as _hf_hub
+    _hf_hub.cached_file = _patched_cached_file
+    _hf_hub.cached_files = _patched_cached_files
+except Exception as _e:
+    print(f"[HOTFIX] Warning: 无法 patch cached_file: {_e}")
+
+# 同时 patch validate_repo_id 防止报错
 try:
     import huggingface_hub.utils._validators as _hf_validators
     _orig_validate = _hf_validators.validate_repo_id
     def _patched_validate_repo_id(repo_id, **kwargs):
-        # 本地路径特征：含 / 但不含命名空间格式，或以 . 或 / 开头，或确实存在
-        if repo_id.startswith('.') or repo_id.startswith('/') or repo_id.startswith('~'):
-            return  # 本地路径，跳过校验
-        if os.path.sep in repo_id and os.path.exists(repo_id):
-            return  # 确实存在的本地路径，跳过校验
-        # 含多个 / 且第一个 / 前面不是合法 namespace（简单启发式）
-        parts = repo_id.split('/')
-        if len(parts) > 2:
-            return  # 路径层级 > 2，不可能是 namespace/repo 格式
+        if _is_local_path(repo_id):
+            return
         return _orig_validate(repo_id, **kwargs)
     _hf_validators.validate_repo_id = _patched_validate_repo_id
 except Exception:
-    pass  # 如果 huggingface_hub 版本不支持，忽略
+    pass
 # ============================================================
 
 import argparse

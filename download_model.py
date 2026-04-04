@@ -1,12 +1,12 @@
 from huggingface_hub import snapshot_download
 import os
 
-# 模型配置 - Qwen2.5-0.5B-Instruct (Qwen2ForCausalLM)
-model_id = "Qwen/Qwen2.5-0.5B-Instruct"
-local_dir = "models/Qwen2.5-0.5B-Instruct"
+# 模型配置 - Qwen3.5-0.8B
+model_id = "Qwen/Qwen3.5-0.8B"
+local_dir = "models/Qwen3.5-0.8B"
 
 print(f"开始下载 {model_id} 到 {local_dir}...")
-print("提示：0.5B 模型文件约 1-2GB")
+print("提示：0.8B 模型文件约 1.5-2GB")
 os.makedirs(local_dir, exist_ok=True)
 
 # 启用高速下载
