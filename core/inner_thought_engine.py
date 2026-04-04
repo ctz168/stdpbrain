@@ -483,10 +483,29 @@ class InnerThoughtEngine:
             
             # --- 智能上下文管理 (无限上下文模拟) ---
             if len(self.thought_flow) > 15:
+                # BUG FIX: HippocampusSystem 没有 store() 方法，正确入口是 encode()
                 # 提取最近思维作为语义锚点存入海马体
                 summary = " | ".join([t.content[:15] for t in list(self.thought_flow)[-8:]])
-                if self.hippocampus:
-                    self.hippocampus.store(summary, "cognitive_anchor")
+                if self.hippocampus and hasattr(self.hippocampus, 'encode'):
+                    try:
+                        import time as _time
+                        # encode() 需要 features tensor，通过 model embedding 获取
+                        if hasattr(self, 'model') and hasattr(self.model, 'encode_safe'):
+                            summary_ids = self.model.encode_safe(summary[:50], return_tensors="pt")
+                            device = getattr(self.model, 'device', 'cpu')
+                            summary_ids = summary_ids.to(device)
+                            with torch.no_grad():
+                                if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+                                    emb_layer = self.model.model.base_model.get_input_embeddings()
+                                    features = emb_layer(summary_ids).mean(dim=1).squeeze(0)
+                                    self.hippocampus.encode(
+                                        features=features,
+                                        token_id=hash(summary) % 100000,
+                                        timestamp=int(_time.time() * 1000),
+                                        context=[{'content': summary, 'semantic_pointer': summary[:80], 'is_core': False}]
+                                    )
+                    except Exception:
+                        pass  # 思维锚点存储失败不影响主流程
                 # 滚动窗口：保持活跃关注不受旧上下文干扰
                 self.thought_flow = self.thought_flow[-5:]
             

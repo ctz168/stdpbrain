@@ -64,7 +64,13 @@ class RefreshCycleEngine:
         try:
             if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
                 model_cfg = self.model.model.base_model.config
-                self.model_hidden_size = getattr(model_cfg, 'hidden_size', 2048)
+                # BUG FIX: Qwen3.5 的 hidden_size 在 text_config 里，不在顶层
+                # 直接 getattr(model_cfg, 'hidden_size') 会导致 Qwen3.5 静默返回 2048（错误值）
+                # 正确逻辑：先查 text_config（Qwen3.5），再回退到顶层（Qwen2.5）
+                if hasattr(model_cfg, 'text_config') and hasattr(model_cfg.text_config, 'hidden_size'):
+                    self.model_hidden_size = model_cfg.text_config.hidden_size
+                elif hasattr(model_cfg, 'hidden_size'):
+                    self.model_hidden_size = model_cfg.hidden_size
         except Exception:
             pass
         

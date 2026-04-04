@@ -513,7 +513,28 @@ class GlobalWorkspace:
         self.consciousness_state = None
         self.current_focus = None
         # 保留历史用于分析
-    
+
+    def update_from_stdp_signal(self, reward: float):
+        """
+        BUG FIX: STDP → GlobalWorkspace 奖励反馈接口（原缺失）。
+        STDPEngine.apply_meta_learning() 调用此方法将奖励信号传播到
+        竞争机制的权重上，实现意识焦点的自适应调整：
+        - 正奖励（reward > 0）：增强当前焦点的竞争权重
+        - 负奖励（reward < 0）：降低当前焦点的竞争权重，促进焦点切换
+        """
+        if not hasattr(self, 'competition') or not hasattr(self.competition, 'competition_weights'):
+            return
+        # reward 已归一化到 [-1, 1]
+        # 微调竞争权重：让高奖励路径在下一轮竞争中获得更高分数
+        with torch.no_grad():
+            delta = reward * 0.05  # 温和学习率，防止剧烈震荡
+            # 正奖励：增强 Importance 和 Confidence 的权重（让胜出者更易连任）
+            # 负奖励：减弱 Importance 的权重（促进焦点切换）
+            self.competition.competition_weights.data[0] += delta  # Importance
+            # Confidence 权重固定不动，保持回退机制
+            # 确保权重在合理范围
+            self.competition.competition_weights.data.clamp_(0.05, 0.8)
+
     def save_state(self) -> Dict:
         """保存状态"""
         return {
