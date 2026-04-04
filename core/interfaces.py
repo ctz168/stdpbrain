@@ -1654,9 +1654,11 @@ class BrainAIInterface:
 
         # ========== 用户消息：根据问题类型决定是否注入记忆 ==========
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
-            # 记忆查询：将记忆信息直接放在用户消息中（更靠近模型注意力焦点）
+            # 记忆查询：将记忆信息以更明确的方式注入
+            # 关键：用"用户的名字是X"这种断言语句，而非模糊的"相关信息"
+            # 小模型(0.8B)需要更直接明确的指令才能正确利用上下文
             mem_info = memory_context.strip()[:400]
-            enhanced_input = f"以下是之前交流中提到的相关信息：\n{mem_info}\n\n基于以上信息，请回答：{user_input}"
+            enhanced_input = f"已知用户信息：{mem_info}\n\n请根据以上已知信息直接回答：{user_input}"
             messages.append({"role": "user", "content": enhanced_input})
         else:
             # 普通对话：纯粹原始输入，不注入任何额外内容

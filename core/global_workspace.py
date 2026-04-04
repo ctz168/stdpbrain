@@ -184,15 +184,14 @@ class GlobalWorkspace:
         self.max_history = max_history
         
         # 竞争和广播机制
-        self.competition = CompetitionMechanism(hidden_size).to(device=device, dtype=dtype)
-        self.broadcast = BroadcastMechanism(hidden_size).to(device=device, dtype=dtype)
+        self.competition = CompetitionMechanism(hidden_size).to(device)
+        self.broadcast = BroadcastMechanism(hidden_size).to(device)
         
         # 维度适配器：将不同维度映射到 hidden_size
-        # 注意：adapter dtype 必须与模型一致（避免 float vs BFloat16 冲突）
         self._dimension_adapters = nn.ModuleDict({
-            'memory': nn.Linear(512, hidden_size, bias=False),  # 海马体 dg_features: 512 -> 1024
-            'goal': nn.Linear(512, hidden_size, bias=False),     # 目标向量：假设512
-        }).to(device=device, dtype=dtype)
+            'memory': nn.Linear(512, hidden_size, bias=False),
+            'goal': nn.Linear(512, hidden_size, bias=False),
+        }).to(device)
         
         # 初始化适配器为单位矩阵（保持语义）
         for name, adapter in self._dimension_adapters.items():
