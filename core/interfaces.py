@@ -1795,7 +1795,11 @@ class BrainAIInterface:
         }
 
     def save_state(self, path: Optional[str] = None):
-        """保存状态 - 优化版本：只保存动态权重，不重复保存基础模型"""
+        """保存状态 - 优化版本：只保存动态权重，不重复保存基础模型
+        
+        修复：CPU 环境下 BFloat16 tensor 无法直接 torch.save()，
+        在保存前将所有 tensor 转换为 Float32。
+        """
         if path is None:
             path = getattr(self, 'state_path', 'brain_state.pt')
         print(f"[BrainAI] 正在固化记忆与学习成果...")
@@ -1804,18 +1808,39 @@ class BrainAIInterface:
             dynamic_weights = {}
             for name, param in self.model.model.named_parameters():
                 if 'dynamic_weight' in name:
-                    dynamic_weights[name] = param.data.clone()
+                    # 修复：将 BFloat16/FP16 转为 Float32 以确保 CPU 兼容序列化
+                    data = param.data.clone()
+                    if data.dtype in (torch.bfloat16, torch.float16):
+                        data = data.float()
+                    dynamic_weights[name] = data
+            
+            # 修复：将 hippocampus state 中的 tensor 也转为 Float32
+            hippocampus_state = self.hippocampus.get_state()
+            hippocampus_state = self._convert_state_dict_to_float32(hippocampus_state)
+            
+            # 修复：将 adapter state 中的 tensor 转为 Float32
+            adapter_state = self.feature_adapter.state_dict()
+            adapter_state = {k: v.float() if v.dtype in (torch.bfloat16, torch.float16) else v 
+                            for k, v in adapter_state.items()}
+            
+            # 修复：将 current_thought_state 转为 Float32
+            thought_state = None
+            if self.current_thought_state is not None:
+                thought_state = self.current_thought_state.clone()
+                if thought_state.dtype in (torch.bfloat16, torch.float16):
+                    thought_state = thought_state.float()
             
             state = {
                 'dynamic_weights': dynamic_weights,  # 只保存动态权重
-                'adapter_state_dict': self.feature_adapter.state_dict(),
+                'adapter_state_dict': adapter_state,
                 'adapter_optimizer_state_dict': self.adapter_optimizer.state_dict(),
-                'hippocampus_state': self.hippocampus.get_state(),
+                'hippocampus_state': hippocampus_state,
                 'monologue_history': self.monologue_history,
                 'cycle_count': self.cycle_count,
                 'total_stdp_updates': self.total_stdp_updates,
-                'current_thought_state': self.current_thought_state,
+                'current_thought_state': thought_state,
                 'self_encoder_state': self.self_encoder.get_state() if hasattr(self, 'self_encoder') else None,
+                '_model_dtype': str(self._model_dtype),  # 记录原始精度，加载时恢复
             }
             torch.save(state, path)
             
@@ -1823,12 +1848,30 @@ class BrainAIInterface:
             import os
             file_size_mb = os.path.getsize(path) / (1024 * 1024)
             print(f"[BrainAI] [OK] 学习成果已保存到: {path}")
-            print(f"[BrainAI] [INFO] 文件大小: {file_size_mb:.2f} MB (仅动态权重)")
+            print(f"[BrainAI] [INFO] 文件大小: {file_size_mb:.2f} MB (仅动态权重, Float32兼容)")
         except Exception as e:
             logger.error(f"状态保存失败: {e}")
+    
+    def _convert_state_dict_to_float32(self, state_dict: dict) -> dict:
+        """递归将 state_dict 中的所有 tensor 转为 Float32（CPU兼容）"""
+        converted = {}
+        for key, value in state_dict.items():
+            if isinstance(value, dict):
+                converted[key] = self._convert_state_dict_to_float32(value)
+            elif isinstance(value, torch.Tensor):
+                if value.dtype in (torch.bfloat16, torch.float16):
+                    converted[key] = value.float()
+                else:
+                    converted[key] = value
+            else:
+                converted[key] = value
+        return converted
 
     def _load_dynamic_weights_only(self, path: str) -> bool:
-        """只加载动态权重部分，避免重复加载基础模型权重"""
+        """只加载动态权重部分，避免重复加载基础模型权重
+        
+        修复：加载后将 Float32 tensor 转回模型原始 dtype（BFloat16/FP16）
+        """
         try:
             import os
             if not os.path.exists(path):
@@ -1837,6 +1880,16 @@ class BrainAIInterface:
             print(f"[BrainAI] 正在从 {path} 恢复学习成果...")
             state = torch.load(path, map_location=self.device, weights_only=False)
             
+            # 获取模型原始 dtype（用于恢复精度）
+            model_dtype = self._model_dtype if hasattr(self, '_model_dtype') else torch.float32
+            # 如果保存了原始 dtype，优先使用
+            if '_model_dtype' in state:
+                saved_dtype_str = state['_model_dtype']
+                if 'bfloat16' in saved_dtype_str:
+                    model_dtype = torch.bfloat16
+                elif 'float16' in saved_dtype_str:
+                    model_dtype = torch.float16
+            
             # 新格式：dynamic_weights 字典
             if 'dynamic_weights' in state:
                 dynamic_weights = state['dynamic_weights']
@@ -1844,7 +1897,11 @@ class BrainAIInterface:
                 
                 for name, param in self.model.model.named_parameters():
                     if name in dynamic_weights:
-                        param.data.copy_(dynamic_weights[name])
+                        weight_data = dynamic_weights[name]
+                        # 恢复精度：如果保存为 Float32 但模型使用 BFloat16/FP16，转回
+                        if weight_data.dtype != param.dtype and param.dtype in (torch.bfloat16, torch.float16):
+                            weight_data = weight_data.to(param.dtype)
+                        param.data.copy_(weight_data)
                         restored_count += 1
                 
                 print(f"[BrainAI] [OK] 已恢复 {restored_count} 个动态权重层")
@@ -1857,14 +1914,21 @@ class BrainAIInterface:
                 restored_count = 0
                 for name, param in self.model.model.named_parameters():
                     if 'dynamic_weight' in name and name in model_state:
-                        param.data.copy_(model_state[name])
+                        weight_data = model_state[name]
+                        if weight_data.dtype != param.dtype and param.dtype in (torch.bfloat16, torch.float16):
+                            weight_data = weight_data.to(param.dtype)
+                        param.data.copy_(weight_data)
                         restored_count += 1
                 
                 print(f"[BrainAI] [OK] 已恢复 {restored_count} 个动态权重层（兼容模式）")
             
             # 恢复其他状态
             if 'adapter_state_dict' in state:
-                self.feature_adapter.load_state_dict(state['adapter_state_dict'])
+                adapter_state = state['adapter_state_dict']
+                # 精度恢复
+                adapter_state = {k: v.to(self.feature_adapter.weight.dtype) if isinstance(v, torch.Tensor) else v
+                                for k, v in adapter_state.items()}
+                self.feature_adapter.load_state_dict(adapter_state)
             if 'adapter_optimizer_state_dict' in state:
                 self.adapter_optimizer.load_state_dict(state['adapter_optimizer_state_dict'])
             
