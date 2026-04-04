@@ -438,24 +438,26 @@ class SelfLoopOptimizer:
         # ========== 真实模型调用 ==========
         if self.model:
             # 如果有真实的模型接口，调用它
+            # 修复：QwenInterface.generate() 第一个参数是 str（input_text），不是 tensor
             if hasattr(self.model, 'generate'):
-                # 准备输入
-                input_ids = self._tokenize_input(input_text, context)
+                # 构建完整输入文本（包含上下文）
+                full_text = input_text
+                if context:
+                    recent_context = context[-2:]
+                    context_str = " | ".join(recent_context)
+                    full_text = f"[上下文] {context_str} [问题] {input_text}"
                 
                 # 生成
-                with torch.no_grad():
-                    outputs = self.model.generate(
-                        input_ids,
-                        max_new_tokens=100,
-                        temperature=temperature,
-                        do_sample=temperature > 0.1,
-                        top_p=0.95,
-                        top_k=20
-                    )
+                generated_text = self.model.generate(
+                    full_text,
+                    max_tokens=100,
+                    temperature=temperature
+                )
                 
-                # 解码
-                generated_text = self._decode_output(outputs)
-                return generated_text
+                # model.generate 返回 BrainAIOutput 对象，提取文本
+                if hasattr(generated_text, 'text'):
+                    return generated_text.text
+                return str(generated_text)
         
         # ========== 降级实现 (当模型不可用时) ==========
         # 使用更智能的模板匹配
