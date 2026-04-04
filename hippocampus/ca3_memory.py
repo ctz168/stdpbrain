@@ -72,19 +72,19 @@ class EpisodicMemory:
             'consecutive_misses': self.consecutive_misses,
         }
         
-        # 安全序列化tensor：detach并转为numpy
+        # 安全序列化tensor：detach, 转float32, 再转numpy（避免BFloat16）
         if self.dg_features is not None:
-            result['dg_features'] = self.dg_features.detach().cpu().numpy().tolist()
+            result['dg_features'] = self.dg_features.detach().cpu().float().numpy().tolist()
         
         if self.key_features is not None:
-            result['key_features'] = self.key_features.detach().cpu().numpy().tolist()
+            result['key_features'] = self.key_features.detach().cpu().float().numpy().tolist()
         
         if self.value_features is not None:
-            result['value_features'] = self.value_features.detach().cpu().numpy().tolist()
+            result['value_features'] = self.value_features.detach().cpu().float().numpy().tolist()
         
         # 序列化语义 embedding
         if self.semantic_embedding is not None:
-            result['semantic_embedding'] = self.semantic_embedding.detach().cpu().numpy().tolist()
+            result['semantic_embedding'] = self.semantic_embedding.detach().cpu().float().numpy().tolist()
         
         return result
 

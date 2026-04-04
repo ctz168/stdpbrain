@@ -238,8 +238,8 @@ class HippocampusSystem(nn.Module):
             query_features = query_features.unsqueeze(0)
         
         # ========== 优化: 检查编码缓存 ==========
-        # 使用特征哈希作为缓存键 - 统一转为CPU连续字节，避免设备/stride导致不稳定
-        query_for_hash = query_features.detach().to('cpu').contiguous()
+        # 使用特征哈希作为缓存键 - 统一转为CPU float32连续字节，避免BFloat16不兼容
+        query_for_hash = query_features.detach().to('cpu').float().contiguous()
         cache_key = hash(query_for_hash.numpy().tobytes())
         
         if cache_key in self._query_encoding_cache:
@@ -300,17 +300,17 @@ class HippocampusSystem(nn.Module):
         for mem_dict in sorted_memories:
             mem_id = mem_dict.get('memory_id', '')
             
-            # DG 特征
+            # DG 特征（统一转 float32 避免 BFloat16 序列化错误）
             if mem_id in memory_dg_features:
-                mem_dict['dg_features'] = memory_dg_features[mem_id].detach().cpu().numpy().tolist()
+                mem_dict['dg_features'] = memory_dg_features[mem_id].detach().cpu().float().numpy().tolist()
             else:
-                mem_dict['dg_features'] = dg_features.detach().cpu().numpy().tolist()
+                mem_dict['dg_features'] = dg_features.detach().cpu().float().numpy().tolist()
             
             # KV 特征（用于窄带宽注意力）
             if mem_id in memory_kv_features:
                 kv = memory_kv_features[mem_id]
-                mem_dict['key_features'] = kv['key'].detach().cpu().numpy().tolist() if kv['key'] is not None else None
-                mem_dict['value_features'] = kv['value'].detach().cpu().numpy().tolist() if kv['value'] is not None else None
+                mem_dict['key_features'] = kv['key'].detach().cpu().float().numpy().tolist() if kv['key'] is not None else None
+                mem_dict['value_features'] = kv['value'].detach().cpu().float().numpy().tolist() if kv['value'] is not None else None
             
             if 'content' not in mem_dict and mem_id in self.ca3_memory.memories:
                 mem_dict['content'] = self.ca3_memory.memories[mem_id].content
