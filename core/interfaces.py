@@ -825,6 +825,59 @@ class BrainAIInterface:
         
         return output.text
 
+    def generate(self, input_text: str, max_tokens: int = 100, temperature: float = 0.6) -> BrainAIOutput:
+        """
+        生成模式接口 (供 main.py 的 generate 模式调用)
+        
+        Args:
+            input_text: 输入文本
+            max_tokens: 最大生成 token 数
+            temperature: 温度参数
+            
+        Returns:
+            BrainAIOutput: 包含 text, tokens, confidence, hidden_state, memory_anchors
+        """
+        self.hippocampus.record_activity()
+        
+        # 1. 记忆召回
+        memory_context, recalled_memories, _ = self._parallel_recall_and_monologue(input_text, 2)
+        memory_anchors = recalled_memories[:2] if recalled_memories else []
+        
+        # 2. 构建提示词
+        prompt = self._format_chat_prompt(input_text, [], "", memory_context)
+        
+        # 3. 生成回复
+        output = self.model.generate(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            use_self_loop=False
+        )
+        
+        # 4. 更新思维状态
+        if output.hidden_state is not None:
+            self.current_thought_state = output.hidden_state
+        
+        # 5. 后台存储记忆和STDP更新
+        def _post_gen():
+            try:
+                self._store_with_real_features(
+                    output.text, self.current_thought_state,
+                    is_core=False, semantic_pointer=f"用户: {input_text[:50]}",
+                    user_input=input_text, ai_response=output.text
+                )
+            except Exception as e:
+                logger.warning(f"generate模式后台记忆存储失败: {e}")
+        self.executor.submit(_post_gen)
+        
+        return BrainAIOutput(
+            text=output.text,
+            tokens=output.text.split() if output.text else [],
+            confidence=output.confidence if hasattr(output, 'confidence') else 0.7,
+            hidden_state=output.hidden_state,
+            memory_anchors=memory_anchors
+        )
+
     def think(self) -> dict:
         """真实自思考接口"""
         # swr_consolidation 在 HippocampusSystem.__init__ 中初始化
