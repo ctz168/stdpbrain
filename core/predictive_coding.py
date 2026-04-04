@@ -50,6 +50,9 @@ class PredictiveCodingModule(nn.Module):
             nn.Linear(hidden_size, vocab_size)
         )
         
+        # 状态投影层：将 pred_hidden 投影回 hidden_size（用于状态预测误差计算）
+        self.state_projection = nn.Linear(pred_hidden_size, hidden_size)
+        
         # 预测误差历史（用于自适应阈值）
         self.error_history = []
         self.max_history_len = 100
@@ -85,7 +88,10 @@ class PredictiveCodingModule(nn.Module):
         # 预测下一 token
         pred_token_logits = self.observation(pred_next_state)
         
-        return pred_next_state, pred_token_logits
+        # 投影回 hidden_size 维度（供状态预测误差计算使用）
+        pred_state_proj = self.state_projection(pred_next_state)  # [batch, hidden_size]
+        
+        return pred_next_state, pred_token_logits, pred_state_proj
     
     def compute_prediction_error(
         self,
@@ -120,7 +126,13 @@ class PredictiveCodingModule(nn.Module):
         # 2. 状态预测误差（如果提供了实际下一状态）
         state_error = 0.0
         if predicted_state is not None and actual_next_state is not None:
-            state_error = F.mse_loss(predicted_state, actual_next_state).item()
+            # 维度对齐：predicted_state 可能是 [batch, pred_hidden]，actual_next_state 是 [batch, hidden_size]
+            # compute_prediction_error 的调用方现在传入的是 pred_state_proj（已投影到 hidden_size）
+            if predicted_state.shape == actual_next_state.shape:
+                state_error = F.mse_loss(predicted_state, actual_next_state).item()
+            else:
+                # 兼容旧调用：维度不匹配时跳过状态误差
+                state_error = 0.0
         
         # 3. 综合误差（加权平均）
         combined_error = token_error + 0.1 * state_error
