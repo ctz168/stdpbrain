@@ -184,14 +184,15 @@ class GlobalWorkspace:
         self.max_history = max_history
         
         # 竞争和广播机制
-        self.competition = CompetitionMechanism(hidden_size).to(device)
-        self.broadcast = BroadcastMechanism(hidden_size).to(device)
+        self.competition = CompetitionMechanism(hidden_size).to(device=device, dtype=dtype)
+        self.broadcast = BroadcastMechanism(hidden_size).to(device=device, dtype=dtype)
         
         # 维度适配器：将不同维度映射到 hidden_size
+        # 注意：adapter dtype 必须与模型一致（避免 float vs BFloat16 冲突）
         self._dimension_adapters = nn.ModuleDict({
             'memory': nn.Linear(512, hidden_size, bias=False),  # 海马体 dg_features: 512 -> 1024
             'goal': nn.Linear(512, hidden_size, bias=False),     # 目标向量：假设512
-        }).to(device)
+        }).to(device=device, dtype=dtype)
         
         # 初始化适配器为单位矩阵（保持语义）
         for name, adapter in self._dimension_adapters.items():
@@ -269,13 +270,20 @@ class GlobalWorkspace:
         if output.dim() == 1:
             output = output.unsqueeze(0)  # [D] -> [1, D]
         
+        # 统一 dtype：adapter 是 float32，input 可能是 BFloat16
+        adapter_dtype = None
+        
         if output.shape[-1] != self.hidden_size:
             # 检查是否有对应的适配器
             if module_name in self._dimension_adapters:
-                output = self._dimension_adapters[module_name](output)
+                adapter = self._dimension_adapters[module_name]
+                adapter_dtype = next(adapter.parameters()).dtype
+                if output.dtype != adapter_dtype:
+                    output = output.to(adapter_dtype)
+                output = adapter(output)
             else:
                 # 没有适配器，使用零填充
-                padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device)
+                padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device, dtype=output.dtype)
                 min_dim = min(output.shape[-1], self.hidden_size)
                 padded[:, :min_dim] = output[:, :min_dim]
                 output = padded
