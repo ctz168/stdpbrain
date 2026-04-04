@@ -320,6 +320,16 @@ class BrainAIInterface:
             self.inner_thought_engine._goal_system = self.goal_system
             print("[BrainAI] [OK] 已将全局工作空间和目标系统注入到独白引擎")
         
+        # BUG FIX: 将 inner_thought_engine、global_workspace、goal_system
+        # 注册到 STDP 引擎的元学习组件表中。
+        # 原代码没有注册，导致 STDPEngine.apply_meta_learning() 中
+        # 检查 model_components 时找不到这三个组件，状态转换矩阵、
+        # 竞争权重、目标奖励权重永远不接收 STDP 奖励信号。
+        self.stdp_engine.register_meta_component('inner_thought_engine', self.inner_thought_engine)
+        self.stdp_engine.register_meta_component('global_workspace', self.global_workspace)
+        self.stdp_engine.register_meta_component('goal_system', self.goal_system)
+        print("[BrainAI] [OK] 已将组件注册到 STDP 元学习闭环")
+        
         # 设置海马体门控函数（连接CA1到注意力层）
         self._setup_hippocampus_gate()
 

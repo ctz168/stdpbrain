@@ -171,12 +171,21 @@ class FullLinkSTDP:
             context_tokens = torch.tensor(context_tokens, dtype=torch.long, device=target_device).clamp(0, self.activation_times_tensor.shape[0] - 1)
         pre_times = self.activation_times_tensor[context_tokens]
         
-        # 复用 post_times 缓冲区
+        # [BUG FIX] 分别使用独立缓冲区，避免张量视图别名覆盖。
+        # 原代码 post_times 和 contributions 都是 _post_times_buffer 的切片视图，
+        # contributions.fill_(0.5) 会覆盖 post_times 刚填入的 timestamp，
+        # 导致 STDP 时间差计算始终使用 0.5 而非真实时间戳，
+        # LTP/LTD 判定完全失效。
         n_ctx = pre_times.shape[0]
         if n_ctx > self._post_times_buffer.shape[0]:
             self._post_times_buffer = torch.zeros(n_ctx * 2, dtype=torch.float32, device=self.device)
+            # BUG FIX: 同步扩展 contributions 缓冲区
+            if not hasattr(self, '_contributions_buffer'):
+                self._contributions_buffer = torch.zeros(n_ctx * 2, dtype=torch.float32, device=self.device)
+            if n_ctx > self._contributions_buffer.shape[0]:
+                self._contributions_buffer = torch.zeros(n_ctx * 2, dtype=torch.float32, device=self.device)
         post_times = self._post_times_buffer[:n_ctx].fill_(timestamp)
-        contributions = self._post_times_buffer[:n_ctx].fill_(self.contribution_cache.get('attention', 0.5))
+        contributions = self._contributions_buffer[:n_ctx].fill_(self.contribution_cache.get('attention', 0.5))
         
         # 工具调用强化
         effective_reward = reward * (5.0 if is_tool_call else 1.0)
@@ -187,11 +196,13 @@ class FullLinkSTDP:
         if torch.any(torch.abs(delta_ws) > 0):
             mean_delta = delta_ws[delta_ws != 0].mean()
             
-            # ========== 优化: 使用缓存的梯度张量 ==========
+                # ========== 优化: 使用缓存的梯度张量 ==========
             if hasattr(attention_layer, 'apply_stdp_update') and hasattr(attention_layer, 'dynamic_weight'):
                 # 单层更新模式（最常见）
                 weight_shape = attention_layer.dynamic_weight.shape
                 grad = self._get_or_create_grad('attention_single', weight_shape, attention_layer.dynamic_weight.device)
+                # BUG FIX: 使用与 dynamic_weight 匹配的数据类型
+                grad = grad.to(attention_layer.dynamic_weight.dtype)
                 grad.fill_(mean_delta.item() * 0.1)
                 attention_layer.apply_stdp_update(grad, lr=self.config.stdp.alpha_LTP)
                 return
@@ -206,6 +217,8 @@ class FullLinkSTDP:
                 q_weight = attention_layer.q_proj.dynamic_weight
                 grad_shape = q_weight.shape
                 grad_cache = self._get_or_create_grad('attention_qkvo', grad_shape, q_weight.device)
+                # BUG FIX: 使用与 dynamic_weight 匹配的数据类型
+                grad_cache = grad_cache.to(q_weight.dtype)
                 grad_cache.fill_(mean_delta.item() * 0.1)
                 
                 grad_dict = {
@@ -263,10 +276,18 @@ class FullLinkSTDP:
             return
 
         # 生成梯度字典
+        # BUG FIX: 原代码使用 torch.randn_like() 生成随机噪声梯度。
+        # 这不是 STDP 更新，而是随机扰动，会逐渐破坏 FFN 权重中的有意义模式。
+        # 改为使用 contribution（归一化后的输出范数）作为有方向的梯度缩放因子，
+        # 保持 STDP 的"贡献度越高，权重增强越强"的语义。
+        contribution_val = min(1.0, max(-1.0, contribution))
+        # 使用 mean delta 作为基础梯度（与注意力层 STDP 一致），方向由 contribution 决定
+        base_grad_scale = contribution_val * 0.01  # 贡献度导向缩放
+        
         grad_dict = {
-            'gate': torch.randn_like(ffn_layer.gate_proj.dynamic_weight) * contribution * 0.01,
-            'up': torch.randn_like(ffn_layer.up_proj.dynamic_weight) * contribution * 0.01,
-            'proj': torch.randn_like(ffn_layer.down_proj.dynamic_weight) * contribution * 0.01
+            'gate': torch.ones_like(ffn_layer.gate_proj.dynamic_weight) * base_grad_scale,
+            'up': torch.ones_like(ffn_layer.up_proj.dynamic_weight) * base_grad_scale,
+            'proj': torch.ones_like(ffn_layer.down_proj.dynamic_weight) * base_grad_scale
         }
         
         # 应用 STDP 更新
@@ -333,15 +354,15 @@ class FullLinkSTDP:
         if not self.config.stdp.update_hippocampus_gate:
             return
         
-        # 记录激活时间
-        self.record_activation('hippocampus_gate', hash(memory_anchor_id) % 1000, timestamp)
-        self.set_contribution('hippocampus_gate', contribution)
-        
-        # [FIX] compute_update 期望 torch.Tensor 参数，原代码传入 float 标量会导致崩溃。
-        # 包装为标量 Tensor 以兼容向量化计算。
+        # BUG FIX: 海马体门控 STDP 更新需要使用上一周期的激活时间（而非当前周期刚记录的）。
+        # 原代码在同一函数内先 record_activation() 再立即读取，导致 pre_time == timestamp，
+        # delta_t 恒为 0，STDP 永远走 zero_update 分支，海马体门控权重永远不更新。
+        # 正确逻辑：先获取上一次的激活时间，然后更新为当前时间。
         pre_time_val = self.activation_times.get('hippocampus_gate', {}).get(
             hash(memory_anchor_id) % 1000, timestamp - 5
         )
+        # 先获取旧值，再记录新值
+        self.record_activation('hippocampus_gate', hash(memory_anchor_id) % 1000, timestamp)
         delta_w = self.stdp_rule.compute_update(
             pre_times=torch.tensor([pre_time_val], device=self.device, dtype=torch.float32),
             post_times=torch.tensor([timestamp], device=self.device, dtype=torch.float32),
@@ -374,6 +395,13 @@ class STDPEngine:
         # 周期计数器
         self.cycle_count = 0
         self.eval_period = config.self_loop.mode3_eval_period  # 每 10 周期一次自评判
+        
+        # BUG FIX: 预留额外元学习组件注册表。
+        # 接口层（BrainAIInterface）在初始化完 inner_thought_engine、
+        # global_workspace、goal_system 后，通过此方法注入，
+        # 使 apply_meta_learning() 中的状态转换矩阵、竞争权重、
+        # 目标奖励权重都能接收 STDP 奖励信号。
+        self._extra_meta_components: Dict[str, nn.Module] = {}
     
     def record_activation(self, type: str, id: Any, timestamp: float):
         self.full_link_stdp.record_activation(type, id, timestamp)
@@ -381,6 +409,20 @@ class STDPEngine:
     def set_contribution(self, type: str, contribution: float):
         self.full_link_stdp.set_contribution(type, contribution)
         
+    def register_meta_component(self, name: str, module: nn.Module):
+        """
+        [新增] 注册额外元学习组件到 STDP 元学习闭环。
+        
+        供 BrainAIInterface 在初始化 inner_thought_engine、
+        global_workspace、goal_system 后调用，使这些组件
+        能在 apply_meta_learning() 中接收 STDP 奖励信号。
+        
+        Args:
+            name: 组件名称（如 'inner_thought_engine'、'global_workspace'、'goal_system'）
+            module: 组件实例（不需要是 nn.Module，但建议传入）
+        """
+        self._extra_meta_components[name] = module
+
     def reset(self):
         """重置 STDP 引擎状态"""
         self.cycle_count = 0
@@ -456,10 +498,18 @@ class STDPEngine:
         # ========== 5. [动态化] 元学习闭环 (意识调度参数 STDP 更新) ==========
         if 'evaluation_score' in outputs:
             reward = (outputs['evaluation_score'] / 40.0) * 2 - 1  # 归一化到 -1~1
+            # BUG FIX: 将 inner_thought_engine、global_workspace、goal_system
+            # 注入到 model_components，使 apply_meta_learning 中的相关分支生效。
+            # 原代码 model_components 只包含 attention/ffn/hippocampus，
+            # 导致 InnerThoughtEngine 状态转换矩阵和 GoalSystem 奖励权重
+            # 从未接收到 STDP 信号。
+            meta_components = dict(model_components)  # 浅拷贝，不污染原字典
+            if hasattr(self, '_extra_meta_components'):
+                meta_components.update(self._extra_meta_components)
             self.apply_meta_learning(
                 module_name=outputs.get('generation_path', 'unknown'),
                 reward=reward,
-                model_components=model_components
+                model_components=meta_components
             )
     
     def apply_meta_learning(self, module_name: str, reward: float, model_components: Dict[str, nn.Module]):
@@ -473,19 +523,32 @@ class STDPEngine:
         if not self.config.stdp.update_self_eval:
             return
             
-        # 1. 更新 InnerThoughtEngine 的状态矩阵
+        # 1. 更新 InnerThoughtEngine 的状态转换矩阵
+        # BUG FIX: 原代码为 pass，STDP 奖励信号从未传递到独白引擎。
+        # 现在通过 _transition_state(reward=...) 将奖励注入状态转换矩阵，
+        # 使高频思维路径获得 LTP 增强，低效路径获得 LTD 削弱。
         if 'inner_thought_engine' in model_components:
             engine = model_components['inner_thought_engine']
-            if hasattr(engine, '_transition_reward_accum'):
-                # engine._transition_state 内部有收集机制，这里我们可以补发一次转换信号
-                # 实际上 _transition_state(reward) 会累积
-                pass # 实际由 engine 自己在 _transition_state 调用时传入
+            if hasattr(engine, '_transition_state') and callable(engine._transition_state):
+                engine._transition_state(reward=reward)
 
         # 2. 更新 GlobalWorkspace 的竞争权重
         if 'global_workspace' in model_components:
             gw = model_components['global_workspace']
             if hasattr(gw, 'update_from_stdp_signal'):
                 gw.update_from_stdp_signal(reward)
+
+        # 3. 更新 GoalSystem 的目标奖励权重
+        # BUG FIX: 原代码完全缺失 GoalSystem 的 STDP 反馈。
+        # 正奖励（reward > 0）→ 当前目标类型权重上升（LTP）
+        # 负奖励（reward < 0）→ 当前目标类型权重下降（LTD）
+        if 'goal_system' in model_components:
+            gs = model_components['goal_system']
+            if hasattr(gs, 'current_goal') and gs.current_goal is not None:
+                if reward > 0:
+                    gs.update_reward_from_feedback(positive=True)
+                elif reward < 0:
+                    gs.update_reward_from_feedback(positive=False)
     
     def get_stats(self) -> dict:
         """获取 STDP 更新统计信息"""
