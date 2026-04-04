@@ -436,6 +436,7 @@ class BrainAIInterface:
         
         # 存储完整记忆字典供注意力层使用
         self._current_recalled_memories = recalled_memories
+        self._last_recalled_memories = recalled_memories  # 同步更新供外部访问
         
         # ========== KV 海马体整合（可选，当前使用 dg_features 维度不匹配 EC encoder 输入，暂时跳过）==========
         # 注意：dg_features 维度为 EC_feature_dim*2 (512)，而 ec_encoder 期望 model_hidden_size (896)
