@@ -11,6 +11,31 @@
     python main.py --mode eval
 """
 
+# ============================================================
+# [HOTFIX] 新版 huggingface_hub 的 validate_repo_id 对本地路径
+# 校验过于严格（连绝对路径也拒绝），导致 from_pretrained 无法
+# 加载本地模型。在所有 import 之前 monkey-patch 掉它。
+# ============================================================
+import os
+try:
+    import huggingface_hub.utils._validators as _hf_validators
+    _orig_validate = _hf_validators.validate_repo_id
+    def _patched_validate_repo_id(repo_id, **kwargs):
+        # 本地路径特征：含 / 但不含命名空间格式，或以 . 或 / 开头，或确实存在
+        if repo_id.startswith('.') or repo_id.startswith('/') or repo_id.startswith('~'):
+            return  # 本地路径，跳过校验
+        if os.path.sep in repo_id and os.path.exists(repo_id):
+            return  # 确实存在的本地路径，跳过校验
+        # 含多个 / 且第一个 / 前面不是合法 namespace（简单启发式）
+        parts = repo_id.split('/')
+        if len(parts) > 2:
+            return  # 路径层级 > 2，不可能是 namespace/repo 格式
+        return _orig_validate(repo_id, **kwargs)
+    _hf_validators.validate_repo_id = _patched_validate_repo_id
+except Exception:
+    pass  # 如果 huggingface_hub 版本不支持，忽略
+# ============================================================
+
 import argparse
 import sys
 import time
