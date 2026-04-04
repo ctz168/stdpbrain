@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://github.com/pyannote/pyannote-audio/issues/1800",
+    "name": "huggingface_hub.errors.HFValidationError: Repo id must",
+    "snippet": "Nov 28, 2024 — The error seems to indicate that from_pretrained is expecting a repo_id in the form 'repo_name' or 'namespace/repo_name'. However, the config. Read more",
+    "host_name": "github.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://discuss.huggingface.co/t/hfvalidationerror-repo-id-must-be-in-the-form-repo-name/71171",
+    "name": "HFvalidationerror: Repo_id must be in the form repo_name",
+    "snippet": "Jan 30, 2024 — Dear all, I am running into the following HFValidationError . Did my research and couldnt find a solution so far. Anyone with ideas?",
+    "host_name": "discuss.huggingface.co",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/trl/issues/4323",
+    "name": "HFValidationError: Repo id must use alphanumeric chars ·",
+    "snippet": "Oct 22, 2025 — - a path to a * directory * potentially containing the file . filenames (` list [str]`): The name of all the files to locate in `path_or_repo`. Read more",
+    "host_name": "github.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/79762554/azure-ml-endpoint-fails-with-hfvalidationerror-even-after-using-pathlib-path",
+    "name": "Azure ML Endpoint Fails with HFValidationError even after",
+    "snippet": "I am trying to deploy a fine-tuned Mistral-7B model on an Azure ML Online Endpoint. The deployment repeatedly fails during the init() phase ... Read more",
+    "host_name": "stackoverflow.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/peft/issues/1430",
+    "name": "huggingface_hub.utils._validators.HFValidationError when",
+    "snippet": "Feb 2, 2024 — When load a pretrained model without tokenizer and passing in the local absolute path (more than two \"/\" in path) will throw HFValidationError . Read more",
+    "host_name": "github.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://huggingface.co/Alibaba-NLP/new-impl/discussions/2",
+    "name": "Alibaba-NLP/new-impl · Disable trust_remote_code",
+    "snippet": "Is there a way to update the config in the gte-large model to avoid trust_remote_code=True as the network is blocking that call inside our company network. Read more",
+    "host_name": "huggingface.co",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/61947796/huggingface-autotokenizer-cant-load-from-local-path",
+    "name": "Huggingface AutoTokenizer can't load from local path",
+    "snippet": "AutoTokenizer. from_pretrained fails if the specified path does not contain the model configuration files, which are required solely for the tokenizer class ... Read more",
+    "host_name": "stackoverflow.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/unslothai/unsloth/issues/1311",
+    "name": "Not able to load model from huggingface repo with correct",
+    "snippet": "Nov 20, 2024 — I successfully installed Unsloth locally on a Windows system and attempted to test the following example code snippet: Code Snippet. Read more",
+    "host_name": "github.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://huggingface.co/nvidia/mit-b0/discussions/3",
+    "name": "Example of loading pretrained model from local directory only",
+    "snippet": "Oct 4, 2023 — I am trying to containerize and fine-tune SegFormer model so I want to load the pre-trained from local folder only but this code ...",
+    "host_name": "huggingface.co",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/76500504/what-is-the-cause-of-hfvalidationerror-in-this-code-and-how-do-i-resolve-this-er",
+    "name": "What is the cause of HFValidationError in this code and",
+    "snippet": "The from_pretrained documentation is not entirely clear about how it distinguishes huggingface repository names from local paths , ... Read more",
+    "host_name": "stackoverflow.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

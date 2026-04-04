@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://stackoverflow.com/questions/63312859/how-to-change-huggingface-transformers-default-cache-directory",
+    "name": "How to change huggingface transformers default cache directory?",
+    "snippet": "You can specify the cache directory whenever you load a model with .from_pretrained by setting the parameter cache_dir. You can also set a default location. Missing: pull 41808 fix",
+    "host_name": "stackoverflow.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/trl/issues/4323",
+    "name": "CI fails with dev dependencies: HFValidationError: Repo id must use",
+    "snippet": "Fixed by huggingface/transformers#41808. Thanks for the fix, @zucchini-nlp! I have tested the main branch locally and it works as expected.",
+    "host_name": "github.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/transformers/issues/11808",
+    "name": "How to save and load model from local path in pipeline api ? #11808",
+    "snippet": "In from_pretrained api, the model can be loaded from local path by passing the cache_dir. However, I have not found any parameter when using ... Missing: 41808 cached_file",
+    "host_name": "github.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/optimum/issues/344",
+    "name": "cannot import name 'cached_path' from 'transformers.file_utils' #344",
+    "snippet": "Failed to import optimum.onnxruntime.quantization because of the following error (look up to see its traceback): cannot import name 'cached_path' from ' ... Missing: 41808 | Show results with: 41808",
+    "host_name": "github.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/transformers/issues/21678",
+    "name": "cached_path disappeared from the API · Issue #21678 - GitHub",
+    "snippet": "A tool using an older version of transformers uses from transformers.file_utils import cached_path. However, this api function disappeared sometime in 2022.",
+    "host_name": "github.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  }
+]

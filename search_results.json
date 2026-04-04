@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://github.com/unslothai/unsloth/issues/1311",
+    "name": "Not able to load model from huggingface repo with correct",
+    "snippet": "Nov 20, 2024 — Not able to load model from huggingface repo with correct path (FileNotFoundError: invalid repository id) #1311. New issue. Read more",
+    "host_name": "github.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://discuss.huggingface.co/t/load-the-model-fails-for-sentence-transformers-sentence-t5-xl/148000",
+    "name": "Load the model fails for sentence-transformers/sentence-t5-xl",
+    "snippet": "Mar 29, 2025 — The error occurs because the model cannot find the necessary files in the local cache and is prohibited from downloading online. To resolve this ... Read more",
+    "host_name": "discuss.huggingface.co",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/79762554/azure-ml-endpoint-fails-with-hfvalidationerror-even-after-using-pathlib-path",
+    "name": "Azure ML Endpoint Fails with HFValidationError even after",
+    "snippet": "I am trying to deploy a fine-tuned Mistral-7B model on an Azure ML Online Endpoint. The deployment repeatedly fails during the init() phase ... Read more",
+    "host_name": "stackoverflow.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/trl/issues/4323",
+    "name": "HFValidationError: Repo id must use alphanumeric chars ·",
+    "snippet": "Oct 22, 2025 — Fixed by huggingface/ transformers #41808. Thanks for the fix , @zucchini-nlp! I have tested the main branch locally and it works as expected. Read more",
+    "host_name": "github.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/huggingface/transformers/issues/33617",
+    "name": "[please help!] I can't load the tokenizer · Issue #33617",
+    "snippet": "Sep 20, 2024 — When I used the following code to load the tokenizer, a bug occurred. Does anyone know how to fix it? Code: import transformers . model = \"meta- ... Read more",
+    "host_name": "github.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://huggingface.co/docs/course/zh-TW/chapter8/2",
+    "name": "出現錯誤時該怎麼辦",
+    "snippet": "例如, 在Stack Overflow 上搜索 OSError : Can't load config for 給出了幾個hits, 可能是用作解決問題的起點。 第一個建議是要求我們檢查模型ID是否真的正確, 所以首先要做 ... Read more",
+    "host_name": "huggingface.co",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/opendatalab/MinerU/issues/1650",
+    "name": "Incorrect path_or_model_id [] Please provide",
+    "snippet": "Feb 1, 2025 — OSError : Incorrect path _or_model_id. Please provide either the path to a local folder or the repo_id of a model on the Hub. Read more",
+    "host_name": "github.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://discuss.huggingface.co/t/from-pretrained-local-path-downloading-already-fine-tuned-model-instead-of-loading-the-model-locally/103518",
+    "name": ".from_pretrained($local_path) downloading already fine",
+    "snippet": "Aug 22, 2024 — Hello, I've fine-tuned models for llama3.1, gemma2 and mistral7b. The files are in my local directory and have a valid absolute path .",
+    "host_name": "discuss.huggingface.co",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/AILab-CVC/YOLO-World/issues/358",
+    "name": "OSError: Incorrect path_or_model_id: '../pretrained_models",
+    "snippet": "May 27, 2024 — This issue will be closed since there is no further update related to the main topic. Besides, the error has been fixed already. Read more",
+    "host_name": "github.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/mlcommons/inference/issues/2010",
+    "name": "GPT-J Huggingface validation error · Issue #2010",
+    "snippet": "Jan 2, 2025 — After the error, I stayed in the docker container. How do I solve this issue? Will I rerun the whole compiling process once I execute the same ... Read more",
+    "host_name": "github.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]
