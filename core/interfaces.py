@@ -580,6 +580,9 @@ class BrainAIInterface:
                     actual_token_ids = torch.tensor([self.model.tokenizer.eos_token_id], device=self.device)
                 else:
                     actual_token_ids = torch.tensor(actual_token_ids, device=self.device)
+                # 确保 actual_token_ids 是 2D [1, seq_len]
+                if actual_token_ids.dim() == 1:
+                    actual_token_ids = actual_token_ids.unsqueeze(0)
                 
                 # 计算预测误差
                 error_metrics = self.predictive_coder.compute_prediction_error(
@@ -688,9 +691,9 @@ class BrainAIInterface:
         # 3. 个人信息（名字、年龄、职业等）- 扩展匹配模式
         name_match = re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
         age_match = re.search(r"我今年(\d+)|我(\d+)岁", user_input)
-        job_match = re.search(r"我是(.{2,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", user_input)
+        job_match = re.search(r"是(.{0,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", user_input)
         location_match = re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
-        hobby_match = re.search(r"我喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|我爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
+        hobby_match = re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
         phone_match = re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
         email_match = re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
         school_match = re.search(r"(?:毕业于|在.{2,8}?上学|就读于)([\u4e00-\u9fa5a-zA-Z]{2,15})", user_input)
@@ -755,7 +758,9 @@ class BrainAIInterface:
                     memory_content,
                     thought_state_snapshot,
                     is_core=True,
-                    semantic_pointer=enhanced_pointer
+                    semantic_pointer=enhanced_pointer,
+                    user_input=user_input,
+                    ai_response=output.text
                 )
             except Exception as e:
                 logger.warning(f"核心记忆存储失败: {e}")
@@ -768,7 +773,9 @@ class BrainAIInterface:
                         memory_content,
                         thought_state_snapshot,
                         is_core=False,
-                        semantic_pointer=enhanced_pointer
+                        semantic_pointer=enhanced_pointer,
+                        user_input=user_input,
+                        ai_response=output.text
                     )
                 current_reward = output.confidence if output.confidence is not None else 1.0
                 self.model.set_reward(current_reward)
@@ -964,7 +971,7 @@ class BrainAIInterface:
             logger.error(f"生成失败: {e}")
             return "...", None
 
-    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None, kv_features: Optional[Dict] = None):
+    def _store_with_real_features(self, monologue: str, hidden_state: Optional[torch.Tensor], is_core: bool = False, semantic_pointer: str = None, kv_features: Optional[Dict] = None, user_input: str = "", ai_response: str = ""):
         """
         存储记忆到海马体 - 支持 KV 特征（用于窄带宽注意力）
         
@@ -999,12 +1006,17 @@ class BrainAIInterface:
                     clean_content = re.sub(r'^用户[：:]\s*', '', monologue)
                     semantic_pointer = clean_content[:80] if len(clean_content) > 30 else monologue
             
-            # 存储记忆，包含 KV 特征
+            # 存储记忆，包含 KV 特征 + 用户输入和AI回复（供语义引擎生成摘要）
+            ctx = {'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}
+            if user_input:
+                ctx['user_input'] = user_input
+            if ai_response:
+                ctx['ai_response'] = ai_response
             self.hippocampus.encode(
                 features=features, 
                 token_id=hash(monologue) % 100000, 
                 timestamp=int(time.time() * 1000), 
-                context=[{'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}],
+                context=[ctx],
                 kv_features=kv_features  # 传递 KV 特征
             )
         except Exception as e:

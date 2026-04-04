@@ -51,7 +51,7 @@ class SemanticSummarizer:
             (r"在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)", 1),
         ],
         'job': [
-            (r"是(.{2,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", 0),
+            (r"(?:是|当)(.{0,10}?)(工程师|医生|老师|学生|设计师|程序员|律师|会计|经理|总监|分析师|研究员)", 1),
             (r"职业[是:：](.{2,10})", 1),
         ],
         'phone': [
@@ -341,9 +341,10 @@ class SemanticSummarizer:
         if not valid_embeddings:
             return [0.0] * len(memory_embeddings)
         
-        # Stack 并计算
-        emb_matrix = torch.stack(valid_embeddings)  # [N, hidden_size]
-        sims = torch.mm(emb_matrix, query_emb.unsqueeze(1)).squeeze(1)  # [N]
+        # Stack 并计算（统一转为 float32 避免 BFloat16 不支持问题）
+        emb_matrix = torch.stack(valid_embeddings).float()  # [N, hidden_size]
+        query_emb_f = query_emb.float()
+        sims = torch.mm(emb_matrix, query_emb_f.unsqueeze(1)).squeeze(1)  # [N]
         sims = sims.tolist()
         
         # 填充结果

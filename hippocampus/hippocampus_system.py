@@ -187,6 +187,16 @@ class HippocampusSystem(nn.Module):
             if value_features is not None:
                 value_features = value_features.detach().cpu()
         
+        # ========== 5.6 从 context 提取 user_input / ai_response（供语义引擎生成摘要）==========
+        user_input = ""
+        ai_response = ""
+        if context and len(context) > 0:
+            for ctx in context:
+                if 'user_input' in ctx:
+                    user_input = ctx['user_input']
+                if 'ai_response' in ctx:
+                    ai_response = ctx['ai_response']
+
         self.ca3_memory.store(
             memory_id=memory_id,
             timestamp=timestamp,
@@ -197,7 +207,9 @@ class HippocampusSystem(nn.Module):
             is_core=is_core,
             content=content,
             key_features=key_features,    # 新增
-            value_features=value_features  # 新增
+            value_features=value_features,  # 新增
+            user_input=user_input,        # 供语义引擎生成摘要
+            ai_response=ai_response,      # 供语义引擎生成摘要
         )
         
         # ========== 6. 更新内存使用 ==========

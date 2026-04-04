@@ -103,9 +103,16 @@ class PredictiveCodingModule(nn.Module):
         - combined_error: 加权综合误差
         """
         # 1. Token 预测误差（核心）
+        # 确保 predicted_logits 和 actual_token_ids 维度匹配
+        target_ids = actual_token_ids.squeeze(-1) if actual_token_ids.dim() > 1 else actual_token_ids
+        if predicted_logits.dim() == 2 and target_ids.dim() == 1:
+            # predicted_logits: [batch, vocab], target_ids: [batch]
+            pass
+        elif predicted_logits.dim() == 1 and target_ids.dim() == 1:
+            predicted_logits = predicted_logits.unsqueeze(0)
         token_loss = F.cross_entropy(
             predicted_logits, 
-            actual_token_ids.squeeze(-1) if actual_token_ids.dim() > 1 else actual_token_ids,
+            target_ids,
             reduction='mean'
         )
         token_error = token_loss.item()

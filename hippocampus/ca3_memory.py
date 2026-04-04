@@ -401,7 +401,7 @@ class CA3EpisodicMemory(nn.Module):
                                 memory_id = all_ids[idx]
                                 memory = self.memories[memory_id]
                                 sim_val = sim.item() if hasattr(sim, "item") else float(sim)
-                                if sim_val > 0.35:
+                                if sim_val > 0.20:  # 降低阈值，更多 DG 匹配进入候选
                                     candidates.append(memory)
                                     recall_trace.append({
                                         "memory_id": memory_id,
