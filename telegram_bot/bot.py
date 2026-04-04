@@ -746,6 +746,7 @@ class BrainAIBot:
             
             full_response = ""
             monologue = ""
+            safe_monologue = ""
             last_update_time = time.time()
             last_sent_text = ""
             update_interval = 1.2
