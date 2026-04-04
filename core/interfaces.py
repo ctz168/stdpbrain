@@ -1610,14 +1610,22 @@ class BrainAIInterface:
         修复要点：
         - Qwen3.5 有内置思维链，过于复杂的系统提示会严重干扰推理
         - 移除所有 [标签] 和过度指令，让模型专注于用户问题
+        - 记忆注入优化：区分记忆查询和普通对话，记忆查询时将记忆注入用户消息
         - 仅保留核心身份和必要记忆上下文
         """
+        # ========== 检测是否为记忆查询类问题 ==========
+        is_memory_query = any(kw in user_input for kw in [
+            "记得", "记住", "我叫什么", "我的名字", "来自", "还记",
+            "我的电话", "我的手机", "我的邮箱", "我的职业", "我的年龄",
+            "我之前说", "我刚说", "我告诉过你"
+        ])
+        
         # ========== 极简系统提示 ==========
         system_parts = ["你是一个有独立思维的AI助手。你可以自然地思考和表达，不需要总是给出完美答案。用中文回答。"]
 
         # 仅在有实际记忆时才注入（避免空记忆干扰）
         if memory_context and len(memory_context.strip()) > 0:
-            mem_brief = memory_context.strip()[:200]
+            mem_brief = memory_context.strip()[:300]  # 从200增加到300，保留更多记忆细节
             system_parts.append(f"相关记忆：{mem_brief}")
 
         system_content = "\n".join(system_parts)
@@ -1629,10 +1637,16 @@ class BrainAIInterface:
             for msg in history[-4:]:
                 messages.append(msg)
 
-        # ========== 用户消息：纯粹原始输入，不注入任何额外内容 ==========
-        # 关键：Qwen3.5 对 prompt 中的标签和额外内容非常敏感
-        # 任何 [内部参考] 等标签都会被模型学到并在回复中复现
-        messages.append({"role": "user", "content": user_input})
+        # ========== 用户消息：根据问题类型决定是否注入记忆 ==========
+        if is_memory_query and memory_context and len(memory_context.strip()) > 0:
+            # 记忆查询：将记忆信息直接放在用户消息中（更靠近模型注意力焦点）
+            # 使用自然语言而非标签，避免模型学到标签格式
+            mem_info = memory_context.strip()[:400]
+            enhanced_input = f"以下是之前交流中提到的相关信息：\n{mem_info}\n\n基于以上信息，请回答：{user_input}"
+            messages.append({"role": "user", "content": enhanced_input})
+        else:
+            # 普通对话：纯粹原始输入，不注入任何额外内容
+            messages.append({"role": "user", "content": user_input})
 
         # 使用 Qwen3.5 原生 chat template
         try:
