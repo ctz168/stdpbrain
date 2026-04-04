@@ -114,6 +114,10 @@ class FullLinkSTDP:
         self._current_token_tensor = torch.zeros(1, dtype=torch.long, device=self.device)
         # 预分配 post_times 张量
         self._post_times_buffer = torch.zeros(100, dtype=torch.float32, device=self.device)
+        # BUG FIX: _contributions_buffer 必须在 __init__ 中同步初始化。
+        # 原代码只在 n_ctx > 100 时才创建此缓冲区，导致首次调用
+        # update_attention_layer 且 context ≤100 tokens 时触发 AttributeError。
+        self._contributions_buffer = torch.zeros(100, dtype=torch.float32, device=self.device)
     
     def record_activation(self, layer_name: str, id: Any, timestamp: float):
         """记录激活时间"""
@@ -321,18 +325,24 @@ class FullLinkSTDP:
         # 对所有相关组件应用 STDP 更新
         for name, module in model_components.items():
             if hasattr(module, 'apply_stdp_to_all'):
-                # 根据得分生成梯度方向
+                # BUG FIX: 原代码使用 torch.randn_like() 生成随机噪声梯度，
+                # 这不是 STDP 更新而是随机扰动，会逐渐破坏权重中的有意义模式。
+                # 改为使用 normalized_score（归一化后的评判分数）作为有方向的
+                # 梯度缩放因子，与 FFN STDP 更新逻辑一致：
+                # 正分 → LTP（增强当前权重模式）
+                # 负分 → LTD（削弱当前权重模式）
                 grad_scale = normalized_score * 0.01
                 grad_dict = {}
                 
-                # 根据模块类型生成特异性梯度
+                # 根据模块类型生成特异性梯度（使用均匀梯度而非随机噪声）
                 if hasattr(module, 'dynamic_weight'):
-                    # 使用结构化梯度而非均匀梯度
-                    base_grad = torch.randn_like(module.dynamic_weight) * 0.5
+                    # 使用 uniform 填充而非 randn：正分时所有权重同向增强，
+                    # 负分时所有权重同向削弱，保持 STDP 的"贡献度越高权重越强"语义
+                    base_grad = torch.ones_like(module.dynamic_weight) * 0.5
                     grad_dict['default'] = base_grad * grad_scale
                 elif hasattr(module, 'weight'):
                     # 对标准权重层应用 STDP
-                    grad_dict['weight'] = torch.randn_like(module.weight) * grad_scale * 0.01
+                    grad_dict['weight'] = torch.ones_like(module.weight) * grad_scale * 0.01
                 
                 if grad_dict:
                     module.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
@@ -497,7 +507,14 @@ class STDPEngine:
             
         # ========== 5. [动态化] 元学习闭环 (意识调度参数 STDP 更新) ==========
         if 'evaluation_score' in outputs:
-            reward = (outputs['evaluation_score'] / 40.0) * 2 - 1  # 归一化到 -1~1
+            # BUG FIX: 原代码使用 (evaluation_score / 40.0) * 2 - 1 归一化，
+            # 但 _apply_real_stdp_update() 传入的 evaluation_score = reward * 100，
+            # 其中 reward 是 0-1 范围的置信度，所以 evaluation_score 范围为 0-100。
+            # 用 /40 会导致 reward 超出 [-1, 1] 范围（如 reward=0.8 时算出 3.0）。
+            # 改为使用 /50.0 使满分归一化到 1.0，再映射到 [-1, 1]：
+            raw_score = outputs['evaluation_score']
+            reward = (raw_score / 50.0) * 2 - 1  # 0→-1, 25→0, 50→1，clamp 防溢出
+            reward = max(-1.0, min(1.0, reward))
             # BUG FIX: 将 inner_thought_engine、global_workspace、goal_system
             # 注入到 model_components，使 apply_meta_learning 中的相关分支生效。
             # 原代码 model_components 只包含 attention/ffn/hippocampus，
