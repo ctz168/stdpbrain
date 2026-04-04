@@ -33,3 +33,4 @@ Thumbs.db
 # Cache
 .cache/
 *.pyc
+test_memory_state.pt
