@@ -452,7 +452,7 @@ class BrainAIInterface:
             if recalled_memories:
                 mem_feats = []
                 for m in recalled_memories[:2]:
-                    dg_feat = getattr(m, 'dg_features', None)
+                    dg_feat = m.get('dg_features', None)
                     if dg_feat is not None:
                         if isinstance(dg_feat, list):
                             dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
@@ -501,7 +501,7 @@ class BrainAIInterface:
     
             mem_features = []
             for mem in recalled_memories[:2]:
-                dg_feat = getattr(mem, 'dg_features', None)
+                dg_feat = mem.get('dg_features', None)
                 if dg_feat is not None:
                     if isinstance(dg_feat, list):
                         dg_feat = torch.tensor(dg_feat, dtype=torch.float32)
@@ -1437,17 +1437,17 @@ class BrainAIInterface:
             if recalled_memories:
                 memory_parts = []
                 for m in recalled_memories[:3]:
-                    sp = getattr(m, 'semantic_pointer', '')
+                    sp = m.get('semantic_pointer', '')
                     if sp:
                         memory_parts.append(sp[:150])
-                    elif hasattr(m, 'content') and m.content:
-                        memory_parts.append(m.content[:50])
+                    elif 'content' in m and m.get('content'):
+                        memory_parts.append(m['content'][:50])
                 if memory_parts:
                     memory_context = " | ".join(memory_parts)
         except Exception as e:
             logger.debug(f"记忆召回失败: {e}")
         
-        if is_identity_question and not any("身份" in getattr(m, 'semantic_pointer', '') or "创造" in getattr(m, 'semantic_pointer', '') for m in recalled_memories):
+        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
             memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
         
         return memory_context, recalled_memories
@@ -1491,10 +1491,10 @@ class BrainAIInterface:
             if recalled_memories:
                 memory_parts = []
                 for m in recalled_memories[:3]:
-                    # EpisodicMemory 是 dataclass，不是 dict，需要用属性访问
-                    content = getattr(m, 'content', '') or ''
-                    pointer = getattr(m, 'semantic_pointer', '') or ''
-                    is_core = getattr(m, 'is_core', False)
+                    # recalled_memories from hippocampus.recall() are dicts, use dict access
+                    content = m.get('content', '') or ''
+                    pointer = m.get('semantic_pointer', '') or ''
+                    is_core = m.get('is_core', False)
                     
                     if is_core and content:
                         facts = []
@@ -1537,7 +1537,7 @@ class BrainAIInterface:
         except Exception as e:
             logger.debug(f"记忆召回失败: {e}")
         
-        if is_identity_question and not any("身份" in getattr(m, 'semantic_pointer', '') or "创造" in getattr(m, 'semantic_pointer', '') for m in recalled_memories):
+        if is_identity_question and not any("身份" in m.get('semantic_pointer', '') or "创造" in m.get('semantic_pointer', '') for m in recalled_memories):
             memory_context = "我是脑智AI助手，创造者朱东山博士（北大经济学博士，深圳人） | " + memory_context
         
         # 独白生成（优化：CPU环境下大幅减少token数量）
