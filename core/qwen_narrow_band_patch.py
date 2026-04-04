@@ -137,6 +137,7 @@ class SparseAttentionCompressor:
     ) -> torch.Tensor:
         """
         对指定位置索引应用RoPE（仅用于新构造的anchor keys）。
+        修复: 支持 partial_rotary_factor，仅对 rotary_dim 维度应用旋转。
 
         Args:
             key_states: [batch, num_heads, seq_len, head_dim]
@@ -146,7 +147,7 @@ class SparseAttentionCompressor:
         if key_states.shape[2] == 0:
             return key_states
 
-        # 统一取出 [seq_len, head_dim]
+        # 统一取出 [max_seq, rotary_dim]
         if cos.dim() == 3:
             base_cos = cos[0]
             base_sin = sin[0]
@@ -167,7 +168,13 @@ class SparseAttentionCompressor:
             x2 = x[..., x.shape[-1] // 2 :]
             return torch.cat((-x2, x1), dim=-1)
 
-        return key_states * cos_pos + rotate_half(key_states) * sin_pos
+        # 修复: 仅对 rotary_dim 维度应用旋转，剩余维度原样保留
+        # 匹配 Qwen3.5 原版 apply_rotary_pos_emb 的 partial_rotary_factor 逻辑
+        rotary_dim = cos_pos.shape[-1]
+        k_rot = key_states[..., :rotary_dim]
+        k_pass = key_states[..., rotary_dim:]
+        k_rot_embedded = k_rot * cos_pos + rotate_half(k_rot) * sin_pos
+        return torch.cat([k_rot_embedded, k_pass], dim=-1)
 
     @staticmethod
     def compress_kv(
@@ -289,17 +296,17 @@ class SparseAttentionCompressor:
                 anchor_v = feat[:, kv_size:kv_size*2].view(1, num_heads, 1, head_dim).expand(batch_size, -1, -1, -1) if feat.shape[-1] >= kv_size * 2 else anchor_k.clone()
             
             # Add to lists
-            if anchor_k is not None:
+            # 修复: 只有 K 和 V 都存在时才添加，避免 torch.cat 维度不匹配
+            if anchor_k is not None and anchor_v is not None:
                 anchor_keys_list.append(anchor_k)
-            if anchor_v is not None:
                 anchor_values_list.append(anchor_v)
         
         # ========== 3. Combine anchors and window ==========
         if anchor_keys_list:
-            # Apply anchor strength
+            # Apply anchor strength 仅到 Key（影响注意力权重），不缩放 Value（保留语义内容）
             strength = _memory_anchor_store.anchor_strength
             anchor_keys_tensor = torch.cat(anchor_keys_list, dim=2) * strength
-            anchor_values_tensor = torch.cat(anchor_values_list, dim=2) * strength
+            anchor_values_tensor = torch.cat(anchor_values_list, dim=2)
             
             num_anchors = anchor_keys_tensor.shape[2]
             num_window = window_keys.shape[2]
@@ -381,13 +388,22 @@ class SparseAttentionCompressor:
                 # 序列短，直接复制causal mask
                 new_mask[:, :, :, num_anchors:] = attention_mask
             else:
-                # 序列长，需要调整causal mask
-                # Query只能看到之前的token
-                
-                # 获取原始causal mask的最后window_size列
-                # attention_mask shape: [batch, 1, query_len, original_seq_len]
-                window_mask = attention_mask[:, :, :, -window_size:]  # [batch, 1, query_len, window_size]
-                new_mask[:, :, :, num_anchors:] = window_mask
+                # 序列长，需要重建正确的causal mask
+                # window 起始于 original_seq_len - window_size
+                window_start = original_seq_len - window_size
+
+                # 构建 causal mask: query i 只能 attend 到 KV j (j <= i)
+                # compressed KV: [anchors... | window_start, window_start+1, ..., original_seq_len-1]
+                # query 位置范围: [0, 1, ..., query_len-1]
+                # causal 条件: j <= i  (其中 j 是在原始序列中的绝对位置)
+                query_indices = torch.arange(query_len, device=device)
+                window_indices = torch.arange(window_start, original_seq_len, device=device)
+                # causal_mask[q, w] = 1 if window_indices[w] <= query_indices[q] else 0
+                causal = (window_indices.unsqueeze(0) <= query_indices.unsqueeze(1)).float()
+                # 转换为 additive mask: 0 = can attend, -inf = blocked
+                causal_mask = (1.0 - causal) * torch.finfo(dtype).min
+                causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, query_len, window_size]
+                new_mask[:, :, :, num_anchors:] = causal_mask
             
             # ========== CPU优化: 缓存mask ==========
             SparseAttentionCompressor._mask_cache = new_mask
@@ -456,7 +472,6 @@ def patch_qwen_attention():
             position_embeddings: tuple,
             attention_mask: torch.Tensor | None,
             past_key_values=None,
-            cache_position: torch.LongTensor | None = None,
             **kwargs
         ):
             """
@@ -485,8 +500,9 @@ def patch_qwen_attention():
             query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
             if past_key_values is not None:
-                cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+                # 修复: Qwen3.5 Cache.update 签名为 (key, value, layer_idx, *args, **kwargs)
+                # 不传额外的 cache_kwargs dict，避免参数错误
+                key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
 
             # ========== True sparse attention: KV compression ==========
             original_seq_len = key_states.shape[2]
@@ -595,7 +611,9 @@ def patch_qwen_attention():
 
 # Helper functions from transformers
 def apply_rotary_pos_emb(q, k, cos, sin):
-    """Apply rotary position embeddings (supports Qwen3.5 and Qwen2)"""
+    """Apply rotary position embeddings (supports Qwen3.5 and Qwen2)
+    修复: Fallback 支持 partial_rotary_factor (rotary_dim < head_dim)
+    """
     for module_path in [
         'transformers.models.qwen3_5.modeling_qwen3_5',
         'transformers.models.qwen2.modeling_qwen2',
@@ -605,13 +623,21 @@ def apply_rotary_pos_emb(q, k, cos, sin):
             return mod.apply_rotary_pos_emb(q, k, cos, sin)
         except (ImportError, AttributeError):
             continue
-    # Fallback: manual implementation
+    # Fallback: manual implementation with partial rotary support
     def rotate_half(x):
         x1 = x[..., : x.shape[-1] // 2]
         x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    # 修复: 仅对 rotary_dim 维度应用旋转，匹配 Qwen3.5 原版行为
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    rotary_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
+    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
+    q_embed = torch.cat([q_embed, q_pass], dim=-1)
+    k_embed = torch.cat([k_embed, k_pass], dim=-1)
     return q_embed, k_embed
 
 
