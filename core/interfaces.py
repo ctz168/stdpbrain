@@ -127,7 +127,9 @@ class BrainAIInterface:
         self.hippocampus_input_dim = self.model_hidden_size
         self.feature_adapter = nn.Linear(self.model_hidden_size, self.hippocampus_input_dim, bias=False)
         with torch.no_grad():
-            self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size) * 0.1
+            # 修复: 初始缩放因子从0.1提升到1.0（identity映射）
+            # 0.1x导致所有特征信号被压缩到1/10，严重影响召回质量和DG模式分离
+            self.feature_adapter.weight.data = torch.eye(self.hippocampus_input_dim, self.model_hidden_size)
         self.feature_adapter.to(self.device)
         
         # 自动匹配模型的数据类型 (FP16/FP32)
