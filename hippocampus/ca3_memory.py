@@ -48,6 +48,7 @@ class EpisodicMemory:
     key_entities: str = ""            # 关键实体（人名/地名/数字，管道符分隔）
     emotion_tag: str = "中性"          # 情感标签（正面/负面/中性）
     semantic_embedding: Optional[torch.Tensor] = None  # 语义 embedding 向量（用于语义召回）
+    user_input: str = ""                # 原始用户输入（供embedding生成和匹配使用）
     tier: MemoryTier = MemoryTier.SHORT_TERM  # 记忆层级（短期/中期/长期）
     recall_count: int = 0             # 被成功召回的次数
     consecutive_misses: int = 0        # 连续未被召回的次数（用于降级判定）
@@ -67,6 +68,7 @@ class EpisodicMemory:
             'semantic_summary': self.semantic_summary,
             'key_entities': self.key_entities,
             'emotion_tag': self.emotion_tag,
+            'user_input': self.user_input,
             'tier': int(self.tier),
             'recall_count': self.recall_count,
             'consecutive_misses': self.consecutive_misses,
@@ -171,30 +173,55 @@ class CA3EpisodicMemory(nn.Module):
                 logger.debug(f"[CA3] 语义摘要生成失败: {e}")
         
         # 0.5 生成语义 embedding（如果语义引擎可用，带重试逻辑）
+        # COUPLING FIX: embedding 优先从 content（原始用户输入全文）生成，
+        # 同时也尝试从 key_entities 生成，取两者中更"丰富"的一个。
+        # 之前只从 key_entities 生成，导致存储embedding和召回embedding语义空间不匹配：
+        # 存储："name:小明"，召回："你还记得我叫什么名字吗？" → 余弦相似度极低
         semantic_embedding = None
+        content_embedding = None  # 从原始内容生成的embedding
+        entity_embedding = None   # 从结构化实体生成的embedding
+        
         if self.semantic_engine:
-            embed_text = key_entities if key_entities else (semantic_summary if semantic_summary else content)
+            # 路径A: 从原始用户输入/内容生成 embedding（与召回时query的语义空间一致）
+            content_source = user_input if user_input else content
+            if content_source:
+                try:
+                    content_embedding = self.semantic_engine.get_text_embedding(content_source[:100])
+                except Exception as e:
+                    logger.debug(f"[CA3] 内容embedding生成失败: {e}")
+            
+            # 路径B: 从结构化实体/语义摘要生成 embedding（补充语义信号）
+            embed_text = key_entities if key_entities else (semantic_summary if semantic_summary else "")
             if embed_text:
-                # Fix 2: Retry up to 3 times with progressively shorter text
-                truncation_lengths = [None, 100, 50, 20]
-                for trunc_len in truncation_lengths:
-                    try:
-                        _text = embed_text[:trunc_len] if trunc_len else embed_text
-                        semantic_embedding = self.semantic_engine.get_text_embedding(_text)
-                        if semantic_embedding is not None:
-                            break
-                    except Exception as e:
-                        logger.debug(f"[CA3] 语义embedding生成失败(trunc={trunc_len}): {e}")
-
-                # Fix 2: Fallback to hash-based manual embedding placeholder
-                if semantic_embedding is None:
-                    logger.warning(f"[CA3] 所有embedding重试失败，使用hash占位向量 (is_core={is_core})")
-                    # Build a deterministic hash-based vector as fallback
-                    _text_for_hash = embed_text[:200]
-                    _hash = hash(_text_for_hash)
+                try:
+                    entity_embedding = self.semantic_engine.get_text_embedding(embed_text[:100])
+                except Exception as e:
+                    logger.debug(f"[CA3] 实体embedding生成失败: {e}")
+            
+            # 策略: 优先使用 content_embedding（与召回query在同一语义空间）
+            # 如果 content_embedding 不可用，回退到 entity_embedding
+            semantic_embedding = content_embedding if content_embedding is not None else entity_embedding
+            
+            # COUPLING FIX: 对于核心记忆，额外存储 entity_embedding 作为辅助
+            # 在 recall 时可以同时匹配两种embedding
+            if is_core and entity_embedding is not None and content_embedding is not None:
+                # 将两者加权融合（content 0.6 + entity 0.4），保留两种语义信号
+                try:
+                    min_dim = min(content_embedding.shape[-1], entity_embedding.shape[-1])
+                    fused = 0.6 * content_embedding[..., :min_dim] + 0.4 * entity_embedding[..., :min_dim]
+                    fused = torch.nn.functional.normalize(fused, p=2, dim=-1)
+                    semantic_embedding = fused
+                except Exception:
+                    pass  # 回退到 content_embedding
+            
+            # 最终 fallback: hash占位向量
+            if semantic_embedding is None:
+                embed_text_fallback = (user_input or content or key_entities or "")[:200]
+                if embed_text_fallback:
+                    logger.warning(f"[CA3] 所有embedding生成失败，使用hash占位向量 (is_core={is_core})")
+                    _hash = hash(embed_text_fallback)
                     embed_dim = self.feature_dim
                     manual_vec = [(((_hash * (i + 1) * 2654435761) >> 16) % 10000) / 10000.0 for i in range(embed_dim)]
-                    # Normalize to unit vector
                     _norm = sum(v * v for v in manual_vec) ** 0.5
                     if _norm > 0:
                         manual_vec = [v / _norm for v in manual_vec]
@@ -218,6 +245,7 @@ class CA3EpisodicMemory(nn.Module):
             key_entities=key_entities,
             emotion_tag=emotion_tag,
             semantic_embedding=semantic_embedding,
+            user_input=user_input,
             tier=MemoryTier.SHORT_TERM,
             recall_count=0,
             consecutive_misses=0,
@@ -517,11 +545,15 @@ class CA3EpisodicMemory(nn.Module):
     
     def _embedding_recall(self, query_text: str, topk: int = 6, return_all: bool = False) -> List[Dict]:
         """
-        使用 Embedding 做语义召回（核心优化）
+        使用 Embedding 做语义召回（核心优化 - 多路查询扩展）
         
         用模型自身的 embedding 层将查询和记忆文本编码为向量，
         通过余弦相似度找到语义最相关的记忆。
-        能够理解"你记得我的名字吗"和"我叫张三"之间的语义关联。
+        
+        COUPLING FIX: 使用多查询扩展策略
+        - 原始query embedding
+        - query意图关键词转换后的embedding（如"你记得我叫什么" → "名字 姓名 叫"）
+        - 取每个记忆在所有查询中的最高相似度
         
         Args:
             return_all: 当为 True 时，跳过层级阈值过滤，返回所有候选及其相似度。
@@ -530,9 +562,11 @@ class CA3EpisodicMemory(nn.Module):
             return []
         
         # Fix 3: Lazy embedding generation for memories with None semantic_embedding
+        # COUPLING FIX: 惰性生成时也从 content（原始用户输入）生成
         for mid, mem in list(self.memories.items()):
             if mem.semantic_embedding is None and self.semantic_engine is not None:
-                embed_source = mem.key_entities or mem.semantic_summary or mem.content or mem.semantic_pointer
+                # 优先从 content（原始用户输入）生成，而非 key_entities
+                embed_source = mem.content or mem.user_input or mem.semantic_pointer or mem.key_entities or mem.semantic_summary
                 if embed_source:
                     try:
                         generated_emb = self.semantic_engine.get_text_embedding(embed_source[:100])
@@ -550,18 +584,35 @@ class CA3EpisodicMemory(nn.Module):
         if not valid_memories:
             return []
         
-        query_emb = self.semantic_engine.get_text_embedding(query_text)
-        if query_emb is None:
-            return []
+        # COUPLING FIX: 多查询扩展 - 生成多个query变体，取每个记忆的最高分
+        # 原始query
+        query_variants = [query_text]
         
-        # 批量计算相似度
+        # 意图关键词转换：从查询中提取核心意图，生成简化的query
+        intent_keywords = self._extract_recall_keywords(query_text)
+        if intent_keywords:
+            # 取前5个最有意义的关键词组合成简化query
+            meaningful_keywords = [kw for kw in intent_keywords if len(kw) >= 2][:5]
+            if meaningful_keywords:
+                simplified_query = " ".join(meaningful_keywords)
+                if simplified_query != query_text:
+                    query_variants.append(simplified_query)
+        
+        # 计算每个记忆在所有query变体中的最高相似度
         memory_embs = [mem.semantic_embedding for _, mem in valid_memories]
         memory_ids = [mid for mid, _ in valid_memories]
         
-        similarities = self.semantic_engine.batch_compute_similarities(query_text, memory_embs)
+        # 初始化为0
+        best_similarities = [0.0] * len(memory_ids)
+        
+        for variant in query_variants:
+            variant_sims = self.semantic_engine.batch_compute_similarities(variant, memory_embs)
+            for i, sim in enumerate(variant_sims):
+                if sim > best_similarities[i]:
+                    best_similarities[i] = sim
         
         results = []
-        for i, (mid, sim) in enumerate(zip(memory_ids, similarities)):
+        for i, (mid, sim) in enumerate(zip(memory_ids, best_similarities)):
             mem = self.memories[mid]
             tier = getattr(mem, 'tier', MemoryTier.SHORT_TERM)
             threshold = self.consolidation_manager.get_recall_threshold(tier)
@@ -569,6 +620,10 @@ class CA3EpisodicMemory(nn.Module):
             # 长期记忆的 embedding 匹配给额外加分
             tier_bonus = int(tier) * 0.05
             adjusted_sim = sim + tier_bonus
+            
+            # COUPLING FIX: 核心记忆额外加分（确保个人信息优先被召回）
+            core_bonus = 0.1 if getattr(mem, 'is_core', False) else 0.0
+            adjusted_sim += core_bonus
             
             # Fix 1: When return_all=True, skip the tier threshold filtering
             if return_all or adjusted_sim > threshold:
@@ -648,6 +703,7 @@ class CA3EpisodicMemory(nn.Module):
                 semantic_summary=mem_dict.get('semantic_summary', ''),
                 key_entities=mem_dict.get('key_entities', ''),
                 emotion_tag=mem_dict.get('emotion_tag', '中性'),
+                user_input=mem_dict.get('user_input', ''),
                 semantic_embedding=semantic_embedding,
                 key_features=key_features,
                 value_features=value_features,

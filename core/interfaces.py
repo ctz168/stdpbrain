@@ -1051,7 +1051,12 @@ class BrainAIInterface:
                     semantic_pointer = clean_content[:80] if len(clean_content) > 30 else monologue
             
             # 存储记忆，包含 KV 特征 + 用户输入和AI回复（供语义引擎生成摘要）
-            ctx = {'content': monologue, 'semantic_pointer': semantic_pointer, 'is_core': is_core}
+            # COUPLING FIX: content 字段必须包含原始用户输入（关键词匹配的兜底来源）
+            # 如果 user_input 存在，将其放在 content 前面，确保关键词匹配能命中
+            effective_content = monologue
+            if user_input and user_input not in monologue:
+                effective_content = f"{user_input} | {monologue}"
+            ctx = {'content': effective_content, 'semantic_pointer': semantic_pointer, 'is_core': is_core}
             if user_input:
                 ctx['user_input'] = user_input
             if ai_response:
@@ -1518,37 +1523,91 @@ class BrainAIInterface:
         identity_keywords = ["你是谁", "你的身份", "谁创造", "你的父亲", "朱东山", "你的使命", "你的历史"]
         is_math = any(op in user_input for op in ['+', '-', '*', '/', '='])
         is_identity_question = not is_math and any(keyword in user_input for keyword in identity_keywords)
-        is_memory_question = any(kw in user_input for kw in ["记得", "记住", "我叫什么", "我的名字", "来自", "还记"])
+        # COUPLING FIX: 扩展记忆查询关键词检测（与 _parallel_recall_and_monologue 保持一致）
+        is_memory_question = any(kw in user_input for kw in [
+            "记得", "记住", "我叫什么", "我的名字", "来自", "还记",
+            "我的电话", "我的手机", "我的邮箱", "我的职业", "我的年龄",
+            "我之前说", "我刚说", "我告诉过你", "手机号", "电话", "住哪",
+            "什么工作", "什么职业", "多大", "几岁", "生日", "爱好", "喜欢什么",
+            "哪里工作", "在哪儿", "什么颜色", "学什么", "哪个学校",
+            "知道我是", "你知道我", "你还记得我", "猜猜我是",
+            "我是什么", "我叫啥", "我的姓", "我姓",
+            "我说过", "之前提到", "刚才说", "才说",
+            "什么名字", "啥名字", "联系方式",
+            "哪个人", "哪个城市", "什么公司", "在哪上班",
+            "什么颜色", "最喜欢", "爱吃", "爱玩",
+            "你记得我", "还记得吗", "忘了没",
+            "我有没有告诉", "我说了什么"
+        ])
         
         memory_context = ""
         recalled_memories = []
         try:
-            inputs = self.model.tokenize_safe(user_input[:50], return_tensors="pt").to(self.device)
-            input_ids = inputs.input_ids
+            # COUPLING FIX: 使用统一的 _extract_query_features（深层hidden states + 加权mean pooling）
+            # 之前这里使用简单的 input_embedding mean pooling，与存储路径的深层特征不一致
+            # 导致 DG 特征空间完全错配，chat_stream 模式下召回率极低
+            query_features = self._extract_query_features(user_input[:50])
             
-            with torch.no_grad():
-                embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
-            query_features = embeddings.mean(dim=1).squeeze(0)
-            
-            # ===== BUG FIX: 召回时也必须经过feature_adapter =====
-            # 存储时特征经过feature_adapter变换后才送入EC编码器
-            # 召回时如果不经过同样的变换，特征空间完全不匹配导致召回率极低
-            if query_features.shape[0] == self.model_hidden_size:
+            # 通过 feature_adapter 适配维度（与存储路径完全一致）
+            if query_features is not None and query_features.shape[0] == self.model_hidden_size:
                 with torch.no_grad():
+                    adapter_dtype = next(self.feature_adapter.parameters()).dtype
+                    query_features = query_features.to(dtype=adapter_dtype)
                     query_features = self.feature_adapter(query_features.unsqueeze(0)).squeeze(0)
             
-            actual_topk = 5 if is_memory_question else topk
+            actual_topk = 10 if is_memory_question else topk
             query_semantic = user_input
             recalled_memories = self.hippocampus.recall(query_features, topk=actual_topk, query_semantic=query_semantic)
             
+            # COUPLING FIX: 核心记忆优先排序（与 _parallel_recall_and_monologue 保持一致）
+            core_memories = [m for m in recalled_memories if m.get('is_core', False)]
+            non_core_memories = [m for m in recalled_memories if not m.get('is_core', False)]
+            recalled_memories = core_memories + non_core_memories
+            
+            # COUPLING FIX: 从核心记忆中提取结构化实体事实（与 _parallel_recall_and_monologue 一致）
             if recalled_memories:
                 memory_parts = []
-                for m in recalled_memories[:3]:
-                    sp = m.get('semantic_pointer', '')
-                    if sp:
-                        memory_parts.append(sp[:150])
-                    elif 'content' in m and m.get('content'):
-                        memory_parts.append(m['content'][:50])
+                all_core_facts = []
+                import re as _re
+                for m in recalled_memories[:5]:
+                    content = m.get('content', '') or ''
+                    pointer = m.get('semantic_pointer', '') or ''
+                    is_core = m.get('is_core', False)
+                    key_entities = m.get('key_entities', '') or ''
+                    
+                    if is_core:
+                        search_text = pointer if pointer else content
+                        entity_patterns = _re.findall(
+                            r'(name|age|phone|email|location|job|hobby|school|company|money|date)[:：]([^|$]+)',
+                            search_text
+                        )
+                        cn_patterns = _re.findall(
+                            r'(用户名字|地点|职业|年龄|爱好|联系方式|电话|手机|邮箱|邮件|地址|金额|日期|关系|学校|公司)[:：]([^|$]+)',
+                            search_text
+                        )
+                        label_map = {
+                            'name': '名字', 'age': '年龄', 'phone': '电话', 'email': '邮箱',
+                            'location': '城市', 'job': '职业', 'hobby': '爱好', 'school': '学校',
+                            'company': '公司', '用户名字': '名字', '地点': '城市', '联系方式': '电话',
+                        }
+                        all_matched = entity_patterns + cn_patterns
+                        for label, value in all_matched:
+                            value = value.strip()[:30]
+                            if value:
+                                cn_label = label_map.get(label, label)
+                                all_core_facts.append(f"{cn_label}是{value}")
+                        if not all_core_facts and pointer:
+                            all_core_facts.append(pointer.strip()[:120])
+                    else:
+                        sp = m.get('semantic_pointer', '')
+                        if sp:
+                            memory_parts.append(sp[:150])
+                        elif content:
+                            memory_parts.append(content[:50])
+                
+                if all_core_facts:
+                    memory_parts.insert(0, "已知的用户信息：" + "，".join(all_core_facts))
+                
                 if memory_parts:
                     memory_context = " | ".join(memory_parts)
         except Exception as e:
@@ -1794,11 +1853,21 @@ class BrainAIInterface:
 
         # ========== 用户消息：记忆查询时直接将记忆事实注入用户消息 ==========
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
-            # COUPLING FIX: 直接使用 memory_context（已包含 "名字是小明" 格式的事实）
-            # 不再做复杂的正则匹配，减少出错概率
+            # COUPLING FIX: 强化记忆注入格式，使用更明确的指令格式
+            # 0.8B 小模型需要更直接、更短、更明确的指令
             mem_info = memory_context.strip()[:500]
-            enhanced_input = f"[已知信息]{mem_info}\n[用户问题]{user_input}\n请根据已知信息直接回答用户问题。"
+            # 直接在用户消息中给出答案提示，然后让模型自然表达
+            # 格式: 先给事实，再问问题，最后给明确指令
+            enhanced_input = f"记住以下事实：{mem_info}\n\n现在用户问：{user_input}\n\n请直接根据记住的事实回答。如果你记住了相关信息，直接说出答案，不要说'我不知道'或'你没有告诉过我'。"
             messages.append({"role": "user", "content": enhanced_input})
+        elif memory_context and len(memory_context.strip()) > 0:
+            # COUPLING FIX: 非记忆查询但也召回了记忆时，轻量注入（不打断对话流）
+            # 仅在记忆包含核心事实时注入
+            if '已知的用户信息' in memory_context:
+                mem_info = memory_context.strip()[:300]
+                messages.append({"role": "user", "content": user_input + f"\n[参考信息]{mem_info}"})
+            else:
+                messages.append({"role": "user", "content": user_input})
         else:
             # 普通对话：纯粹原始输入
             messages.append({"role": "user", "content": user_input})
