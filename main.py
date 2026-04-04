@@ -35,12 +35,12 @@ try:
     from transformers.utils.hub import cached_file as _orig_cached_file
     from transformers.utils.hub import cached_files as _orig_cached_files
 
-    def _patched_cached_file(path_or_repo_id, filename, cache_dir=None, **kwargs):
+    def _patched_cached_file(path_or_repo_id, filename, **kwargs):
         if _is_local_path(path_or_repo_id):
             local_path = _os.path.join(path_or_repo_id, filename)
             if _os.path.isfile(local_path):
                 return local_path
-        return _orig_cached_file(path_or_repo_id, filename, cache_dir=cache_dir, **kwargs)
+        return _orig_cached_file(path_or_repo_id, filename, **kwargs)
 
     def _patched_cached_files(path_or_repo_id, filenames, cache_dir=None, **kwargs):
         if _is_local_path(path_or_repo_id):
