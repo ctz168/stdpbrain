@@ -77,6 +77,12 @@ class BrainAIBot:
         self.subconscious_state: Dict[str, Any] = {}  # 潜意识状态
         self.last_subconscious_update: float = 0  # 上次潜意识更新时间
         
+        # 防串线: 按 chat_id 锁定，防止不同聊天交叉
+        self._chat_locks: Dict[int, asyncio.Lock] = {}
+        # 防 Flood control: 全局发送节流
+        self._last_edit_time: float = 0.0
+        self._min_edit_interval: float = 1.5  # Telegram 限制 ~30次/分钟 ≈ 2秒/次
+        
         self._init_stream_handler()
         
         # 注册主动消息回调
@@ -594,84 +600,118 @@ class BrainAIBot:
         except Exception as e:
             await update.message.reply_text(f"❌ 获取记忆详情失败：{e}")
     
+    def _get_chat_lock(self, chat_id: int) -> asyncio.Lock:
+        """获取或创建按 chat_id 的锁，防止同聊天内并发串线"""
+        if chat_id not in self._chat_locks:
+            self._chat_locks[chat_id] = asyncio.Lock()
+        return self._chat_locks[chat_id]
+    
+    async def _safe_edit_message(self, message, text: str, parse_mode=None):
+        """安全编辑消息，自带 Flood control 退避"""
+        now = time.time()
+        elapsed = now - self._last_edit_time
+        if elapsed < self._min_edit_interval:
+            await asyncio.sleep(self._min_edit_interval - elapsed + 0.1)
+        try:
+            await message.edit_text(text=text, parse_mode=parse_mode)
+            self._last_edit_time = time.time()
+            return True
+        except Exception as e:
+            if "Flood control" in str(e) or "flood" in str(e).lower():
+                # 解析 retry_after，默认退避3秒
+                retry_after = 3.0
+                if hasattr(e, 'parameters') and e.parameters:
+                    retry_after = e.parameters.get('retry_after', 3.0)
+                logger.warning(f"[Flood Control] 退避 {retry_after:.1f}s")
+                await asyncio.sleep(retry_after)
+                self._last_edit_time = time.time()
+            else:
+                logger.debug(f"[Edit] 非flood错误: {e}")
+            return False
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
         user_message = update.message.text
         
-        self.last_active_chat_id = chat_id
-        
-        # 设置用户交互状态（暂停后台思考）
-        self.is_user_interacting = True
-        
-        if not user_message:
-            self.is_user_interacting = False
+        # 按 chat_id 加锁，防止同一聊天内消息并发处理导致串线
+        lock = self._get_chat_lock(chat_id)
+        if lock.locked():
+            # 上一条消息还在处理中，跳过（避免串线）
+            logger.warning(f"[串线防护] chat_id={chat_id} 上条消息仍在处理，忽略新消息")
             return
         
-        logger.info(f"收到用户 {user_id} 消息：{user_message[:50]}...")
-        
-        # ========== 新增: 检测用户反馈 ==========
-        feedback_handler = get_feedback_handler()
-        feedback = feedback_handler.detect_feedback(user_message)
-        
-        if feedback.is_feedback:
-            logger.info(f"[用户反馈] 类型={'正面' if feedback.is_positive else '负面'}, "
-                       f"强度={feedback.intensity:.2f}, 关键词={feedback.keywords_matched}")
+        async with lock:
+            self.last_active_chat_id = chat_id
             
-            # 如果是负面反馈，标记上一个回复需要惩罚
-            if not feedback.is_positive and feedback.intensity >= 0.7:
-                logger.warning(f"[用户反馈] 检测到强负面反馈，将触发 STDP LTD 学习")
-        
-        # ========== 新增: 检测用户反馈 ==========
-        
-        if chat_id not in self.typing_simulators:
-            self.typing_simulators[chat_id] = TypingSimulator(context.bot, chat_id)
-        
-        typing = self.typing_simulators[chat_id]
-        await typing.start_typing()
-        
-        try:
-            system_prompt = "You are a helpful AI assistant. Answer the user accurately and concisely."
-            history = self.user_history.get(user_id, [])
+            # 设置用户交互状态（暂停后台思考）
+            self.is_user_interacting = True
             
-            formatted_history = ""
-            for h in history[-self.max_context_length:]:
-                role = "User" if h['role'] == 'user' else "Assistant"
-                formatted_history += f"{role}: {h['content']}\n"
-            
-            full_input = f"{system_prompt}\n\n{formatted_history}User: {user_message}\nAssistant:"
-            
-            if not self.ai:
-                response = self._get_test_response(user_message)
-                await typing.stop_typing()
-                await update.message.reply_text(response)
-                self._update_history(user_id, user_message, response)
+            if not user_message:
+                self.is_user_interacting = False
                 return
+        
+            logger.info(f"收到用户 {user_id} 消息：{user_message[:50]}...")
             
-            if self.stream_handler is None and self.ai is not None:
-                self._init_stream_handler()
+            # ========== 检测用户反馈 ==========
+            feedback_handler = get_feedback_handler()
+            feedback = feedback_handler.detect_feedback(user_message)
+            
+            if feedback.is_feedback:
+                logger.info(f"[用户反馈] 类型={'正面' if feedback.is_positive else '负面'}, "
+                           f"强度={feedback.intensity:.2f}, 关键词={feedback.keywords_matched}")
                 
-            if self.stream_handler is None:
-                response = self.ai.chat(user_message) if self.ai else self._get_test_response(user_message)
-                await typing.stop_typing()
-                await update.message.reply_text(response)
-                self._update_history(user_id, user_message, response)
-                return
-
-            await self._handle_stream_generation(
-                update=update,
-                input_text=full_input,
-                typing=typing,
-                user_id=user_id,
-                user_message=user_message,
-                feedback=feedback  # 传递反馈信息
-            )
+                if not feedback.is_positive and feedback.intensity >= 0.7:
+                    logger.warning(f"[用户反馈] 检测到强负面反馈，将触发 STDP LTD 学习")
             
-        except Exception as e:
-            logger.error(f"处理消息失败：{e}", exc_info=True)
-            await typing.stop_typing()
-            await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
-    
+            if chat_id not in self.typing_simulators:
+                self.typing_simulators[chat_id] = TypingSimulator(context.bot, chat_id)
+            
+            typing = self.typing_simulators[chat_id]
+            await typing.start_typing()
+            
+            try:
+                system_prompt = "You are a helpful AI assistant. Answer the user accurately and concisely."
+                history = self.user_history.get(user_id, [])
+                
+                formatted_history = ""
+                for h in history[-self.max_context_length:]:
+                    role = "User" if h['role'] == 'user' else "Assistant"
+                    formatted_history += f"{role}: {h['content']}\n"
+                
+                full_input = f"{system_prompt}\n\n{formatted_history}User: {user_message}\nAssistant:"
+                
+                if not self.ai:
+                    response = self._get_test_response(user_message)
+                    await typing.stop_typing()
+                    await update.message.reply_text(response)
+                    self._update_history(user_id, user_message, response)
+                    return
+                
+                if self.stream_handler is None and self.ai is not None:
+                    self._init_stream_handler()
+                    
+                if self.stream_handler is None:
+                    response = self.ai.chat(user_message) if self.ai else self._get_test_response(user_message)
+                    await typing.stop_typing()
+                    await update.message.reply_text(response)
+                    self._update_history(user_id, user_message, response)
+                    return
+
+                await self._handle_stream_generation(
+                    update=update,
+                    input_text=full_input,
+                    typing=typing,
+                    user_id=user_id,
+                    user_message=user_message,
+                    feedback=feedback
+                )
+                
+            except Exception as e:
+                logger.error(f"处理消息失败：{e}", exc_info=True)
+                await typing.stop_typing()
+                await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
+
     async def _handle_stream_generation(
         self,
         update: Update,
@@ -779,11 +819,8 @@ class BrainAIBot:
                         f"{recalled_mem_str}"
                         f"✨ *[准备回复...]*"
                     )
-                    try:
-                        await initial_message.edit_text(display_text, parse_mode='Markdown')
-                        last_sent_text = display_text
-                    except:
-                        pass
+                    await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
+                    last_sent_text = display_text
                 
                 elif event["type"] == "chunk":
                     full_response += event["content"]
@@ -806,20 +843,15 @@ class BrainAIBot:
                             f"✨ **回复:**\n{full_response}▌"
                         )
                         if display_text != last_sent_text:
-                            try:
-                                await initial_message.edit_text(display_text, parse_mode='Markdown')
+                            ok = await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
+                            if ok:
                                 last_sent_text = display_text
                                 last_update_time = current_time
-                            except Exception as e:
-                                if "Flood control exceeded" in str(e):
-                                    await asyncio.sleep(2)
-                                else:
-                                    # 回退到无 Markdown
-                                    try:
-                                        fallback = f"潜意识:\n{monologue}\n\n回复:\n{full_response}▌"
-                                        await initial_message.edit_text(fallback, parse_mode=None)
-                                    except:
-                                        pass
+                            else:
+                                # Flood control 退避后回退到无 Markdown
+                                fallback = f"潜意识:\n{monologue}\n\n回复:\n{full_response}▌"
+                                await self._safe_edit_message(initial_message, fallback, parse_mode=None)
+                                last_update_time = time.time()
                 
                 # 处理潜意识刷新事件
                 elif event["type"] == "subconscious_refresh":
@@ -969,13 +1001,13 @@ class BrainAIBot:
             
             # 重置用户交互状态（允许后台思考继续）
             self.is_user_interacting = False
-            
+        
         except Exception as e:
             logger.error(f"流式生成失败: {e}", exc_info=True)
             await typing.stop_typing()
             await update.message.reply_text(f"[FAIL] 生成失败: {str(e)}")
             self.is_user_interacting = False  # 异常时也重置
-    
+
     def _update_history(self, user_id: int, user_message: str, assistant_response: str):
         if user_id not in self.user_history:
             self.user_history[user_id] = []
