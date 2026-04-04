@@ -198,7 +198,7 @@ class MemoryConsolidationManager:
         """
         stats = {'promoted': 0, 'demoted': 0, 'decayed': 0}
         
-        for memory_id, memory in memories_dict.items():
+        for memory_id, memory in list(memories_dict.items()):
             # 1. 检查是否应该提升
             new_tier = self.should_promote(memory)
             if new_tier is not None:

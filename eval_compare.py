@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """极简评测 - stdpbrain vs base (CPU可用)"""
-import os,sys,time,json,torch,warnings
+import os,sys,time,json,torch,warnings,pathlib
 warnings.filterwarnings("ignore")
 
 # Monkey-patch
@@ -119,10 +119,12 @@ def main():
         elif not sm and not bm:
             print("\n  ⚠️ 两者都未能通过记忆测试")
 
-    os.makedirs("/home/z/my-project/download",exist_ok=True)
-    with open("/home/z/my-project/download/eval_quick.json","w",encoding="utf-8") as f:
+    out_dir = pathlib.Path(__file__).resolve().parent.parent / "download"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "eval_quick.json"
+    with open(out_path,"w",encoding="utf-8") as f:
         json.dump(R,f,ensure_ascii=False,indent=2,default=str)
-    print(f"\n  Report: /home/z/my-project/download/eval_quick.json")
+    print(f"\n  Report: {out_path}")
 
 if __name__=="__main__":
     main()

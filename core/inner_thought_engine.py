@@ -19,7 +19,6 @@ import torch.nn.functional as F
 import random
 import time
 import re
-import threading
 from typing import Generator, Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -482,7 +481,7 @@ class InnerThoughtEngine:
             self._last_urge_to_speak = self._calculate_urge(generated_text)
             
             # --- 智能上下文管理 (无限上下文模拟) ---
-            if len(self.thought_flow) > 15:
+            if len(self.thought_flow) >= 8:
                 # BUG FIX: HippocampusSystem 没有 store() 方法，正确入口是 encode()
                 # 提取最近思维作为语义锚点存入海马体
                 summary = " | ".join([t.content[:15] for t in list(self.thought_flow)[-8:]])
@@ -507,7 +506,7 @@ class InnerThoughtEngine:
                     except Exception:
                         pass  # 思维锚点存储失败不影响主流程
                 # 滚动窗口：保持活跃关注不受旧上下文干扰
-                self.thought_flow = self.thought_flow[-5:]
+                self.thought_flow = deque(list(self.thought_flow)[-5:], maxlen=10)
             
             self._record_thought(generated_text)
             return
@@ -546,13 +545,10 @@ class InnerThoughtEngine:
                     repetition_penalty=current_penalty
                 )
             
-            # 解码并输出（线程安全）
-            result = self.model.decode_safe(outputs[0], skip_special_tokens=True)
-            # 只取新生成的部分
-            if len(result) > len(thought_context):
-                new_text = result[len(thought_context):].strip()
-            else:
-                new_text = result
+            # 解码并输出（线程安全 - 使用 token 级切片避免字符长度不匹配）
+            input_len = inputs['input_ids'].shape[1]
+            new_ids = outputs[0][input_len:]
+            new_text = self.model.decode_safe(new_ids, skip_special_tokens=True)
             
             # 净化：过滤各种 hallucinated tags (如 |inner_monologue|, |output|, <Think>等)
             new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.IGNORECASE | re.DOTALL)

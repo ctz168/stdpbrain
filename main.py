@@ -150,7 +150,7 @@ def parse_args():
         "--device",
         type=str,
         default=secret_config.DEVICE or None,
-        choices=["cuda", "cpu", "mps", None],
+        choices=["cuda", "cpu", "mps"],
         help="运行设备"
     )
     
@@ -158,7 +158,7 @@ def parse_args():
         "--quantization",
         type=str,
         default=secret_config.QUANTIZATION,
-        choices=["FP16", "INT8", "INT4"],
+        choices=["FP16", "INT8", "INT4", "FP32", "AUTO"],
         help="量化类型"
     )
     
@@ -310,13 +310,14 @@ def run_stats(ai):
     
     print("\n[STDP 引擎]")
     print(f"  周期计数：{stats['stdp']['cycle_count']}")
-    print(f"  追踪激活数：{stats['stdp']['num_tracked_activations']}")
+    print(f"  追踪激活数：{stats['stdp'].get('num_tracked_activations', 'N/A')}")
     
-    print("\n[100Hz 推理引擎]")
-    print(f"  总周期数：{stats['refresh_engine']['total_cycles']}")
-    print(f"  平均周期时间：{stats['refresh_engine']['avg_cycle_time_ms']:.2f}ms")
-    print(f"  最大周期时间：{stats['refresh_engine']['max_cycle_time_ms']:.2f}ms")
-    print(f"  超时次数：{stats['refresh_engine']['overrun_count']}")
+    if 'refresh_engine' in stats:
+        print("\n[100Hz 推理引擎]")
+        print(f"  总周期数：{stats['refresh_engine']['total_cycles']}")
+        print(f"  平均周期时间：{stats['refresh_engine']['avg_cycle_time_ms']:.2f}ms")
+        print(f"  最大周期时间：{stats['refresh_engine']['max_cycle_time_ms']:.2f}ms")
+        print(f"  超时次数：{stats['refresh_engine']['overrun_count']}")
     
     print("\n[自闭环优化]")
     print(f"  周期计数：{stats['self_loop']['cycle_count']}")
@@ -371,8 +372,7 @@ def main():
     config.model_path = args.model_path
     
     # 从 config.py 读取量化配置（如果存在）
-    import config as user_config
-    config.quantization = getattr(user_config, 'QUANTIZATION', config.quantization)
+    config.quantization = getattr(secret_config, 'QUANTIZATION', config.quantization)
     config.QUANTIZATION = config.quantization  # 同步大小写
     print(f"[配置] 量化模式: {config.quantization}")
     

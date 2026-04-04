@@ -7,7 +7,10 @@ from .stdp_engine import STDPEngine, FullLinkSTDP
 from .refresh_engine import RefreshCycleEngine
 # SelfLoopOptimizer is in self_loop package, commented out to avoid import error
 # from .self_loop import SelfLoopOptimizer
-from .interfaces import BrainAIInterface
+try:
+    from .interfaces import BrainAIInterface
+except ImportError:
+    BrainAIInterface = None
 
 __all__ = [
     'DualWeightLinear', 

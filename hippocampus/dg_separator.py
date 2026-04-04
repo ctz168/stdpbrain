@@ -132,7 +132,8 @@ class DentateGyrusSeparator(nn.Module):
             dg_output: DG 分离后的特征 [output_dim]
             memory_id: 唯一记忆 ID (字符串)
         """
-        dg_output = self.forward(ec_code)
+        with torch.no_grad():
+            dg_output = self.forward(ec_code)
         
         # ========== 生成唯一记忆 ID ==========
         # 将 DG 输出量化为二进制串作为 ID

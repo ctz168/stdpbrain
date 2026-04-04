@@ -11,6 +11,7 @@ CA1 区 - 时序编码 + 注意力门控单元
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -147,11 +148,9 @@ class CA1AttentionGate(nn.Module):
         
         # ========== 时序编码 (可选) ==========
         if self.temporal_encoding and 'timestamp' in memory_data:
-            timestamp = torch.tensor(
-                [[memory_data['timestamp']]], 
-                dtype=query.dtype,  # 匹配 query 的数据类型
-                device=query.device
-            )
+            raw_ts = memory_data['timestamp']
+            normalized_ts = math.log1p(raw_ts) / math.log1p(8.64e9)  # ~100 days in ms
+            timestamp = torch.tensor([[normalized_ts]], dtype=query.dtype, device=query.device)
             temporal_feature = self.temporal_encoder(timestamp)
             mem_features = mem_features + temporal_feature.squeeze(0)
         

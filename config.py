@@ -4,11 +4,13 @@
 将敏感信息（如 Token）和环境配置（如代理）与主代码分离。
 """
 
+import os
+
 # ==================== Telegram Bot 配置 ====================
 
 # 你的 Telegram Bot Token
 # 从 @BotFather 获取
-TELEGRAM_BOT_TOKEN = "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
 # 你的网络代理 URL (如果需要)
 # 例如: "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:1080"

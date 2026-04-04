@@ -93,7 +93,6 @@ class SelfLoopOptimizer:
         Returns:
             mode: "self_combine" | "self_game" | "self_eval"
         """
-        self.cycle_count += 1
         input_lower = input_text.lower()
         
         # ========== 检查高难度关键词 ==========
@@ -240,6 +239,7 @@ class SelfLoopOptimizer:
         
         # ========== 3. 融合输出 ==========
         if len(candidates) == 1:
+            best_idx = 0
             final_output = candidates[0]
             confidence = 0.8
         else:
@@ -494,11 +494,13 @@ class SelfLoopOptimizer:
             
             # Tokenize
             tokens = tokenizer.encode(full_input, return_tensors="pt")
-            return tokens.to(self.model.device if hasattr(self.model, 'device') else 'cpu')
+            device = getattr(self.model, 'device', 'cpu') if self.model is not None else 'cpu'
+            return tokens.to(device)
         
         # 降级回退：创建最小有效输入
         print(f"[SelfLoopOptimizer] 使用降级 tokenization")
-        return torch.tensor([[1]], device=self.model.device if hasattr(self.model, 'device') else 'cpu')
+        device = getattr(self.model, 'device', 'cpu') if self.model is not None else 'cpu'
+        return torch.tensor([[1]], device=device)
     
     def _decode_output(self, outputs: torch.Tensor) -> str:
         """解码输出 (生产级实现)"""
@@ -697,7 +699,7 @@ class SelfLoopOptimizer:
                 nums = [int(n) for n in numbers[:5]]
                 if max(nums) > 10 * min(nums) and min(nums) > 0:
                     issues.append("数值范围过大，可能需要核实")
-            except:
+            except Exception:
                 pass
         
         # ========== 4. 完整性检查 ==========
@@ -724,7 +726,7 @@ class SelfLoopOptimizer:
                     if str(int(expected_val)) not in proposal:
                         issues.append(f"计算逻辑错误：{expr} 的正确结果应当是 {int(expected_val)}")
                         corrections.append(f"更正计算结果为 {int(expected_val)}，不要将其误认为其他运算")
-            except:
+            except Exception:
                 pass
 
         # ========== 6. 计算置信度 ==========

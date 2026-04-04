@@ -52,6 +52,10 @@ class EpisodicMemory:
     tier: MemoryTier = MemoryTier.SHORT_TERM  # 记忆层级（短期/中期/长期）
     recall_count: int = 0             # 被成功召回的次数
     consecutive_misses: int = 0        # 连续未被召回的次数（用于降级判定）
+    # Dynamic score attributes (set during recall, must have defaults)
+    _embedding_score: float = 0.0
+    _recall_keyword_score: float = 0.0
+    _dg_match_score: float = 0.0
     
     def to_dict(self) -> dict:
         """转换为字典 - 避免序列化torch.Tensor"""
@@ -399,6 +403,12 @@ class CA3EpisodicMemory(nn.Module):
         self.last_recall_time = time.time()
         candidates = []
         recall_trace: List[Dict] = []
+
+        # ========== Reset dynamic score attributes from previous recall ==========
+        for mem in self.memories.values():
+            mem._embedding_score = 0.0
+            mem._recall_keyword_score = 0.0
+            mem._dg_match_score = 0.0
 
         # ========== Fix 6: 记忆查询意图关键词加速 ==========
         memory_query_boosters = [

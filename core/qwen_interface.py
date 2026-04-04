@@ -469,7 +469,7 @@ class QwenModelWrapper(nn.Module):
 
     def load_checkpoint(self, path: str):
         """加载模型检查点 (仅加载双权重层的动态部分)"""
-        dynamic_weights = torch.load(path, map_location=self.device)
+        dynamic_weights = torch.load(path, map_location=self.device, weights_only=False)
         for layer_name, tensor_weight in dynamic_weights.items():
             self.apply_stdp_to_layer(layer_name, tensor_weight, lr=1.0) # 使用 lr=1.0 直接推入更新
         print(f"[QwenWrapper] 动态权重已从 {path} 加载")
@@ -560,7 +560,8 @@ class QwenInterface:
         vocab_size = _get_qwen_config_attr(self.model.base_model.config, 'vocab_size', 248320)
         # 安全检查：确保从 logits 维度获取实际 vocab_size
         logger.info(f"[QwenInterface] 配置 vocab_size={vocab_size}")
-        self._penalty_buffer = torch.zeros(vocab_size, device=self.device)
+        model_dtype = next(self.model.base_model.parameters()).dtype
+        self._penalty_buffer = torch.zeros(vocab_size, device=self.device, dtype=model_dtype)
         
         # ========== 新增: 窄带宽注意力支持 ==========
         self._memory_anchors_cache = []  # 记忆锚点缓存
@@ -1155,8 +1156,8 @@ class QwenInterface:
         """
         start_time = time.time()
         
-        # ========== 1. Tokenize 输入 ==========
-        inputs = self.model.tokenizer(
+        # ========== 1. Tokenize 输入 (线程安全) ==========
+        inputs = self.tokenize_safe(
             input_text,
             return_tensors="pt",
             padding=True,
@@ -1422,8 +1423,12 @@ class QwenInterface:
         grad_dict: Dict[str, torch.Tensor],
         lr: float = 0.01
     ):
-        """Pass-through to model wrapper."""
-        self.model.apply_stdp_to_layer(layer_name, grad_dict, lr)
+        """Apply STDP update to a specific layer by name."""
+        for name, module in self.model.base_model.named_modules():
+            if name == layer_name and hasattr(module, 'apply_stdp_update'):
+                if layer_name in grad_dict:
+                    module.apply_stdp_update(grad_dict[layer_name], lr)
+                break
     
     def save_checkpoint(self, path: str):
         """保存检查点"""

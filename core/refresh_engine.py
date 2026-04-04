@@ -460,8 +460,10 @@ class RefreshCycleEngine:
                 hidden_size = self.model_hidden_size  # 动态读取
             
             # 基于token_id的确定性特征（不是纯随机）
-            torch.manual_seed(token_id % (2**31))  # 限制在int范围内
-            base_features = torch.randn(hidden_size, device=self.device) * 0.1
+            # 使用局部生成器，避免污染全局 PRNG 状态
+            gen = torch.Generator(device=self.device)
+            gen.manual_seed(token_id % (2**31))
+            base_features = torch.randn(hidden_size, device=self.device, generator=gen) * 0.1
             
             # 添加位置编码风格的结构
             position_encoding = torch.zeros(hidden_size, device=self.device)
@@ -951,10 +953,10 @@ class RefreshCycleEngine:
         
         # 特征强度贡献
         features_norm = key_info.get('features_norm', 0)
-        if features_norm > 10:
-            salience += 0.5
-        elif features_norm > 20:
+        if features_norm > 20:
             salience += 1.0
+        elif features_norm > 10:
+            salience += 0.5
         
         # 记忆召回贡献
         memory_count = key_info.get('memory_count', 0)

@@ -13,9 +13,12 @@ import torch.nn as nn
 import time
 import threading
 import math
+import logging
 from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass
 import random
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,6 +59,7 @@ class SWRConsolidation:
         
         # ========== 回放缓冲区 ==========
         self.replay_buffer: List[ReplaySequence] = []
+        self._buffer_lock = threading.Lock()
         
         # ========== 状态标志 ==========
         self.is_idle = False
@@ -108,13 +112,14 @@ class SWRConsolidation:
             timestamp=int(time.time() * 1000)
         )
         
-        self.replay_buffer.append(sequence)
-        
-        # 保持缓冲区大小固定
-        if len(self.replay_buffer) > self.max_replay_sequences:
-            # 删除奖励信号最低的序列
-            self.replay_buffer.sort(key=lambda s: s.reward_signal, reverse=True)
-            self.replay_buffer = self.replay_buffer[:self.max_replay_sequences]
+        with self._buffer_lock:
+            self.replay_buffer.append(sequence)
+            
+            # 保持缓冲区大小固定
+            if len(self.replay_buffer) > self.max_replay_sequences:
+                # 删除奖励信号最低的序列
+                self.replay_buffer.sort(key=lambda s: s.reward_signal, reverse=True)
+                self.replay_buffer = self.replay_buffer[:self.max_replay_sequences]
     
     def _idle_monitor_loop(self):
         """空闲监控循环 (后台线程)"""
@@ -135,15 +140,19 @@ class SWRConsolidation:
     
     def _run_consolidation(self):
         """执行离线回放巩固（增强版：含记忆分层固化）"""
-        if not self.hippocampus or not self.replay_buffer:
-            return
+        with self._buffer_lock:
+            if not self.replay_buffer:
+                return
+            # ========== 1. 按奖励信号排序，优先回放高奖励序列 ==========
+            sorted_sequences = sorted(
+                self.replay_buffer,
+                key=lambda s: s.reward_signal,
+                reverse=True
+            )
+            self.replay_buffer.clear()
         
-        # ========== 1. 按奖励信号排序，优先回放高奖励序列 ==========
-        sorted_sequences = sorted(
-            self.replay_buffer, 
-            key=lambda s: s.reward_signal, 
-            reverse=True
-        )
+        if not self.hippocampus:
+            return
         
         # ========== 2. 回放每个序列 ==========
         for seq in sorted_sequences:
@@ -162,9 +171,6 @@ class SWRConsolidation:
         # ========== 3. 记忆修剪 ==========
         if self.memory_prune_fn and self.hippocampus:
             pruned_count = self.memory_prune_fn(threshold=0.3)
-        
-        # ========== 4. 清空回放缓冲区 ==========
-        self.replay_buffer.clear()
     
     def _replay_sequence(self, sequence: ReplaySequence):
         """回放单个序列"""

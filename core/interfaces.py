@@ -172,9 +172,18 @@ class BrainAIInterface:
         enable_predictive = getattr(config, 'enable_predictive_coding', True)
         if enable_predictive:
             # QwenInterface 必有 tokenizer 属性
+            # 读取 vocab_size 从模型配置（而非 tokenizer），确保维度匹配
+            from core.qwen_interface import _get_qwen_config_attr
+            config_vocab_size = _get_qwen_config_attr(
+                self.model.model.base_model.config, 'vocab_size', None
+            )
+            if config_vocab_size is not None:
+                vocab_size = config_vocab_size
+            else:
+                vocab_size = self.model.tokenizer.vocab_size
             self.predictive_coder = PredictiveCodingModule(
                 hidden_size=self.model_hidden_size,
-                vocab_size=self.model.tokenizer.vocab_size
+                vocab_size=vocab_size
             ).to(self.device)
             if self._model_dtype != torch.float32:
                 self.predictive_coder = self.predictive_coder.to(dtype=self._model_dtype)
@@ -200,12 +209,6 @@ class BrainAIInterface:
             # 注入枚举引用以便外部持锁访问
             self.proactive_generator.intent_enum = ProactiveIntent
             
-            # 主动输出统计
-            self.last_output_time = time.time() - 300 # 预留时间
-            self.last_user_input_time = time.time()
-            self.proactive_debug_log = []
-            self.clarification_count = 0
-            self.max_clarifications_per_turn = 3 # 提升澄清灵敏度
             print("[BrainAI] [OK] 主动意图生成器已初始化 (已开启)")
         else:
             self.proactive_generator = None

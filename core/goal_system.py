@@ -367,6 +367,9 @@ class GoalSystem:
         goal.completed = True
         goal.progress = 1.0
         
+        # 记录完成的目标类型，用于后续反馈关联
+        self._last_completed_goal_type = goal.goal_type
+
         print(f"🎯 [目标完成] ✓ {goal.goal_id}: {goal.description}", flush=True)
         print(f"🎯 [目标完成] 类型: {goal.goal_type.value}", flush=True)
         
@@ -464,8 +467,6 @@ class GoalSystem:
         type_factor = self.goal_type_reward_weights.get(
             self.current_goal.goal_type, 1.0
         )
-        # 记录本次目标类型，用于后续反馈关联
-        self._last_completed_goal_type = self.current_goal.goal_type
         
         # 基于优先级
         priority_factor = self.current_goal.priority

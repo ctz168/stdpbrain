@@ -431,11 +431,12 @@ class GlobalWorkspace:
                     if user_embedding.shape[0] != self.hidden_size:
                         # 创建投影矩阵（简单的线性投影）
                         if not hasattr(self, '_projection'):
+                            proj_dtype = user_embedding.dtype
                             self._projection = nn.Linear(
                                 user_embedding.shape[0], 
                                 self.hidden_size, 
                                 bias=False
-                            ).to(self.device)
+                            ).to(self.device, dtype=proj_dtype)
                             # 初始化为接近恒等映射（如果维度相同）
                             nn.init.xavier_uniform_(self._projection.weight)
                         user_embedding = self._projection(user_embedding)
@@ -443,8 +444,10 @@ class GlobalWorkspace:
                     context_parts.append(user_embedding)
                     weights.append(0.6)  # 用户输入权重60%
                 else:
-                    # 回退到tokenizer + embedding层直接调用
-                    raise ValueError("未找到tokenizer")
+                    # 回退：使用简单的特征编码
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning("[GlobalWorkspace] 未找到tokenizer，使用回退特征编码")
             else:
                 # 回退方案：使用简单的特征编码
                 # 基于字符的简单编码

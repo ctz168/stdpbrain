@@ -251,9 +251,9 @@ class HippocampusSystem(nn.Module):
             ec_code = self.ec_encoder.encode_single(query_features.squeeze(0))
             # DG 分离
             dg_features = self.dg_separator.forward(ec_code)
-            # 缓存结果（限制缓存大小）
+            # 缓存结果（限制缓存大小）— detach to CPU to avoid pinning GPU memory
             if len(self._query_encoding_cache) < 100:
-                self._query_encoding_cache[cache_key] = (ec_code, dg_features)
+                self._query_encoding_cache[cache_key] = (ec_code.detach().cpu(), dg_features.detach().cpu())
         
         # ========== 3. CA3 模式补全召回 ==========
         # Build partial cue for CA3 recall
@@ -579,7 +579,8 @@ class HippocampusSystem(nn.Module):
                 features=features,
                 token_id=kwargs.get('token_id', 0),
                 timestamp=kwargs.get('timestamp', int(time.time() * 1000)),
-                context=kwargs.get('context')
+                context=kwargs.get('context'),
+                kv_features=kwargs.get('kv_features')
             )
         
         elif mode == "recall":
@@ -616,12 +617,23 @@ class HippocampusSystem(nn.Module):
             'device': self.device,
         }
     
+    def _ensure_cpu_tensor(self, value_features):
+        """Ensure value_features is a detached CPU tensor."""
+        if isinstance(value_features, list):
+            return torch.tensor(value_features, dtype=torch.float32).detach().cpu()
+        elif isinstance(value_features, torch.Tensor):
+            return value_features.detach().cpu()
+        return value_features
+
     def reset(self):
         """重置系统状态"""
         self.cycle_count = 0
         self.ca3_memory.memories.clear()
         self.ca3_memory.time_index.clear()
         self.ca3_memory.semantic_index.clear()
+        self._query_encoding_cache.clear()
+        self._last_memory_count = 0
+        self.memory_usage_bytes = 0
         self._update_memory_usage()
     
     # ========== KV Cache 专用方法 (用于滑动窗口管理) ==========
@@ -694,7 +706,7 @@ class HippocampusSystem(nn.Module):
             is_core=False,
             content=context_text,
             key_features=key_tensor.detach().cpu() if isinstance(key_tensor, torch.Tensor) else key_features,
-            value_features=torch.tensor(value_features, dtype=torch.float32).detach().cpu() if isinstance(value_features, list) else value_features
+            value_features=self._ensure_cpu_tensor(value_features)
         )
         
         logger.debug(

@@ -183,9 +183,6 @@ class FullLinkSTDP:
         n_ctx = pre_times.shape[0]
         if n_ctx > self._post_times_buffer.shape[0]:
             self._post_times_buffer = torch.zeros(n_ctx * 2, dtype=torch.float32, device=self.device)
-            # BUG FIX: 同步扩展 contributions 缓冲区
-            if not hasattr(self, '_contributions_buffer'):
-                self._contributions_buffer = torch.zeros(n_ctx * 2, dtype=torch.float32, device=self.device)
             if n_ctx > self._contributions_buffer.shape[0]:
                 self._contributions_buffer = torch.zeros(n_ctx * 2, dtype=torch.float32, device=self.device)
         post_times = self._post_times_buffer[:n_ctx].fill_(timestamp)
@@ -217,22 +214,17 @@ class FullLinkSTDP:
                 
             # 为 DualWeightLinear 的 q, k, v, o 生成梯度
             # 优化: 使用缓存
-            if hasattr(attention_layer, 'q_proj') and hasattr(attention_layer, 'apply_stdp_to_all'):
-                q_weight = attention_layer.q_proj.dynamic_weight
-                grad_shape = q_weight.shape
-                grad_cache = self._get_or_create_grad('attention_qkvo', grad_shape, q_weight.device)
-                # BUG FIX: 使用与 dynamic_weight 匹配的数据类型
-                grad_cache = grad_cache.to(q_weight.dtype)
-                grad_cache.fill_(mean_delta.item() * 0.1)
-                
-                grad_dict = {
-                    'q': grad_cache.clone(),
-                    'k': grad_cache.clone(),
-                    'v': grad_cache.clone(),
-                    'o': grad_cache.clone()
-                }
-                attention_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
-                return
+            if hasattr(attention_layer, 'apply_stdp_to_all'):
+                _proj_names = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
+                if all(hasattr(attention_layer, p) and hasattr(getattr(attention_layer, p), 'dynamic_weight')
+                       for p in _proj_names):
+                    q_weight = attention_layer.q_proj.dynamic_weight
+                    grad_cache = self._get_or_create_grad('attention_qkvo', q_weight.shape, q_weight.device)
+                    grad_cache = grad_cache.to(q_weight.dtype)
+                    grad_cache.fill_(mean_delta.item() * 0.1)
+                    grad_dict = {k: grad_cache.clone() for k in ['q', 'k', 'v', 'o']}
+                    attention_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
+                    return
             
             # ========== 新增: 处理整个模型的情况 ==========
             # 如果传入的是整个模型，遍历所有 DualWeightLinear 层进行更新
@@ -288,15 +280,21 @@ class FullLinkSTDP:
         # 使用 mean delta 作为基础梯度（与注意力层 STDP 一致），方向由 contribution 决定
         base_grad_scale = contribution_val * 0.01  # 贡献度导向缩放
         
+        if not (hasattr(ffn_layer, 'gate_proj')
+                and hasattr(ffn_layer.gate_proj, 'dynamic_weight')
+                and hasattr(ffn_layer, 'up_proj')
+                and hasattr(ffn_layer.up_proj, 'dynamic_weight')
+                and hasattr(ffn_layer, 'down_proj')
+                and hasattr(ffn_layer.down_proj, 'dynamic_weight')
+                and hasattr(ffn_layer, 'apply_stdp_to_all')):
+            return
+
         grad_dict = {
             'gate': torch.ones_like(ffn_layer.gate_proj.dynamic_weight) * base_grad_scale,
-            'up': torch.ones_like(ffn_layer.up_proj.dynamic_weight) * base_grad_scale,
+            'up':   torch.ones_like(ffn_layer.up_proj.dynamic_weight)   * base_grad_scale,
             'proj': torch.ones_like(ffn_layer.down_proj.dynamic_weight) * base_grad_scale
         }
-        
-        # 应用 STDP 更新
-        if hasattr(ffn_layer, 'apply_stdp_to_all'):
-            ffn_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
+        ffn_layer.apply_stdp_to_all(grad_dict, lr=self.config.stdp.alpha_LTP)
     
     # ========== 3. 自评判 STDP 更新 ==========
     def update_self_evaluation(
@@ -511,9 +509,9 @@ class STDPEngine:
             # 但 _apply_real_stdp_update() 传入的 evaluation_score = reward * 100，
             # 其中 reward 是 0-1 范围的置信度，所以 evaluation_score 范围为 0-100。
             # 用 /40 会导致 reward 超出 [-1, 1] 范围（如 reward=0.8 时算出 3.0）。
-            # 改为使用 /50.0 使满分归一化到 1.0，再映射到 [-1, 1]：
+            # 改为使用 /100.0 使满分归一化到 1.0，再映射到 [-1, 1]：
             raw_score = outputs['evaluation_score']
-            reward = (raw_score / 50.0) * 2 - 1  # 0→-1, 25→0, 50→1，clamp 防溢出
+            reward = (raw_score / 100.0) * 2 - 1  # 0→-1, 50→0, 100→1，clamp 防溢出
             reward = max(-1.0, min(1.0, reward))
             # BUG FIX: 将 inner_thought_engine、global_workspace、goal_system
             # 注入到 model_components，使 apply_meta_learning 中的相关分支生效。
@@ -524,12 +522,11 @@ class STDPEngine:
             if hasattr(self, '_extra_meta_components'):
                 meta_components.update(self._extra_meta_components)
             self.apply_meta_learning(
-                module_name=outputs.get('generation_path', 'unknown'),
                 reward=reward,
                 model_components=meta_components
             )
     
-    def apply_meta_learning(self, module_name: str, reward: float, model_components: Dict[str, nn.Module]):
+    def apply_meta_learning(self, reward: float, model_components: Dict[str, nn.Module]):
         """
         [新增] 元学习闭环机制
         将 STDP 奖励信号传播到各个意识调度组件，更新非神经网络的动态规则参数：
