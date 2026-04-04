@@ -579,8 +579,8 @@ class BrainAIInterface:
                 if last_emb.dim() == 1:
                     last_emb = last_emb.unsqueeze(0)
                 
-                # 预测下一状态和 token（返回2个值：pred_next_state, pred_token_logits）
-                pred_next_state, pred_token_logits = self.predictive_coder.predict_next(
+                # 预测下一状态和 token（返回3个值：pred_next_state, pred_token_logits, pred_state_proj）
+                pred_next_state, pred_token_logits, pred_state_proj = self.predictive_coder.predict_next(
                     current_state=current_state,
                     last_output_embedding=last_emb
                 )
@@ -595,11 +595,11 @@ class BrainAIInterface:
                 if actual_token_ids.dim() == 1:
                     actual_token_ids = actual_token_ids.unsqueeze(0)
                 
-                # 计算预测误差
+                # 计算预测误差（使用投影后的 state 匹配 hidden_size 维度）
                 error_metrics = self.predictive_coder.compute_prediction_error(
                     predicted_logits=pred_token_logits,
                     actual_token_ids=actual_token_ids,
-                    predicted_state=pred_next_state,
+                    predicted_state=pred_state_proj,
                     actual_next_state=self.current_thought_state
                 )
                 prediction_error = error_metrics["combined_error"]
