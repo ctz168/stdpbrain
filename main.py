@@ -35,14 +35,29 @@ try:
     from transformers.utils.hub import cached_file as _orig_cached_file
     from transformers.utils.hub import cached_files as _orig_cached_files
 
+    # 新版 transformers(5.x) 中 cached_file 和 cached_files 互相调用
+    # 需要完全绕过它们，直接用本地路径
+    _cf_in_call = False
+    _cfs_in_call = False
+
     def _patched_cached_file(path_or_repo_id, filename, **kwargs):
+        global _cf_in_call
+        if _cf_in_call:
+            return _orig_cached_file(path_or_repo_id, filename, **kwargs)
         if _is_local_path(path_or_repo_id):
             local_path = _os.path.join(path_or_repo_id, filename)
             if _os.path.isfile(local_path):
                 return local_path
-        return _orig_cached_file(path_or_repo_id, filename, **kwargs)
+        _cf_in_call = True
+        try:
+            return _orig_cached_file(path_or_repo_id, filename, **kwargs)
+        finally:
+            _cf_in_call = False
 
     def _patched_cached_files(path_or_repo_id, filenames, cache_dir=None, **kwargs):
+        global _cfs_in_call
+        if _cfs_in_call:
+            return _orig_cached_files(path_or_repo_id, filenames, cache_dir=cache_dir, **kwargs)
         if _is_local_path(path_or_repo_id):
             results = []
             for fname in filenames:
@@ -51,7 +66,11 @@ try:
                     results.append(local_path)
             if results:
                 return results
-        return _orig_cached_files(path_or_repo_id, filenames, cache_dir=cache_dir, **kwargs)
+        _cfs_in_call = True
+        try:
+            return _orig_cached_files(path_or_repo_id, filenames, cache_dir=cache_dir, **kwargs)
+        finally:
+            _cfs_in_call = False
 
     import transformers.utils.hub as _hf_hub
     _hf_hub.cached_file = _patched_cached_file

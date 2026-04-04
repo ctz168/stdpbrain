@@ -10,6 +10,7 @@
 
 import torch
 import torch.nn as nn
+import os as _os
 from typing import Dict, List, Optional, Tuple, Any
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import time
@@ -117,10 +118,13 @@ class QwenModelWrapper(nn.Module):
         print(f"  量化：{self.quantization}")
         
         # ========== 1. 加载 Tokenizer ==========
+        # 使用 local_files_only=True 避免新版 transformers 递归调用 cached_file/cached_files
+        self._is_local_model = _os.path.isdir(self.model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(
            self.model_path,
             trust_remote_code=True,
-           padding_side="left"
+           padding_side="left",
+           local_files_only=self._is_local_model
         )
         print(f"[OK] Tokenizer 加载成功，词表大小：{len(self.tokenizer)}")
         
@@ -171,7 +175,8 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     quantization_config=quantization_config,
                     device_map={"": self.device},
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=self._is_local_model
                 )
                 print(f"  [OK] [CUDA] {self.quantization} 量化加载成功")
             elif is_mac:
@@ -180,7 +185,8 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     torch_dtype=torch.float16,
                     device_map={"": "mps"},
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=self._is_local_model
                 )
                 print("  [OK] [macOS/MPS] 使用 FP16 加载成功")
             else:
@@ -193,7 +199,8 @@ class QwenModelWrapper(nn.Module):
                     self.model_path,
                     torch_dtype=torch.float16,
                     low_cpu_mem_usage=True,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=self._is_local_model
                 )
                 print("  [OK] FP16 加载完成，开始动态量化...")
                 
@@ -219,7 +226,8 @@ class QwenModelWrapper(nn.Module):
                 self.model_path,
                 torch_dtype=dtype,
                 device_map={"": target_device} if target_device != "cpu" else None,
-                trust_remote_code=True
+                trust_remote_code=True,
+                local_files_only=self._is_local_model
             )
             print(f"  [OK] {'FP16' if dtype == torch.float16 else 'FP32'} 加载成功")
         
@@ -534,12 +542,10 @@ class QwenInterface:
         self._stdp_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix='stdp_worker'
         )
-        # 每 N 步才提取一次 features 用于 STDP (优化3基础)
+        # 每 N 步才提取一次 features 用于 STDP
         self._step_counter = 0
-        self._stdp_every_n = getattr(config.stdp, 'every_n_tokens', 1)  # 改为默认每步更新
+        self._stdp_every_n = getattr(getattr(config, 'stdp', None), 'every_n_tokens', 5)  # 默认每5步更新
         self._last_reward = 1.0  # 存储最近一次对话的评判得分
-        self._step_counter = 0
-        self._stdp_every_n = 5  # 每 5 步更新一次 STDP（平衡性能和学习效果）
         
         # ========== 新增: 性能优化缓存 ==========
         # 增量 token 计数器（避免每步 torch.unique 全量扫描）
