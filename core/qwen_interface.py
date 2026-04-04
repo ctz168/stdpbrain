@@ -101,8 +101,10 @@ class QwenModelWrapper(nn.Module):
     ):
         super().__init__()
         import threading
+        import os
         self._tokenizer_lock = threading.Lock() # 线程锁，防止 Already borrowed
-        self.model_path = model_path
+        # 将相对路径转为绝对路径，兼容新版 transformers 不识别 ./ 前缀的问题
+        self.model_path = os.path.abspath(model_path)
         self.config = config
         self.device = device
         
