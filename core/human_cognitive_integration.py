@@ -286,6 +286,32 @@ class HumanCognitiveIntegration:
         # 5. 记录时间
         memory.last_access_time = time.time()
         
+        # 6. 联想记忆网络 - 创建新记忆与现有记忆的关联
+        if self._associative_enabled and hc is not None and getattr(hc, 'associative_network', None) is not None:
+            try:
+                # 获取所有现有记忆
+                all_memories = {}
+                ca3 = getattr(hc, 'ca3_memory', None)
+                if ca3 is not None:
+                    all_memories = getattr(ca3, 'memories', {})
+                if all_memories:
+                    new_assocs = hc.associative_network.detect_and_create_associations(memory, all_memories)
+                    enhancements['associative_count'] = len(new_assocs)
+            except Exception as e:
+                logger.debug(f"[HumanCognitive] 联想记忆创建失败: {e}")
+        
+        # 7. 间隔效应 - 注册新记忆到复述调度器
+        if self._spacing_enabled and hc is not None and getattr(hc, '_spacing_manager', None) is not None:
+            try:
+                mem_id = getattr(memory, 'memory_id', '')
+                if mem_id:
+                    hc._spacing_manager.record_rehearsal(mem_id, success=True)
+                    schedule = hc._spacing_manager.get_rehearsal_schedule(mem_id)
+                    if schedule:
+                        enhancements['next_rehearsal'] = schedule[0]
+            except Exception as e:
+                logger.debug(f"[HumanCognitive] 间隔效应注册失败: {e}")
+        
         return enhancements
     
     def enhance_recall(self, query_text: str, memory, 
@@ -344,7 +370,49 @@ class HumanCognitiveIntegration:
             except Exception:
                 pass
         
-        return min(boost, 0.5)
+        # 4. 记忆干扰检测 - 新记忆对旧记忆的干扰
+        hc = self._hippocampus_system
+        if self._interference_enabled and hc is not None and getattr(hc, '_interference_engine', None) is not None:
+            try:
+                query_embedding = getattr(query_text, 'embedding', None)  # if query has embedding
+                # Simple text-based interference detection
+                interference_penalty = 0.0
+                memory_content = getattr(memory, 'content', '') or getattr(memory, 'semantic_summary', '')
+                if memory_content and query_text:
+                    # Simple character overlap as interference proxy
+                    overlap = len(set(query_text) & set(memory_content)) / max(len(set(query_text) | set(memory_content)), 1)
+                    if overlap > 0.8:  # Very similar = potential interference
+                        interference_penalty = -0.05 * (overlap - 0.8) / 0.2
+                boost += interference_penalty
+            except Exception:
+                pass
+        
+        # 5. 间隔效应加成 - 最近复习过的记忆更容易召回
+        if self._spacing_enabled and hc is not None and getattr(hc, '_spacing_manager', None) is not None:
+            try:
+                mem_id = getattr(memory, 'memory_id', '')
+                if mem_id:
+                    rehearsal_info = hc._spacing_manager.get_rehearsal_info(mem_id)
+                    if rehearsal_info and rehearsal_info.get('rehearsal_count', 0) > 0:
+                        # 每次成功复述增加0.02加成，最多0.1
+                        rehearsal_boost = min(rehearsal_info['rehearsal_count'] * 0.02, 0.1)
+                        boost += rehearsal_boost
+            except Exception:
+                pass
+        
+        # 6. 心境一致性加成 - 当前情绪偏向相似情绪的记忆
+        if (self._emotional_thinking_enabled 
+            and self._inner_thought_engine is not None 
+            and getattr(self._inner_thought_engine, '_emotional_thinking', None) is not None):
+            try:
+                emo_thinking = self._inner_thought_engine._emotional_thinking
+                mem_emotion = getattr(memory, 'emotion_type', 'neutral')
+                mood_boost = emo_thinking.compute_mood_congruence_boost(memory_emotion=mem_emotion)
+                boost += mood_boost
+            except Exception:
+                pass
+        
+        return max(min(boost, 0.5), 0.0)
     
     def enhance_thinking(self, user_input: str) -> Dict[str, Any]:
         """
@@ -393,6 +461,20 @@ class HumanCognitiveIntegration:
             except Exception as e:
                 logger.debug(f"[HumanCognitive] 元认知置信度预测失败: {e}")
         
+        # 5. 类比推理
+        analogical = self.thinking_enhancements.get('analogical_reasoning')
+        if analogical:
+            try:
+                analog_result = analogical.find_analogies(user_input)
+                if analog_result:
+                    result['analogical_reasoning'] = {
+                        'has_analogy': True,
+                        'best_analogy_score': getattr(analog_result[0], 'similarity_score', 0.0) if analog_result else 0.0,
+                        'analogy_count': len(analog_result),
+                    }
+            except Exception as e:
+                logger.debug(f"[HumanCognitive] 类比推理失败: {e}")
+        
         # 4. 工作记忆负载
         wm = self.thinking_enhancements.get('working_memory')
         if wm:
@@ -400,6 +482,40 @@ class HumanCognitiveIntegration:
                 result['working_memory_load'] = wm.get_load()
             except Exception as e:
                 logger.debug(f"[HumanCognitive] 工作记忆负载获取失败: {e}")
+        
+        # 6. 时间折扣
+        temporal = self.thinking_enhancements.get('temporal_discounting')
+        if temporal:
+            try:
+                # 检查输入是否提及未来奖励/结果
+                future_keywords = ["以后", "未来", "明天", "下周", "将来", "长期", "later", "future"]
+                has_future = any(kw in user_input for kw in future_keywords)
+                if has_future:
+                    discount_result = temporal.compute_discount(user_input)
+                    result['temporal_discount'] = discount_result
+            except Exception as e:
+                logger.debug(f"[HumanCognitive] 时间折扣计算失败: {e}")
+        
+        # 7. 情绪思维整合 - 响应风格建议
+        if (self._emotional_thinking_enabled 
+            and self._inner_thought_engine is not None 
+            and hasattr(self._inner_thought_engine, '_emotional_thinking')
+            and self._inner_thought_engine._emotional_thinking is not None):
+            try:
+                emo_thinking = self._inner_thought_engine._emotional_thinking
+                profile = emo_thinking.get_emotion_cognition_profile()
+                response_style = profile.get('response_style', {})
+                if response_style:
+                    result['emotional_response_style'] = response_style
+                # 情绪状态
+                state = emo_thinking.get_current_state()
+                result['current_emotional_state'] = {
+                    'primary_emotion': state.primary_emotion,
+                    'intensity': round(state.emotion_intensity, 3),
+                    'valence': round(state.valence, 3),
+                }
+            except Exception as e:
+                logger.debug(f"[HumanCognitive] 情绪思维整合失败: {e}")
         
         return result
     

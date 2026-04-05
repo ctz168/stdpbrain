@@ -1535,6 +1535,193 @@ class EmotionalThinkingIntegration:
             },
         }
 
+    # ========================================================================
+    # 流水线集成方法
+    # ========================================================================
+
+    def process_and_update(
+        self,
+        user_text: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        一次性处理情绪感染和状态更新 (流水线集成入口)
+
+        将 process_emotional_contagion 和 update_emotional_state 合并为
+        一个便捷调用，供主流水线在每次处理用户输入时调用。
+
+        执行顺序:
+        1. 情绪感染 —— 检测用户情绪并部分镜像
+        2. 状态更新 —— 综合更新 AI 自身情绪状态
+
+        Args:
+            user_text: 用户输入文本
+            context: 上下文信息，可包含:
+                - source: 来源 (默认 "user")
+                - timestamp: 时间戳
+                - 其他透传参数
+
+        Returns:
+            合并结果字典:
+            - contagion: 情绪感染结果
+            - updated_state: 更新后的情绪状态 (EmotionalState)
+            - current_state: 当前状态摘要
+        """
+        context = context or {}
+        context.setdefault("source", "user")
+
+        # 1. 先处理情绪感染 (镜像用户情绪)
+        contagion_result = self.process_emotional_contagion(user_text, context)
+
+        # 2. 再更新自身情绪状态
+        updated_state = self.update_emotional_state(user_text, context)
+
+        # 3. 获取当前状态摘要
+        current_state = self.get_current_state()
+
+        logger.debug(
+            f"[EmotionalThinking] process_and_update 完成: "
+            f"user_emotion={contagion_result.get('user_emotion')}, "
+            f"contagion_applied={contagion_result.get('contagion_applied')}, "
+            f"ai_emotion={current_state.primary_emotion}, "
+            f"ai_intensity={current_state.emotion_intensity:.3f}"
+        )
+
+        return {
+            "contagion": contagion_result,
+            "updated_state": updated_state,
+            "current_state": {
+                "primary_emotion": current_state.primary_emotion,
+                "emotion_intensity": round(current_state.emotion_intensity, 4),
+                "valence": round(current_state.valence, 4),
+                "arousal": round(current_state.arousal, 4),
+                "dominance": round(current_state.dominance, 4),
+            },
+        }
+
+    def get_generation_config_adjustments(self) -> Dict[str, Any]:
+        """
+        根据当前情绪状态生成 LLM 生成参数调整建议
+
+        将情绪状态桥接到实际的 LLM 生成参数，使 AI 的输出风格
+        能够反映其当前情绪状态。
+
+        调整维度:
+        - temperature: 采样温度 (高唤醒 → 更高温度，低唤醒 → 更低温度)
+        - top_p: 核采样概率 (与情绪强度正相关)
+        - max_tokens: 建议最大 token 数 (高唤醒 → 偏短，低唤醒 → 偏长)
+        - tone_description: 语气描述 (用于系统提示词注入)
+        - frequency_penalty: 频率惩罚 (情绪强烈时微调)
+        - presence_penalty: 存在惩罚 (情绪强烈时微调)
+
+        Returns:
+            生成参数调整建议字典
+        """
+        with self._lock:
+            state = self._state
+
+        emotion = state.primary_emotion
+        intensity = state.emotion_intensity
+        valence = state.valence
+        arousal = state.arousal
+        dominance = state.dominance
+
+        # ---- temperature 调整 ----
+        # 基准 0.7，高唤醒时增加 (更有创造性/波动性)，低唤醒时降低 (更确定性)
+        base_temperature = 0.7
+        temperature_adjustment = (arousal - 0.5) * 0.4 * intensity
+        temperature = round(
+            max(0.3, min(1.2, base_temperature + temperature_adjustment)), 3
+        )
+
+        # ---- top_p 调整 ----
+        # 基准 0.9，情绪强烈时略微降低 (更聚焦)
+        base_top_p = 0.9
+        top_p_adjustment = -intensity * 0.1
+        top_p = round(max(0.5, min(0.95, base_top_p + top_p_adjustment)), 3)
+
+        # ---- max_tokens 建议 ----
+        # 高唤醒 → 偏短 (快速输出)，低唤醒 → 偏长 (深思熟虑)
+        # 快乐时偏长 (乐于分享)，愤怒时偏短 (直接有力)
+        if emotion in ("anger", "fear"):
+            base_max_tokens = 512
+            max_tokens_adjustment = -intensity * 200
+        elif emotion == "joy":
+            base_max_tokens = 1024
+            max_tokens_adjustment = intensity * 200
+        elif emotion == "sadness":
+            base_max_tokens = 800
+            max_tokens_adjustment = intensity * 100
+        else:
+            base_max_tokens = 768
+            max_tokens_adjustment = 0
+        max_tokens = max(256, int(base_max_tokens + max_tokens_adjustment))
+
+        # ---- frequency_penalty / presence_penalty ----
+        # 情绪强烈时微调，避免重复表达
+        frequency_penalty = round(0.0 + intensity * 0.2, 3)
+        presence_penalty = round(0.0 + intensity * 0.15, 3)
+
+        # ---- tone_description 语气描述 ----
+        tone_map = {
+            "joy": {
+                "low": ("温和友好", "温和友好的语气，适当表达积极态度"),
+                "high": ("热情洋溢", "热情洋溢的语气，积极鼓励，乐于分享"),
+            },
+            "sadness": {
+                "low": ("平和体贴", "平和体贴的语气，多些耐心和理解"),
+                "high": ("温柔共情", "温柔共情的语气，表达关心和支持"),
+            },
+            "anger": {
+                "low": ("冷静客观", "冷静客观的语气，就事论事"),
+                "high": ("坚定理性", "坚定理性的语气，保持逻辑清晰但避免对抗"),
+            },
+            "fear": {
+                "low": ("稳定安心", "稳定安心的语气，给予安全感"),
+                "high": ("镇定支持", "镇定支持的语气，帮助缓解紧张情绪"),
+            },
+            "surprise": {
+                "low": ("自然开放", "自然开放的语气，保持好奇心"),
+                "high": ("充满好奇", "充满好奇的语气，积极探索话题"),
+            },
+            "disgust": {
+                "low": ("中立礼貌", "中立礼貌的语气"),
+                "high": ("克制专业", "克制专业的语气，避免负面表达"),
+            },
+            "neutral": {
+                "low": ("均衡理性", "均衡理性的语气"),
+                "high": ("专注分析", "专注分析的语气，注重逻辑和准确性"),
+            },
+        }
+
+        emotion_tones = tone_map.get(emotion, tone_map["neutral"])
+        intensity_key = "high" if intensity > 0.5 else "low"
+        tone_label, tone_description = emotion_tones.get(
+            intensity_key, ("均衡", "均衡的语气")
+        )
+
+        # 情绪强度极低时不显著调整语气
+        if intensity < 0.15:
+            tone_label = "默认"
+            tone_description = ""
+
+        return {
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "frequency_penalty": frequency_penalty,
+            "presence_penalty": presence_penalty,
+            "tone_label": tone_label,
+            "tone_description": tone_description,
+            "emotion_basis": {
+                "emotion": emotion,
+                "intensity": round(intensity, 3),
+                "valence": round(valence, 3),
+                "arousal": round(arousal, 3),
+                "dominance": round(dominance, 3),
+            },
+        }
+
 
 # ============================================================================
 # 内置回退情绪检测器 (当 EmotionalMemoryModulator 不可用时)
@@ -1582,7 +1769,7 @@ class _FallbackEmotionDetector:
         ],
     }
 
-    def detect_emotion(self, text: str):
+    def detect_emotion(self, text: str) -> Tuple[str, float]:
         """
         检测文本中的情绪
 

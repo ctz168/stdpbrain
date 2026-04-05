@@ -608,8 +608,9 @@ class DreamConsolidationSystem:
             # --- 记忆重激活 ---
             # 增强激活强度（模拟系统性回放中的突触增强）
             activation_boost = 1.03 if getattr(mem, 'is_core', False) else 1.01
+            current_activation = getattr(mem, 'activation_strength', 0.5)
             mem.activation_strength = min(
-                mem.activation_strength * activation_boost, 2.0
+                current_activation * activation_boost, 2.0
             )
 
             # --- 记忆固化检查 ---
@@ -694,7 +695,8 @@ class DreamConsolidationSystem:
         stabilize_count = min(len(ltm_memories), int(20 * depth))
         for mem_id, mem in ltm_memories[:stabilize_count]:
             boost = self.config.nrem_stabilization_boost
-            mem.activation_strength = min(mem.activation_strength * boost, 2.0)
+            current_activation = getattr(mem, 'activation_strength', 0.5)
+            mem.activation_strength = min(current_activation * boost, 2.0)
 
             event = DreamEvent(
                 memory_ids=[mem_id],
@@ -927,11 +929,12 @@ class DreamConsolidationSystem:
                     )
                 else:
                     # 普通联想转移
+                    pointer = getattr(memories[next_id], 'semantic_pointer', None) or getattr(memories[next_id], 'content', '') or '未知'
                     event = DreamEvent(
                         memory_ids=[current_id, next_id],
                         phase=SleepPhase.REM,
                         event_type=DreamEventType.REACTIVATE,
-                        result=f"梦境转移: {memories[next_id].semantic_pointer[:30]}",
+                        result=f"梦境转移: {str(pointer)[:30]}",
                         importance=0.2,
                     )
 
@@ -962,8 +965,15 @@ class DreamConsolidationSystem:
         """
         emotion = getattr(mem, 'emotion_intensity', 0.0)
         activation = getattr(mem, 'activation_strength', 0.5)
-        # timestamp 越大越新（假设毫秒级）
-        recency = min(getattr(mem, 'timestamp', 0) / (time.time() * 1000 + 1), 1.0)
+        # 时间新鲜度计算（安全处理不同量级的时间戳）
+        timestamp_ms = getattr(mem, 'timestamp', 0)
+        if timestamp_ms > 1e12:  # 毫秒级时间戳
+            age_hours = (time.time() * 1000 - timestamp_ms) / 3600000.0
+        elif timestamp_ms > 1e9:  # 秒级时间戳
+            age_hours = (time.time() - timestamp_ms) / 3600.0
+        else:
+            age_hours = 999.0  # 未知时间戳，视为非常陈旧
+        recency = max(0.0, 1.0 - age_hours / 720.0)  # 30天内线性衰减
         return 0.4 * recency + 0.3 * emotion + 0.3 * activation
 
     def _dream_step(
