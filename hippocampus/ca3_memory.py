@@ -739,6 +739,15 @@ class CA3EpisodicMemory(nn.Module):
                 recall_count=mem_dict.get('recall_count', 0),
                 consecutive_misses=mem_dict.get('consecutive_misses', 0),
             )
+            # FIX: 恢复人类记忆增强字段（之前遗漏导致 save/load 后这些字段丢失）
+            memory.forgetting_curve_state = mem_dict.get('forgetting_curve_state', None)
+            memory.context_signature = mem_dict.get('context_signature', None)
+            memory.emotion_type = mem_dict.get('emotion_type', 'neutral')
+            memory.emotion_intensity = mem_dict.get('emotion_intensity', 0.0)
+            memory.source_type = mem_dict.get('source_type', 'user_told')
+            memory.source_confidence = mem_dict.get('source_confidence', 0.8)
+            memory.interference_vulnerability = mem_dict.get('interference_vulnerability', 0.0)
+            memory.last_access_time = mem_dict.get('last_access_time', 0.0)
             self.memories[mem_id] = memory
         
         self.time_index = state.get('time_index', {})

@@ -173,10 +173,27 @@ class MemoryConsolidationManager:
         tier = getattr(memory, 'tier', MemoryTier.SHORT_TERM)
         
         # 优先使用 Ebbinghaus 遗忘曲线（如果记忆对象支持）
-        if hasattr(memory, 'forgetting_curve') and memory.forgetting_curve is not None:
-            retention = memory.forgetting_curve.get_retention()
-            memory.activation_strength *= retention
-            memory.activation_strength = max(0.01, memory.activation_strength)
+        # FIX: EpisodicMemory 中字段名是 forgetting_curve_state（dict），不是 forgetting_curve（对象）
+        forgetting_state = getattr(memory, 'forgetting_curve_state', None)
+        if forgetting_state is not None:
+            try:
+                from hippocampus.human_memory_enhancements import EbbinghausForgettingCurve
+                curve = EbbinghausForgettingCurve()
+                curve.set_state(forgetting_state)
+                
+                # FIX: 如果 last_rehearsal_time 为 None，使用记忆创建时间作为基准
+                # 这样即使没有复述过，遗忘曲线也会正常衰减
+                if curve.last_rehearsal_time is None:
+                    memory_timestamp = getattr(memory, 'timestamp', 0)
+                    if memory_timestamp > 0:
+                        curve.last_rehearsal_time = memory_timestamp / 1000.0  # ms -> s
+                
+                retention = curve.get_retention()
+                memory.activation_strength *= retention
+            except Exception:
+                # 回退到简单指数衰减
+                decay_rate = self.get_decay_rate(tier)
+                memory.activation_strength *= decay_rate
         else:
             # 回退到简单指数衰减
             decay_rate = self.get_decay_rate(tier)
