@@ -347,6 +347,8 @@ class EmotionalThinkingIntegration:
         # 情绪强度也用 EMA 平滑
         self._state.emotion_intensity = inertia * old_state.emotion_intensity + delta * intensity
 
+        self._clamp_state()
+
         # 更新元数据
         self._state.primary_emotion = primary_emotion
         self._state.last_updated = timestamp
@@ -418,6 +420,13 @@ class EmotionalThinkingIntegration:
             logger.warning(f"[EmotionalThinking] 情绪检测异常: {e}")
 
         return ("neutral", 0.0)
+
+    def _clamp_state(self):
+        """Clamp VAD values to valid ranges to prevent floating-point drift"""
+        self._state.valence = max(-1.0, min(1.0, self._state.valence))
+        self._state.arousal = max(0.0, min(1.0, self._state.arousal))
+        self._state.dominance = max(0.0, min(1.0, self._state.dominance))
+        self._state.emotion_intensity = max(0.0, min(1.0, self._state.emotion_intensity))
 
     def get_current_state(self) -> EmotionalState:
         """
@@ -655,6 +664,8 @@ class EmotionalThinkingIntegration:
             # 情绪强度也部分感染
             new_intensity = contagion_rate * user_intensity + (1 - contagion_rate) * self._state.emotion_intensity
             self._state.emotion_intensity = inertia * self._state.emotion_intensity + (1 - inertia) * new_intensity
+
+            self._clamp_state()
 
             # 更新主情绪标签 (如果感染强度足够)
             if user_intensity > self._state.emotion_intensity * 0.8:
@@ -1054,6 +1065,8 @@ class EmotionalThinkingIntegration:
 
         # 情绪强度随调节逐渐下降
         self._state.emotion_intensity *= (1.0 - rate * 0.5)
+
+        self._clamp_state()
 
         self._regulation_steps_taken += 1
 

@@ -141,6 +141,7 @@ class BrainAIBot:
                         except Exception as e:
                             logger.error(f"[Thinking] 潜意识处理输入失败: {e}")
                             self.is_user_interacting = False
+                            self.pending_user_input = None
                         continue
                     
                     # ========== 生成自由独白 + 思维修改缓冲区 ==========
@@ -236,7 +237,7 @@ class BrainAIBot:
                                                 )
                                                 last_sent_text = new_text
                                                 last_update_time = current_time
-                                            except:
+                                            except Exception:
                                                 pass
                                 
                                 draft_buffer = ""  # 清空缓冲区
@@ -260,7 +261,7 @@ class BrainAIBot:
                                         text=final_text,
                                         parse_mode='Markdown'
                                     )
-                                except:
+                                except Exception:
                                     pass
                             else:
                                 # 如果从未发送过，发送最终结果
@@ -465,7 +466,7 @@ class BrainAIBot:
         
         # 8. 最近记忆锚点数值（新增）
         # _last_recalled_memories 在 BrainAIInterface.__init__ 中需要预初始化
-        if self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
+        if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
             stats_text += "⚓ [*最近记忆锚点*]\n"
             for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
                 semantic = mem.get('semantic_pointer', 'N/A')[:35]
@@ -648,31 +649,29 @@ class BrainAIBot:
             
             # 设置用户交互状态（暂停后台思考）
             self.is_user_interacting = True
-            
-            if not user_message:
-                self.is_user_interacting = False
-                return
-        
-            logger.info(f"收到用户 {user_id} 消息：{user_message[:50]}...")
-            
-            # ========== 检测用户反馈 ==========
-            feedback_handler = get_feedback_handler()
-            feedback = feedback_handler.detect_feedback(user_message)
-            
-            if feedback.is_feedback:
-                logger.info(f"[用户反馈] 类型={'正面' if feedback.is_positive else '负面'}, "
-                           f"强度={feedback.intensity:.2f}, 关键词={feedback.keywords_matched}")
-                
-                if not feedback.is_positive and feedback.intensity >= 0.7:
-                    logger.warning(f"[用户反馈] 检测到强负面反馈，将触发 STDP LTD 学习")
-            
-            if chat_id not in self.typing_simulators:
-                self.typing_simulators[chat_id] = TypingSimulator(context.bot, chat_id)
-            
-            typing = self.typing_simulators[chat_id]
-            await typing.start_typing()
-            
             try:
+                if not user_message:
+                    return
+
+                logger.info(f"收到用户 {user_id} 消息：{user_message[:50]}...")
+                
+                # ========== 检测用户反馈 ==========
+                feedback_handler = get_feedback_handler()
+                feedback = feedback_handler.detect_feedback(user_message)
+                
+                if feedback.is_feedback:
+                    logger.info(f"[用户反馈] 类型={'正面' if feedback.is_positive else '负面'}, "
+                               f"强度={feedback.intensity:.2f}, 关键词={feedback.keywords_matched}")
+                    
+                    if not feedback.is_positive and feedback.intensity >= 0.7:
+                        logger.warning(f"[用户反馈] 检测到强负面反馈，将触发 STDP LTD 学习")
+                
+                if chat_id not in self.typing_simulators:
+                    self.typing_simulators[chat_id] = TypingSimulator(context.bot, chat_id)
+                
+                typing = self.typing_simulators[chat_id]
+                await typing.start_typing()
+                
                 system_prompt = "You are a helpful AI assistant. Answer the user accurately and concisely."
                 history = self.user_history.get(user_id, [])
                 
@@ -711,8 +710,13 @@ class BrainAIBot:
                 
             except Exception as e:
                 logger.error(f"处理消息失败：{e}", exc_info=True)
-                await typing.stop_typing()
-                await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
+                try:
+                    await typing.stop_typing()
+                    await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
+                except Exception:
+                    pass
+            finally:
+                self.is_user_interacting = False
 
     async def _handle_stream_generation(
         self,
@@ -831,7 +835,7 @@ class BrainAIBot:
                     if current_time - last_update_time > update_interval:
                         # 更新召回记忆信息
                         recalled_mem_str = ""
-                        if self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
+                        if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
                             recalled_mem_str = "\n📖 *召回记忆:*\n"
                             for i, mem in enumerate(self.ai._last_recalled_memories[:2], 1):
                                 semantic = mem.get('semantic_pointer', 'N/A')[:35]
@@ -962,7 +966,7 @@ class BrainAIBot:
                 try:
                     await initial_message.edit_text(final_display, parse_mode='Markdown')
                     break
-                except:
+                except Exception:
                     try:
                         # 回退到简化版本
                         simplified = (
@@ -973,7 +977,7 @@ class BrainAIBot:
                         )
                         await initial_message.edit_text(simplified, parse_mode=None)
                         break
-                    except:
+                    except Exception:
                         await asyncio.sleep(1)
             
             self._update_history(user_id, user_message, full_response)
@@ -1051,7 +1055,10 @@ class BrainAIBot:
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         self.is_thinking_enabled = True
-        self.application.post_init = self._post_init_hook
+        # self.application.post_init = self._post_init_hook  # BUG 1: removed - method does not exist on Application
+        # Start background thinking loop directly instead
+        self.thinking_task = asyncio.create_task(self._background_thinking_loop())
+        logger.info("[Bot] 后台思考任务已启动")
         
         logger.info("Bot 已启动，正在监听消息...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)

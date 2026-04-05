@@ -224,7 +224,11 @@ class DefaultModeNetwork:
     
     def get_state(self) -> DMNState:
         """获取当前 DMN 状态"""
-        # 自动状态转换
+        # 自动状态转换（加锁保护）
+        if self._lock:
+            with self._lock:
+                self._auto_transition()
+                return self.state
         self._auto_transition()
         return self.state
     

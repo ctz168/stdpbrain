@@ -433,106 +433,106 @@ class DreamConsolidationSystem:
                 return self._current_dream or DreamSequence()
 
             self._is_sleeping = True
+            try:
+                # 计算参数
+                if depth is None:
+                    idle_minutes = (time.time() - self._last_activity_time) / 60.0
+                    # 空闲30分钟→depth=0.3，空闲2小时→depth=0.8，空闲8小时→depth=1.0
+                    depth = min(1.0, 0.3 + 0.7 * min(idle_minutes / 480.0, 1.0))
 
-        try:
-            # 计算参数
-            if depth is None:
-                idle_minutes = (time.time() - self._last_activity_time) / 60.0
-                # 空闲30分钟→depth=0.3，空闲2小时→depth=0.8，空闲8小时→depth=1.0
-                depth = min(1.0, 0.3 + 0.7 * min(idle_minutes / 480.0, 1.0))
+                if num_cycles is None:
+                    num_cycles = self.config.typical_sleep_cycles
 
-            if num_cycles is None:
-                num_cycles = self.config.typical_sleep_cycles
+                # 初始化梦境序列
+                dream = DreamSequence(total_cycles=num_cycles)
+                self._current_dream = dream
 
-            # 初始化梦境序列
-            dream = DreamSequence(total_cycles=num_cycles)
-            self._current_dream = dream
+                memories = self._get_all_memories()
+                if not memories:
+                    logger.info("[Dream] 无记忆可处理，跳过睡眠周期")
+                    return dream
 
-            memories = self._get_all_memories()
-            if not memories:
-                logger.info("[Dream] 无记忆可处理，跳过睡眠周期")
-                return dream
+                total_memories_in_session = 0
 
-            total_memories_in_session = 0
+                # ========== 逐周期执行 ==========
+                for cycle_idx in range(num_cycles):
+                    self._current_cycle = cycle_idx + 1
+                    cycle_processed = 0
 
-            # ========== 逐周期执行 ==========
-            for cycle_idx in range(num_cycles):
-                self._current_cycle = cycle_idx + 1
-                cycle_processed = 0
+                    # --- 阶段1: NREM 浅睡期 ---
+                    self._current_phase = SleepPhase.NREM_LIGHT
+                    nrem_count = self._run_nrem_light(
+                        memories, dream, depth, total_memories_in_session,
+                    )
+                    cycle_processed += nrem_count
+                    total_memories_in_session += nrem_count
 
-                # --- 阶段1: NREM 浅睡期 ---
-                self._current_phase = SleepPhase.NREM_LIGHT
-                nrem_count = self._run_nrem_light(
-                    memories, dream, depth, total_memories_in_session,
-                )
-                cycle_processed += nrem_count
-                total_memories_in_session += nrem_count
+                    # 检查是否超出总处理量限制
+                    if total_memories_in_session >= self.config.max_total_memories_per_sleep:
+                        logger.info(f"[Dream] 已达到总处理量上限，提前结束")
+                        break
 
-                # 检查是否超出总处理量限制
-                if total_memories_in_session >= self.config.max_total_memories_per_sleep:
-                    logger.info(f"[Dream] 已达到总处理量上限，提前结束")
-                    break
+                    # --- 阶段2: NREM 深睡期 ---
+                    self._current_phase = SleepPhase.NREM_DEEP
+                    nrem_deep_count = self._run_nrem_deep(
+                        memories, dream, depth, total_memories_in_session,
+                    )
+                    cycle_processed += nrem_deep_count
+                    total_memories_in_session += nrem_deep_count
 
-                # --- 阶段2: NREM 深睡期 ---
-                self._current_phase = SleepPhase.NREM_DEEP
-                nrem_deep_count = self._run_nrem_deep(
-                    memories, dream, depth, total_memories_in_session,
-                )
-                cycle_processed += nrem_deep_count
-                total_memories_in_session += nrem_deep_count
+                    if total_memories_in_session >= self.config.max_total_memories_per_sleep:
+                        logger.info(f"[Dream] 已达到总处理量上限，提前结束")
+                        break
 
-                if total_memories_in_session >= self.config.max_total_memories_per_sleep:
-                    logger.info(f"[Dream] 已达到总处理量上限，提前结束")
-                    break
+                    # --- 阶段3: REM 期 ---
+                    self._current_phase = SleepPhase.REM
+                    rem_count = self._run_rem(
+                        memories, dream, depth, total_memories_in_session,
+                    )
+                    cycle_processed += rem_count
+                    total_memories_in_session += rem_count
 
-                # --- 阶段3: REM 期 ---
-                self._current_phase = SleepPhase.REM
-                rem_count = self._run_rem(
-                    memories, dream, depth, total_memories_in_session,
-                )
-                cycle_processed += rem_count
-                total_memories_in_session += rem_count
+                    logger.debug(
+                        f"[Dream] 周期 {cycle_idx + 1}/{num_cycles} 完成: "
+                        f"处理 {cycle_processed} 条记忆"
+                    )
 
-                logger.debug(
-                    f"[Dream] 周期 {cycle_idx + 1}/{num_cycles} 完成: "
-                    f"处理 {cycle_processed} 条记忆"
-                )
+                # ========== 完成统计 ==========
+                dream.memories_processed = total_memories_in_session
+                dream.phase_distribution = self._count_phase_distribution(dream)
 
-            # ========== 完成统计 ==========
-            dream.memories_processed = total_memories_in_session
-            dream.phase_distribution = self._count_phase_distribution(dream)
+                # 保存梦境记录
+                self._dream_sequences.append(dream)
+                if len(self._dream_sequences) > 100:
+                    # 只保留最近100条梦境记录
+                    self._dream_sequences = self._dream_sequences[-100:]
 
-            # 保存梦境记录
-            self._dream_sequences.append(dream)
-            if len(self._dream_sequences) > 100:
-                # 只保留最近100条梦境记录
-                self._dream_sequences = self._dream_sequences[-100:]
+                # 更新全局统计
+                self._stats['total_sleep_sessions'] += 1
+                self._stats['total_sleep_cycles'] += dream.total_cycles
+                self._stats['total_memories_processed'] += dream.memories_processed
 
-            # 更新全局统计
-            self._stats['total_sleep_sessions'] += 1
-            self._stats['total_sleep_cycles'] += dream.total_cycles
-            self._stats['total_memories_processed'] += dream.memories_processed
+                # 输出重要洞察到日志
+                if dream.creative_insights:
+                    logger.info(
+                        f"[Dream] 本次睡眠产生 {len(dream.creative_insights)} 条创意洞察"
+                    )
+                    for insight in dream.creative_insights[:3]:
+                        logger.info(f"[Dream] 💡 {insight}")
 
-            # 输出重要洞察到日志
-            if dream.creative_insights:
+                # 清理
+                self._current_dream = None
+
                 logger.info(
-                    f"[Dream] 本次睡眠产生 {len(dream.creative_insights)} 条创意洞察"
+                    f"[Dream] 睡眠完成: {dream.total_cycles} 周期, "
+                    f"{dream.memories_processed} 条记忆, "
+                    f"{len(dream.creative_insights)} 条洞察"
                 )
-                for insight in dream.creative_insights[:3]:
-                    logger.info(f"[Dream] 💡 {insight}")
-
-            # 清理
-            self._current_dream = None
-
-            logger.info(
-                f"[Dream] 睡眠完成: {dream.total_cycles} 周期, "
-                f"{dream.memories_processed} 条记忆, "
-                f"{len(dream.creative_insights)} 条洞察"
-            )
-            return dream
-
-        finally:
-            with self._lock:
+                return dream
+            except Exception as e:
+                logger.error(f"[Dream] sleep cycle failed: {e}")
+                return self._current_dream or DreamSequence()
+            finally:
                 self._is_sleeping = False
 
     def trigger_sleep(self, depth: float = 0.5, num_cycles: int = 4) -> DreamSequence:

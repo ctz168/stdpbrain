@@ -824,30 +824,14 @@ class CreativeInsightEngine(nn.Module):
         return None
 
     def _find_shared_features(self, concept_a: str, concept_b: str) -> List[str]:
-        """
-        找到两个概念的共同结构特征
-
-        通过分析概念之间的关联网络，发现它们共享的邻接概念。
-
-        Args:
-            concept_a: 概念A
-            concept_b: 概念B
-
-        Returns:
-            共同特征列表
-        """
-        # 找到A和B各自的相关概念
-        neighbors_a = set(self._find_associated_concepts(concept_a, top_k=10))
-        neighbors_b = set(self._find_associated_concepts(concept_b, top_k=10))
-
-        # 共享的邻居就是共同特征
-        shared = neighbors_a & neighbors_b
-
-        # 过滤掉弱关联，返回最强的几个
-        shared_list = [(c, s) for c, s in shared if s > 0.3]
-        shared_list.sort(key=lambda x: x[1], reverse=True)
-
-        return [c for c, s in shared_list[:3]]
+        """Find shared features between two concepts"""
+        try:
+            neighbors_a = {c for c, s in self._find_associated_concepts(concept_a, top_k=10)}
+            neighbors_b = {c for c, s in self._find_associated_concepts(concept_b, top_k=10)}
+            shared = neighbors_a & neighbors_b
+            return list(shared)[:3]
+        except Exception:
+            return []
 
     # ==================== 3. 远程联想测试 (Remote Associates Test) ====================
 

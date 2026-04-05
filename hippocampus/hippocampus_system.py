@@ -584,6 +584,8 @@ class HippocampusSystem(nn.Module):
     def record_activity(self):
         """记录用户活动 (重置空闲计时器)"""
         self.swr_consolidation.record_activity()
+        if self.dream_system is not None:
+            self.dream_system.record_activity()
     
     def add_replay_sequence(
         self,

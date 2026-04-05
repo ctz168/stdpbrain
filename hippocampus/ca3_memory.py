@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import time
 from collections import OrderedDict
+import hashlib
 import logging
 
 from .memory_layers import MemoryTier, MemoryConsolidationManager, TierConfig
@@ -241,7 +242,7 @@ class CA3EpisodicMemory(nn.Module):
                 embed_text_fallback = (user_input or content or key_entities or "")[:200]
                 if embed_text_fallback:
                     logger.warning(f"[CA3] 所有embedding生成失败，使用hash占位向量 (is_core={is_core})")
-                    _hash = hash(embed_text_fallback)
+                    _hash = int(hashlib.sha256(embed_text_fallback.encode('utf-8')).hexdigest(), 16)
                     embed_dim = self.feature_dim
                     manual_vec = [(((_hash * (i + 1) * 2654435761) >> 16) % 10000) / 10000.0 for i in range(embed_dim)]
                     _norm = sum(v * v for v in manual_vec) ** 0.5

@@ -94,7 +94,7 @@ class StreamHandler:
             full_response = self._generate_simple_response(input_text)
             
             # 按字符分块输出
-            chunk_size = 3
+            chunk_size = self.chunk_size
             for i in range(0, len(full_response), chunk_size):
                 chunk = full_response[i:i+chunk_size]
                 yield chunk
@@ -145,7 +145,10 @@ class TypingSimulator:
 
     async def _typing_loop(self):
         while self._is_typing:
-            await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
+            try:
+                await self.bot.send_chat_action(chat_id=self.chat_id, action="typing")
+            except Exception:
+                pass
             await asyncio.sleep(4) # Telegram typing state lasts 5 seconds
 
     async def start_typing(self):

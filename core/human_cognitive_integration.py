@@ -7,6 +7,7 @@
 
 import time
 import logging
+import threading
 from typing import Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class HumanCognitiveIntegration:
         # FIX #1: 保存海马体系统引用，供后续 enhance_memory_storage/enhance_recall 使用
         self._hippocampus_system = None
         self._inner_thought_engine = None
+        self._lock = threading.Lock()
         
         # FIX #2: 安全获取 hc_config，避免 None 时 getattr 崩溃
         hc_config = getattr(config, 'hippocampus', None)
@@ -243,7 +245,8 @@ class HumanCognitiveIntegration:
         Returns:
             增强后的上下文字典
         """
-        if not self.memory_enhancements:
+        # BUG 3 FIX: Guard against missing hippocampus system, not memory_enhancements
+        if not self._hippocampus_system:
             return {}
         
         enhancements = {}
@@ -327,92 +330,99 @@ class HumanCognitiveIntegration:
         Returns:
             召回加成系数 (0.0 ~ 0.5)
         """
-        boost = 0.0
-        
-        if not self.memory_enhancements:
-            return boost
-        
-        # 1. 艾宾浩斯保持率加成
-        if self._ebbinghaus_enabled and getattr(memory, 'forgetting_curve_state', None) is not None:
-            try:
-                from hippocampus.human_memory_enhancements import EbbinghausForgettingCurve
-                curve = EbbinghausForgettingCurve()
-                curve.set_state(memory.forgetting_curve_state)
-                retention = curve.get_retention()
-                # 保持率越高，召回加成越大
-                boost += retention * 0.3
-            except Exception:
-                pass
-        
-        # 2. 情绪强度加成（高唤醒情绪更容易被召回）
-        emotion_intensity = getattr(memory, 'emotion_intensity', 0.0)
-        emotion_type = getattr(memory, 'emotion_type', 'neutral')
-        if self._emotional_enabled and emotion_intensity > 0.3:
-            try:
-                from hippocampus.human_memory_enhancements import EmotionalMemoryModulator
-                # FIX #9: EMOTION_AROUSAL 是类属性字典，可以直接访问
-                arousal = EmotionalMemoryModulator.EMOTION_AROUSAL.get(emotion_type, 0.0)
-                boost += emotion_intensity * arousal * 0.2
-            except Exception:
-                pass
-        
-        # 3. 语境相似度加成
-        # FIX #10: 使用 self._hippocampus_system 替代未定义的 hippocampus_system
-        if self._context_enabled and current_context and getattr(memory, 'context_signature', None):
-            try:
-                from hippocampus.human_memory_enhancements import ContextDependentMemory
-                hc = self._hippocampus_system
-                if hc is not None and getattr(hc, '_context_memory', None) is not None:
-                    context_boost = hc._context_memory.compute_context_boost(
-                        memory.context_signature, current_context
-                    )
-                    boost += context_boost
-            except Exception:
-                pass
-        
-        # 4. 记忆干扰检测 - 新记忆对旧记忆的干扰
-        hc = self._hippocampus_system
-        if self._interference_enabled and hc is not None and getattr(hc, '_interference_engine', None) is not None:
-            try:
-                query_embedding = getattr(query_text, 'embedding', None)  # if query has embedding
-                # Simple text-based interference detection
-                interference_penalty = 0.0
-                memory_content = getattr(memory, 'content', '') or getattr(memory, 'semantic_summary', '')
-                if memory_content and query_text:
-                    # Simple character overlap as interference proxy
-                    overlap = len(set(query_text) & set(memory_content)) / max(len(set(query_text) | set(memory_content)), 1)
-                    if overlap > 0.8:  # Very similar = potential interference
-                        interference_penalty = -0.05 * (overlap - 0.8) / 0.2
-                boost += interference_penalty
-            except Exception:
-                pass
-        
-        # 5. 间隔效应加成 - 最近复习过的记忆更容易召回
-        if self._spacing_enabled and hc is not None and getattr(hc, '_spacing_manager', None) is not None:
-            try:
-                mem_id = getattr(memory, 'memory_id', '')
-                if mem_id:
-                    rehearsal_info = hc._spacing_manager.get_rehearsal_info(mem_id)
-                    if rehearsal_info and rehearsal_info.get('rehearsal_count', 0) > 0:
-                        # 每次成功复述增加0.02加成，最多0.1
-                        rehearsal_boost = min(rehearsal_info['rehearsal_count'] * 0.02, 0.1)
-                        boost += rehearsal_boost
-            except Exception:
-                pass
-        
-        # 6. 心境一致性加成 - 当前情绪偏向相似情绪的记忆
-        if (self._emotional_thinking_enabled 
-            and self._inner_thought_engine is not None 
-            and getattr(self._inner_thought_engine, '_emotional_thinking', None) is not None):
-            try:
-                emo_thinking = self._inner_thought_engine._emotional_thinking
-                mem_emotion = getattr(memory, 'emotion_type', 'neutral')
-                mood_boost = emo_thinking.compute_mood_congruence_boost(memory_emotion=mem_emotion)
-                boost += mood_boost
-            except Exception:
-                pass
-        
-        return max(min(boost, 0.5), 0.0)
+        with self._lock:
+            boost = 0.0
+            
+            # BUG 3 FIX: Guard against missing hippocampus system, not memory_enhancements
+            if not self._hippocampus_system:
+                return boost
+            
+            # 1. 艾宾浩斯保持率加成
+            # BUG 6 FIX: Reuse pre-existing Ebbinghaus curve instance if available
+            if self._ebbinghaus_enabled and getattr(memory, 'forgetting_curve_state', None) is not None:
+                try:
+                    from hippocampus.human_memory_enhancements import EbbinghausForgettingCurve
+                    hc = self._hippocampus_system
+                    curve = None
+                    if hc is not None and hasattr(hc, '_ebbinghaus_curve') and hc._ebbinghaus_curve is not None:
+                        curve = hc._ebbinghaus_curve
+                    else:
+                        curve = EbbinghausForgettingCurve()
+                    curve.set_state(memory.forgetting_curve_state)
+                    retention = curve.get_retention()
+                    boost += retention * 0.3
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 艾宾浩斯保持率计算失败: {e}")
+            
+            # 2. 情绪强度加成（高唤醒情绪更容易被召回）
+            emotion_intensity = getattr(memory, 'emotion_intensity', 0.0)
+            emotion_type = getattr(memory, 'emotion_type', 'neutral')
+            if self._emotional_enabled and emotion_intensity > 0.3:
+                try:
+                    from hippocampus.human_memory_enhancements import EmotionalMemoryModulator
+                    # FIX #9: EMOTION_AROUSAL 是类属性字典，可以直接访问
+                    arousal = EmotionalMemoryModulator.EMOTION_AROUSAL.get(emotion_type, 0.0)
+                    boost += emotion_intensity * arousal * 0.2
+                except Exception:
+                    pass
+            
+            # 3. 语境相似度加成
+            # FIX #10: 使用 self._hippocampus_system 替代未定义的 hippocampus_system
+            if self._context_enabled and current_context and getattr(memory, 'context_signature', None):
+                try:
+                    from hippocampus.human_memory_enhancements import ContextDependentMemory
+                    hc = self._hippocampus_system
+                    if hc is not None and getattr(hc, '_context_memory', None) is not None:
+                        context_boost = hc._context_memory.compute_context_boost(
+                            memory.context_signature, current_context
+                        )
+                        boost += context_boost
+                except Exception:
+                    pass
+            
+            # 4. 记忆干扰检测 - 新记忆对旧记忆的干扰
+            hc = self._hippocampus_system
+            if self._interference_enabled and hc is not None and getattr(hc, '_interference_engine', None) is not None:
+                try:
+                    query_embedding = getattr(query_text, 'embedding', None)  # if query has embedding
+                    # Simple text-based interference detection
+                    interference_penalty = 0.0
+                    memory_content = getattr(memory, 'content', '') or getattr(memory, 'semantic_summary', '')
+                    if memory_content and query_text:
+                        # Simple character overlap as interference proxy
+                        overlap = len(set(query_text) & set(memory_content)) / max(len(set(query_text) | set(memory_content)), 1)
+                        if overlap > 0.8:  # Very similar = potential interference
+                            interference_penalty = -0.05 * (overlap - 0.8) / 0.2
+                    boost += interference_penalty
+                except Exception:
+                    pass
+            
+            # 5. 间隔效应加成 - 最近复习过的记忆更容易召回
+            if self._spacing_enabled and hc is not None and getattr(hc, '_spacing_manager', None) is not None:
+                try:
+                    mem_id = getattr(memory, 'memory_id', '')
+                    if mem_id:
+                        rehearsal_info = hc._spacing_manager.get_rehearsal_info(mem_id)
+                        if rehearsal_info and rehearsal_info.get('rehearsal_count', 0) > 0:
+                            # 每次成功复述增加0.02加成，最多0.1
+                            rehearsal_boost = min(rehearsal_info['rehearsal_count'] * 0.02, 0.1)
+                            boost += rehearsal_boost
+                except Exception:
+                    pass
+            
+            # 6. 心境一致性加成 - 当前情绪偏向相似情绪的记忆
+            if (self._emotional_thinking_enabled 
+                and self._inner_thought_engine is not None 
+                and getattr(self._inner_thought_engine, '_emotional_thinking', None) is not None):
+                try:
+                    emo_thinking = self._inner_thought_engine._emotional_thinking
+                    mem_emotion = getattr(memory, 'emotion_type', 'neutral')
+                    mood_boost = emo_thinking.compute_mood_congruence_boost(memory_emotion=mem_emotion)
+                    boost += mood_boost
+                except Exception:
+                    pass
+            
+            return max(min(boost, 0.5), 0.0)
     
     def enhance_thinking(self, user_input: str) -> Dict[str, Any]:
         """
@@ -424,100 +434,111 @@ class HumanCognitiveIntegration:
         Returns:
             思维增强结果
         """
-        result = {}
-        
-        if not self.thinking_enhancements:
-            return result
-        
-        # FIX #11: 使用正确的 key（不带下划线前缀）
-        # create_human_thinking_suite() 返回的 key 是 'dual_process' 而非 '_dual_process'
-        
-        # 1. 双系统分类
-        dual_process = self.thinking_enhancements.get('dual_process')
-        if dual_process:
-            try:
-                dp_result = dual_process.process(user_input)
-                result['thinking_system'] = dp_result.system.value
-                result['thinking_confidence'] = dp_result.confidence
-                result['generation_config'] = dp_result.generation_config
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 双系统思维处理失败: {e}")
-        
-        # 2. 认知偏差检测
-        bias_engine = self.thinking_enhancements.get('cognitive_bias')
-        if bias_engine:
-            try:
-                bias_result = bias_engine.detect_bias_susceptibility(user_input)
-                result['bias_susceptibility'] = bias_result
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 认知偏差检测失败: {e}")
-        
-        # 3. 元认知置信度预测
-        metacog = self.thinking_enhancements.get('metacognition')
-        if metacog:
-            try:
-                confidence = metacog.predict_confidence(user_input)
-                result['metacognitive_confidence'] = confidence
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 元认知置信度预测失败: {e}")
-        
-        # 5. 类比推理
-        analogical = self.thinking_enhancements.get('analogical_reasoning')
-        if analogical:
-            try:
-                analog_result = analogical.find_analogies(user_input)
-                if analog_result:
-                    result['analogical_reasoning'] = {
-                        'has_analogy': True,
-                        'best_analogy_score': getattr(analog_result[0], 'similarity_score', 0.0) if analog_result else 0.0,
-                        'analogy_count': len(analog_result),
+        with self._lock:
+            result = {}
+            
+            if not self.thinking_enhancements:
+                return result
+            
+            # FIX #11: 使用正确的 key（不带下划线前缀）
+            # create_human_thinking_suite() 返回的 key 是 'dual_process' 而非 '_dual_process'
+            
+            # 1. 双系统分类
+            dual_process = self.thinking_enhancements.get('dual_process')
+            if dual_process:
+                try:
+                    dp_result = dual_process.process(user_input)
+                    result['thinking_system'] = dp_result.system.value
+                    result['thinking_confidence'] = dp_result.confidence
+                    result['generation_config'] = dp_result.generation_config
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 双系统思维处理失败: {e}")
+            
+            # 2. 认知偏差检测
+            bias_engine = self.thinking_enhancements.get('cognitive_bias')
+            if bias_engine:
+                try:
+                    bias_result = bias_engine.detect_bias_susceptibility(user_input)
+                    result['bias_susceptibility'] = bias_result
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 认知偏差检测失败: {e}")
+            
+            # 3. 元认知置信度预测
+            metacog = self.thinking_enhancements.get('metacognition')
+            if metacog:
+                try:
+                    confidence = metacog.predict_confidence(user_input)
+                    result['metacognitive_confidence'] = confidence
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 元认知置信度预测失败: {e}")
+            
+            # 5. 类比推理
+            analogical = self.thinking_enhancements.get('analogical_reasoning')
+            if analogical:
+                try:
+                    # BUG 1 FIX: find_analogies doesn't exist; use find_analogy(source, target) returning AnalogyMapping
+                    analog_result = analogical.find_analogy(
+                        source_situation=user_input,
+                        target_situation=user_input,
+                    )
+                    if analog_result and getattr(analog_result, 'overall_score', 0) > 0.2:
+                        result['analogical_reasoning'] = {
+                            'has_analogy': True,
+                            'best_analogy_score': analog_result.overall_score,
+                            'analogy_count': 1,
+                        }
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 类比推理失败: {e}")
+            
+            # 4. 工作记忆负载
+            wm = self.thinking_enhancements.get('working_memory')
+            if wm:
+                try:
+                    result['working_memory_load'] = wm.get_load()
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 工作记忆负载获取失败: {e}")
+            
+            # 6. 时间折扣
+            temporal = self.thinking_enhancements.get('temporal_discounting')
+            if temporal:
+                try:
+                    # 检查输入是否提及未来奖励/结果
+                    future_keywords = ["以后", "未来", "明天", "下周", "将来", "长期", "later", "future"]
+                    has_future = any(kw in user_input for kw in future_keywords)
+                    if has_future:
+                        # BUG 2 FIX: compute_discount doesn't exist; use compute_discount_curve(base_value, max_delay_days, emotional_state, num_points)
+                        discount_result = temporal.compute_discount_curve(
+                            base_value=1.0,
+                            max_delay_days=30.0,
+                            emotional_state="neutral",
+                            num_points=5,
+                        )
+                        result['temporal_discount'] = discount_result
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 时间折扣计算失败: {e}")
+            
+            # 7. 情绪思维整合 - 响应风格建议
+            if (self._emotional_thinking_enabled 
+                and self._inner_thought_engine is not None 
+                and hasattr(self._inner_thought_engine, '_emotional_thinking')
+                and self._inner_thought_engine._emotional_thinking is not None):
+                try:
+                    emo_thinking = self._inner_thought_engine._emotional_thinking
+                    profile = emo_thinking.get_emotion_cognition_profile()
+                    response_style = profile.get('response_style', {})
+                    if response_style:
+                        result['emotional_response_style'] = response_style
+                    # 情绪状态
+                    state = emo_thinking.get_current_state()
+                    result['current_emotional_state'] = {
+                        'primary_emotion': state.primary_emotion,
+                        'intensity': round(state.emotion_intensity, 3),
+                        'valence': round(state.valence, 3),
                     }
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 类比推理失败: {e}")
-        
-        # 4. 工作记忆负载
-        wm = self.thinking_enhancements.get('working_memory')
-        if wm:
-            try:
-                result['working_memory_load'] = wm.get_load()
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 工作记忆负载获取失败: {e}")
-        
-        # 6. 时间折扣
-        temporal = self.thinking_enhancements.get('temporal_discounting')
-        if temporal:
-            try:
-                # 检查输入是否提及未来奖励/结果
-                future_keywords = ["以后", "未来", "明天", "下周", "将来", "长期", "later", "future"]
-                has_future = any(kw in user_input for kw in future_keywords)
-                if has_future:
-                    discount_result = temporal.compute_discount(user_input)
-                    result['temporal_discount'] = discount_result
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 时间折扣计算失败: {e}")
-        
-        # 7. 情绪思维整合 - 响应风格建议
-        if (self._emotional_thinking_enabled 
-            and self._inner_thought_engine is not None 
-            and hasattr(self._inner_thought_engine, '_emotional_thinking')
-            and self._inner_thought_engine._emotional_thinking is not None):
-            try:
-                emo_thinking = self._inner_thought_engine._emotional_thinking
-                profile = emo_thinking.get_emotion_cognition_profile()
-                response_style = profile.get('response_style', {})
-                if response_style:
-                    result['emotional_response_style'] = response_style
-                # 情绪状态
-                state = emo_thinking.get_current_state()
-                result['current_emotional_state'] = {
-                    'primary_emotion': state.primary_emotion,
-                    'intensity': round(state.emotion_intensity, 3),
-                    'valence': round(state.valence, 3),
-                }
-            except Exception as e:
-                logger.debug(f"[HumanCognitive] 情绪思维整合失败: {e}")
-        
-        return result
+                except Exception as e:
+                    logger.debug(f"[HumanCognitive] 情绪思维整合失败: {e}")
+            
+            return result
     
     def get_stats(self) -> Dict[str, Any]:
         """获取人类认知增强统计"""
@@ -530,13 +551,12 @@ class HumanCognitiveIntegration:
                 'interference': self._interference_enabled,
                 'source_monitoring': self._source_enabled,
             },
+            # BUG 5 FIX: Check individual module keys instead of showing same boolean for all
             'thinking_enhancements': {
-                'dual_process': self.thinking_enhancements is not None,
-                'cognitive_bias': self.thinking_enhancements is not None,
-                'metacognition': self.thinking_enhancements is not None,
-                'analogical_reasoning': self.thinking_enhancements is not None,
-                'working_memory': self.thinking_enhancements is not None,
-                'temporal_discounting': self.thinking_enhancements is not None,
+                key: (self.thinking_enhancements is not None 
+                      and self.thinking_enhancements.get(key) is not None)
+                for key in ['dual_process', 'cognitive_bias', 'metacognition',
+                            'analogical_reasoning', 'working_memory', 'temporal_discounting']
             }
         }
         

@@ -256,6 +256,12 @@ class BrainAIInterface:
         # 最近召回的记忆（预初始化，避免 hasattr 检查）
         self._last_recalled_memories: List[Dict] = []
         
+        # BUG FIX: 预初始化缺失的属性，避免运行时 AttributeError
+        self._start_time = time.time()
+        self._current_recalled_memories = []
+        self._current_kv_memories = []
+        self.last_feedback = None
+        
         # 状态文件路径
         self.state_path = "brain_state.pt"
         
@@ -349,7 +355,7 @@ class BrainAIInterface:
         self._setup_hippocampus_gate()
 
         # KV cache预热（加速首token）
-        if getattr(config.hard_constraints, 'KV_CACHE_WARMUP', True):
+        if getattr(getattr(config, 'hard_constraints', None), 'KV_CACHE_WARMUP', True):
             self._warmup_kv_cache()
 
         # ========== 14. 默认模式网络 (DMN) - 空闲时自发认知 ==========
@@ -767,7 +773,6 @@ class BrainAIInterface:
                         clarification = self._generate_clarification(user_input, prediction_error)
                         # 主动发送（需 Bot 支持 allow_proactive）
                         self._send_proactive_message(clarification, is_clarification=True)
-                        self.clarification_count += 1
                 
             except Exception as e:
                 logger.warning(f"预测编码失败: {e}")
@@ -1059,7 +1064,7 @@ class BrainAIInterface:
                 embeddings = self.model.model.base_model.get_input_embeddings()(input_ids)
             self.current_thought_state = embeddings.mean(dim=1)
             print(f"[BrainAI] 思维种子隐藏状态已初始化，shape={self.current_thought_state.shape}")
-        except:
+        except Exception:
             self.current_thought_state = torch.randn(1, self.model_hidden_size, device=self.device) * 0.01
             print(f"[BrainAI] 思维种子回退到随机初始化")
 
@@ -1115,7 +1120,7 @@ class BrainAIInterface:
         ]
         try:
             prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)
-        except:
+        except Exception:
             prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{trigger}<|im_end|>\n<|im_start|>assistant\n"
         return prompt
 
@@ -1485,38 +1490,39 @@ class BrainAIInterface:
                         # 思维反思：审视草稿内容
                         try:
                             context = self._build_proactive_context()
-                            intent, confidence, debug = self.proactive_generator(
-                                self.current_thought_state, context
-                            )
-                            
-                            # 根据置信度判断是否"想清楚"了
-                            if confidence < 0.25:
-                                # 置信度太低，需要修改
-                                should_revise = True
-                                logger.debug(f"[思维修改] 置信度低，重新思考 (conf={confidence:.2f})")
-                            elif confidence > 0.5:
-                                # 置信度高，可以输出
-                                should_output = True
-                                logger.debug(f"[想清楚了] 置信度高，输出 (conf={confidence:.2f})")
-                            else:
-                                # 中等置信度，继续思考
-                                logger.debug(f"[继续思考] 置信度中等 (conf={confidence:.2f})")
-                            
-                            # 如果需要修改草稿，生成新的思维指导
-                            if should_revise and draft_buffer:
-                                # 基于当前草稿生成改进建议
-                                revision_context = f"当前草稿：{draft_buffer[-200:]}\n思考：如何改进这个回复？"
-                                new_thought = await asyncio.to_thread(
-                                    self._generate_spontaneous_monologue, 25, 0.8
+                            if self.proactive_generator is not None:
+                                intent, confidence, debug = self.proactive_generator(
+                                    self.current_thought_state, context
                                 )
                                 
-                                # 如果有新想法，更新潜意识
-                                if new_thought and len(new_thought) > 5:
-                                    current_subconscious = new_thought
-                                    yield {"type": "subconscious_refresh", "content": current_subconscious}
-                                    logger.debug(f"[思维更新] {new_thought[:40]}...")
-                            
-                            last_confidence = confidence
+                                # 根据置信度判断是否"想清楚"了
+                                if confidence < 0.25:
+                                    # 置信度太低，需要修改
+                                    should_revise = True
+                                    logger.debug(f"[思维修改] 置信度低，重新思考 (conf={confidence:.2f})")
+                                elif confidence > 0.5:
+                                    # 置信度高，可以输出
+                                    should_output = True
+                                    logger.debug(f"[想清楚了] 置信度高，输出 (conf={confidence:.2f})")
+                                else:
+                                    # 中等置信度，继续思考
+                                    logger.debug(f"[继续思考] 置信度中等 (conf={confidence:.2f})")
+                                
+                                # 如果需要修改草稿，生成新的思维指导
+                                if should_revise and draft_buffer:
+                                    # 基于当前草稿生成改进建议
+                                    revision_context = f"当前草稿：{draft_buffer[-200:]}\n思考：如何改进这个回复？"
+                                    new_thought = await asyncio.to_thread(
+                                        self._generate_spontaneous_monologue, 25, 0.8
+                                    )
+                                    
+                                    # 如果有新想法，更新潜意识
+                                    if new_thought and len(new_thought) > 5:
+                                        current_subconscious = new_thought
+                                        yield {"type": "subconscious_refresh", "content": current_subconscious}
+                                        logger.debug(f"[思维更新] {new_thought[:40]}...")
+                                
+                                last_confidence = confidence
                             
                         except Exception as e:
                             logger.debug(f"思维反思失败: {e}")
@@ -1597,7 +1603,10 @@ class BrainAIInterface:
         salience_stream = min(salience_stream, 3.0)
 
         identity_patterns = ["我叫", "我是", "我的名字", "我今年", "我的职业", "我喜欢", "我住", "我在", "我的电话", "我的手机", "联系方式", "我的邮箱", "我来自", "我毕业于", "我的学校"]
-        is_core_memory = any(pattern in user_input for pattern in identity_patterns)
+        is_question = user_input.rstrip().endswith('？') or user_input.rstrip().endswith('?')
+        interrogative_words = ['什么', '哪个', '哪里', '谁', '多少', '几岁', '吗', '呢']
+        is_question = is_question or any(w in user_input for w in interrogative_words)
+        is_core_memory = (not is_question) and any(pattern in user_input for pattern in identity_patterns)
 
         enhanced_pointer_stream = f"用户: {user_input[:80]} | 回复: {full_response[:80]}"
         memory_content_stream = f"{user_input} -> {full_response}"
@@ -2055,7 +2064,7 @@ class BrainAIInterface:
         # 使用 Qwen3.5 原生 chat template
         try:
             prompt = self.model.apply_chat_template_safe(messages, tokenize=False, add_generation_prompt=True)
-        except:
+        except Exception:
             prompt = ""
             for msg in messages:
                 prompt += f"<|im_start|>{msg['role']}\n{msg['content']}<|im_end|>\n"
@@ -2563,7 +2572,7 @@ class BrainAIInterface:
         return ProactiveContext(
             time_silence_seconds=time.time() - self.last_user_input_time,
             time_since_output=time.time() - self.last_output_time,
-            current_thought=self.current_thought_state.mean(dim=-1) if self.current_thought_state is not None else torch.zeros(self.model_hidden_size, device=self.device),
+            current_thought=self.current_thought_state.squeeze(0) if self.current_thought_state is not None else torch.zeros(self.model_hidden_size, device=self.device),
             mind_state=self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "RESTING",
             goal_context=self.goal_system.current_goal.description if self.goal_system and self.goal_system.current_goal else None,
             memory_salience=self._get_recent_memory_salience(),
@@ -2578,7 +2587,7 @@ class BrainAIInterface:
                 context = ProactiveContext(
                     time_silence_seconds=time.time() - self.last_user_input_time,
                     time_since_output=time.time() - self.last_output_time,
-                    current_thought=self.current_thought_state.mean(dim=-1) if self.current_thought_state is not None else torch.zeros(self.model_hidden_size, device=self.device),
+                    current_thought=self.current_thought_state.squeeze(0) if self.current_thought_state is not None else torch.zeros(self.model_hidden_size, device=self.device),
                     mind_state=self.inner_thought_engine.mind_state.value if self.inner_thought_engine else "RESTING",
                     goal_context=self.goal_system.current_goal.description if self.goal_system and self.goal_system.current_goal else None,
                     memory_salience=self._get_recent_memory_salience(),

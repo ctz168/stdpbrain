@@ -215,7 +215,7 @@ class DualProcessThinking:
         # 5. 问题类型分析 (疑问句复杂度)
         question_indicators = ["?", "？", "吗", "呢", "怎么", "如何", "为什么",
                                "what", "how", "why", "which", "whether"]
-        question_count = sum(1 for q in question_indicators if q in text)
+        question_count = sum(1 for q in question_indicators if q in text_lower)
         if question_count > 0:
             # 多重问题 → 系统2
             if question_count >= 2:
@@ -615,6 +615,10 @@ class CognitiveBiasEngine:
 
             # 综合可用性得分
             score = time_factor * salience_factor * emotion_factor
+            # Add query-relevance factor
+            if query:
+                query_relevance = self._compute_text_similarity(query, item.content)
+                score = score * (0.5 + 0.5 * query_relevance)
             availability_scores[item.content] = round(score, 4)
 
         # 归一化为概率分布
@@ -1165,7 +1169,10 @@ class EnhancedMetacognition:
         ece = 0.0
         bin_boundaries = np.linspace(0, 1, n_bins + 1)
         for i in range(n_bins):
-            mask = (predicted >= bin_boundaries[i]) & (predicted < bin_boundaries[i + 1])
+            if i == n_bins - 1:
+                mask = (predicted >= bin_boundaries[i]) & (predicted <= bin_boundaries[i + 1])
+            else:
+                mask = (predicted >= bin_boundaries[i]) & (predicted < bin_boundaries[i + 1])
             if mask.sum() > 0:
                 avg_confidence = predicted[mask].mean()
                 avg_accuracy = actual[mask].mean()
@@ -1916,9 +1923,11 @@ class WorkingMemoryManager:
             frequency_weight: 访问频率权重
             emotional_weight: 情感权重
         """
-        self.capacity = capacity
         self.min_capacity = 5
         self.max_capacity = 9
+        if not isinstance(capacity, int) or capacity <= 0:
+            capacity = max(self.min_capacity, 7)  # fallback to default
+        self.capacity = max(self.min_capacity, min(self.max_capacity, capacity))
 
         # ========== 权重配置 ==========
         self.recency_weight = recency_weight
@@ -2088,6 +2097,8 @@ class WorkingMemoryManager:
         Returns:
             负载比例
         """
+        if self.capacity <= 0:
+            return 1.0
         return len(self._items) / self.capacity
 
     def access_item(self, item_content: str) -> bool:
@@ -2164,7 +2175,13 @@ class WorkingMemoryManager:
 
         # 如果当前条目超过新容量，驱逐多余的
         while len(self._items) > self.capacity:
-            self.prioritize_and_evict()
+            evicted = self.prioritize_and_evict()
+            if not evicted:
+                # All remaining items scored >= 0.5; force-evict the lowest
+                now = time.time()
+                self._items.sort(key=lambda it: self._compute_retention_score(it, now))
+                self._items.pop(0)
+                self._total_evictions += 1
 
     def get_stats(self) -> Dict[str, Any]:
         """获取工作记忆统计信息"""
@@ -2383,13 +2400,17 @@ class TemporalDiscounting:
         desc_lower = delay_description.lower().strip()
 
         # 1. 直接关键词匹配
+        best_days = 0.0
         for keyword, days in self._delay_keywords.items():
             if keyword in desc_lower:
                 # 尝试提取前面的数字修饰
                 num_match = re.search(r'(\d+)\s*' + re.escape(keyword), desc_lower)
                 if num_match:
-                    return float(num_match.group(1)) * days
-                return days
+                    best_days = max(best_days, float(num_match.group(1)) * days)
+                else:
+                    best_days = max(best_days, float(days))
+        if best_days > 0:
+            return best_days
 
         # 2. 数字+单位模式
         unit_days = {
