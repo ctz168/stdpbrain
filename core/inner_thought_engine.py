@@ -514,10 +514,11 @@ class InnerThoughtEngine:
                             # 3. 强制更换思维种子：避免回环后继续生成类似内容
                             self._force_change_seed()
                             
-                            # 4. 物理断路：输出重置信号并停止当前流
-                            offset = random.choice(["……感知到思维回环。重置语义空间……", "……忽略上述重复。换个话题思考。", "……跳过无效循环。"])
-                            for c in offset: yield c; time.sleep(0.01)
-                            self.mind_state = MindState.WANDERING
+                            # 4. 物理断路：静默停止（不输出多余文字）
+                            # BUG修复：原代码输出"跳过无效循环"等固定文字，
+                            # 这些文字被记录为"内心思维"显示给用户，看起来像乱码/错误。
+                            # 修复：回环检测后静默停止，不输出任何文字。
+                            # 用户只看到思维突然停止，然后下一次思维从新话题开始。
                             break
                 
                 # 正常展示
@@ -538,11 +539,23 @@ class InnerThoughtEngine:
             self._last_urge_to_speak = self._calculate_urge(generated_text)
             
             # --- 智能上下文管理 (无限上下文模拟) ---
+            # BUG修复：添加质量门槛，防止垃圾思维存入海马体污染记忆系统。
+            # 原代码无条件将所有独白摘要存入记忆，导致：
+            # 1. 格式碎片（XML标签、系统标签）被存为记忆
+            # 2. 重复/无意义的短文本被存为记忆
+            # 3. 用户问问题时召回这些垃圾记忆，挤占有用的召回名额
             if len(self.thought_flow) >= 8:
-                # BUG FIX: HippocampusSystem 没有 store() 方法，正确入口是 encode()
-                # 提取最近思维作为语义锚点存入海马体
                 summary = " | ".join([t.content[:15] for t in list(self.thought_flow)[-8:]])
-                if self.hippocampus and hasattr(self.hippocampus, 'encode'):
+                # 质量检查：只有通过门槛的思维才存入记忆
+                # 门槛：至少10个汉字，且中文字符占比>60%
+                is_quality = len(summary) >= 10
+                if is_quality:
+                    import re as _re
+                    chinese_chars = _re.findall(r'[\u4e00-\u9fff]', summary)
+                    if len(chinese_chars) < len(summary) * 0.5:
+                        is_quality = False
+                
+                if is_quality and self.hippocampus and hasattr(self.hippocampus, 'encode'):
                     try:
                         # encode() 需要 features tensor，通过 model embedding 获取
                         if hasattr(self, 'model') and hasattr(self.model, 'encode_safe'):

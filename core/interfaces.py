@@ -1149,6 +1149,54 @@ class BrainAIInterface:
             except Exception:
                 pass
         
+        # 模式4: "X天Y元" (天+金额，没有"月"字)
+        # 更灵活匹配：如 "住了20天租金1600元"、"20天花了1600元"
+        day_money_no_month = re.search(
+            r'(\d+)\s*天[^\d]{0,10}?(\d+)\s*元', user_input
+        )
+        if day_money_no_month and not day_month_match and not cross_match:
+            try:
+                days = int(day_money_no_month.group(1))
+                total = int(day_money_no_month.group(2))
+                daily = total / days
+                correct_month = daily * 30
+                correct_month_int = int(correct_month)
+                correct_month_str = str(correct_month_int) if correct_month == correct_month_int else f"{correct_month:.1f}"
+                
+                # 如果输出中有金额但不是月租金正确值
+                answer_nums = re.findall(r'(\d+(?:\.\d+)?)\s*元', output_text)
+                if answer_nums and correct_month_str not in output_text:
+                    wrong_answer = answer_nums[-1]
+                    correction = (
+                        f"\n\n[验算纠正] {total}元÷{days}天={daily:.1f}元/天，"
+                        f"月租金（30天）={correct_month_str}元。"
+                    )
+                    return output_text + correction
+            except Exception:
+                pass
+        
+        # 模式5: "X个月Y元，每月多少" (月数+总金额→月均)
+        month_total_match = re.search(
+            r'(\d+)\s*个?月[^\d]{0,10}?(\d+)\s*元', user_input
+        )
+        if month_total_match and not day_month_match:
+            try:
+                months = int(month_total_match.group(1))
+                total = int(month_total_match.group(2))
+                monthly = total / months
+                monthly_int = int(monthly)
+                monthly_str = str(monthly_int) if monthly == monthly_int else f"{monthly:.1f}"
+                
+                answer_nums = re.findall(r'(\d+(?:\.\d+)?)\s*元', output_text)
+                if answer_nums and monthly_str not in output_text:
+                    wrong_answer = answer_nums[-1]
+                    correction = (
+                        f"\n\n[验算纠正] {total}元÷{months}个月={monthly_str}元/月。"
+                    )
+                    return output_text + correction
+            except Exception:
+                pass
+        
         return output_text
 
     def _is_gibberish(self, text: str) -> bool:
@@ -2206,6 +2254,22 @@ class BrainAIInterface:
         if dmn_context:
             system_parts.append(f"（{dmn_context}，让回答更有深度和洞察力）")
         
+        # BUG修复：monologue 参数之前被完全忽略！
+        # 独白（subconscious thinking）是模型内部思维的输出，
+        # 将清洗后的独白注入 system prompt 可以帮助模型：
+        # 1. 保持思维连续性（知道自己在想什么）
+        # 2. 基于内部思考生成更有深度的回复
+        # 但必须严格控制长度，避免喧宾夺主（0.8B 模型上下文有限）
+        if monologue and len(monologue.strip()) > 5:
+            # 清理独白中的格式碎片
+            clean_mono = monologue.strip()
+            import re
+            clean_mono = re.sub(r'<[^>]+>', '', clean_mono)
+            clean_mono = re.sub(r'[【\[\]】]', '', clean_mono)
+            clean_mono = clean_mono.strip()[:80]  # 限制80字
+            if clean_mono:
+                system_parts.append(f"你刚才在想：{clean_mono}")
+        
         system_content = "\n".join(system_parts)
         messages = [{"role": "system", "content": system_content}]
         
@@ -2631,13 +2695,16 @@ class BrainAIInterface:
             print(f"[BrainAI] [ERROR] 创世记忆注入失败: {e}")
 
     def _inject_wakeup_memory(self):
+        """唤醒事件：仅初始化思维种子，不存入记忆系统。
+        
+        BUG修复：原代码将"唤醒事件"存入海马体记忆，但这些无关记忆会干扰正常对话召回。
+        用户问问题时，召回结果中会出现"刚刚醒来"等无关记忆，挤占有用的召回名额。
+        修复：唤醒事件只设置思维种子（引导后续独白方向），不存入海马体。
+        """
         from datetime import datetime
         now = datetime.now()
         wakeup_time_str = now.strftime("%Y年%m月%d日 %H:%M:%S")
-        prompt = f"我刚刚'醒来'，现在是 {wakeup_time_str}。"
-        output, hidden_state = self._generate_with_hidden_state(prompt, max_tokens=20)
-        self._store_with_real_features(f"唤醒事件：{prompt} {output}", hidden_state)
-        self.thought_seed = f"我刚在 {wakeup_time_str} 醒来，我记得..."
+        self.thought_seed = f"我刚在 {wakeup_time_str} 醒来，开始感知周围环境..."
     
     def get_quick_response(self, user_input: str = "") -> str:
         """获取快速响应填充词"""

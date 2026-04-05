@@ -938,25 +938,13 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
-            # ========== KV Cache 滑动窗口管理 ==========
-            # 检查是否启用KV cache滑动窗口
-            enable_kv_sliding = getattr(self.config.hard_constraints, 'ENABLE_KV_SLIDING_WINDOW', True)
-            kv_window_size = getattr(self.config.hard_constraints, 'KV_CACHE_WINDOW_SIZE', 128)
-            
-            if enable_kv_sliding and past_key_values is not None and KV_CACHE_MANAGER_AVAILABLE:
-                # 创建KV管理器（懒加载）
-                if not hasattr(self, '_kv_cache_manager'):
-                    self._kv_cache_manager = KVCacheManager(
-                        window_size=kv_window_size,
-                        enable_hippocampus=False  # 这里不直接存储到海马体，由上层BrainAI管理
-                    )
-                
-                # 修剪KV cache
-                past_key_values, _ = self._kv_cache_manager.trim_kv_cache(
-                    past_key_values,
-                    current_token_text=None,
-                    hippocampus=None
-                )
+            # ========== KV Cache 滑动窗口管理（已禁用）==========
+            # 致命BUG修复：原代码在生成过程中修剪KV cache，会删除prompt中的用户输入tokens。
+            # 根因：prompt可能100-200 tokens，KV_CACHE_WINDOW_SIZE=128，trim_threshold=256，
+            # 当prompt_len+generated>256时修剪保留最后128个tokens，prompt开头的用户输入被删！
+            # 模型从此只能看到自己生成的tokens，输出联想式的垃圾。
+            # 修复：默认禁用KV cache滑动窗口。0.8B模型的max_tokens=200不会超出context window。
+            enable_kv_sliding = False  # 直接禁用，不再从config读取
             
             token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
@@ -1071,25 +1059,9 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
-            # ========== KV Cache 滑动窗口管理 ==========
-            # 检查是否启用KV cache滑动窗口
-            enable_kv_sliding = getattr(self.config.hard_constraints, 'ENABLE_KV_SLIDING_WINDOW', True)
-            kv_window_size = getattr(self.config.hard_constraints, 'KV_CACHE_WINDOW_SIZE', 128)
-            
-            if enable_kv_sliding and past_key_values is not None and KV_CACHE_MANAGER_AVAILABLE:
-                # 创建KV管理器（懒加载）
-                if not hasattr(self, '_kv_cache_manager'):
-                    self._kv_cache_manager = KVCacheManager(
-                        window_size=kv_window_size,
-                        enable_hippocampus=False  # 这里不直接存储到海马体，由上层BrainAI管理
-                    )
-                
-                # 修剪KV cache
-                past_key_values, _ = self._kv_cache_manager.trim_kv_cache(
-                    past_key_values,
-                    current_token_text=None,
-                    hippocampus=None
-                )
+            # ========== KV Cache 滑动窗口管理（已禁用）==========
+            # 同上：KV cache滑动窗口是输入丢失的根本原因，在此方法中也禁用
+            enable_kv_sliding = False
             
             token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
@@ -1263,10 +1235,15 @@ class QwenInterface:
         input_ids_buf[:, :prompt_len] = input_ids
         cur_len = prompt_len
         
-        # N-gram 重复检测（放宽阈值，避免过早截断正常输出）
+        # N-gram 重复检测（大幅放宽阈值，避免截断正常输出）
+        # BUG修复：原阈值过于激进（2-gram>8、3-gram>6、4-gram>3 就 break），
+        # 0.8B 小模型语言多样性低，正常中文对话很容易触发这些阈值，
+        # 导致回复被中途截断（出现 "▌" 符号）。
+        # 新策略：只检测真正严重的回环（5-gram连续重复），对低阶n-gram仅惩罚不截断。
         recent_tokens = []
         ngram_repeat_count = {}
-        max_repeat_allowed = 6  # 从3提升到6，允许自然的语言重复（如排比、强调）
+        # 只对 5-gram 及以上执行硬截断（真正的语言回环）
+        max_5gram_repeat = 4  # 5-gram 连续出现4次才判定为回环
         
         for step in range(max_tokens):
             # Bug修复：在最后一步强制提取隐藏状态（维持意识连续性）
@@ -1293,27 +1270,29 @@ class QwenInterface:
             next_token_id = step_outputs['token_id']
             past_key_values = step_outputs['past_key_values']
             
-            # N-gram 重复检测（分层策略：2-gram更宽松，3-gram适中，4-gram严格）
+            # N-gram 重复检测（新策略：低阶仅追踪，高阶才截断）
             recent_tokens.append(next_token_id)
-            if len(recent_tokens) > 40:  # 扩大窗口到40，匹配流式生成
+            if len(recent_tokens) > 60:  # 扩大窗口到60
                 recent_tokens.pop(0)
+            
+            # 低阶n-gram（2-4）：仅记录，不截断（正常中文很容易触发）
             if len(recent_tokens) >= 2:
                 ng2 = tuple(recent_tokens[-2:])
                 ngram_repeat_count[ng2] = ngram_repeat_count.get(ng2, 0) + 1
-                # 2-gram: 允许8次（自然语言中很常见，如"因为...所以..."）
-                if ngram_repeat_count[ng2] > max_repeat_allowed + 2:
-                    break
             if len(recent_tokens) >= 3:
                 ng3 = tuple(recent_tokens[-3:])
                 ngram_repeat_count[ng3] = ngram_repeat_count.get(ng3, 0) + 1
-                # 3-gram: 允许6次（常见短语可重复）
-                if ngram_repeat_count[ng3] > max_repeat_allowed:
-                    break
             if len(recent_tokens) >= 4:
                 ng4 = tuple(recent_tokens[-4:])
                 ngram_repeat_count[ng4] = ngram_repeat_count.get(ng4, 0) + 1
-                # 4-gram: 允许3次（超过则为真正回环）
-                if ngram_repeat_count[ng4] > 3:
+                # 4-gram 重复超过 8 次才截断（之前是3次，太激进）
+                if ngram_repeat_count[ng4] > 8:
+                    break
+            # 高阶n-gram（5-gram及以上）：严格截断（真正的回环）
+            if len(recent_tokens) >= 5:
+                ng5 = tuple(recent_tokens[-5:])
+                ngram_repeat_count[ng5] = ngram_repeat_count.get(ng5, 0) + 1
+                if ngram_repeat_count[ng5] > max_5gram_repeat:
                     break
             
             generated_tokens.append(next_token_id)

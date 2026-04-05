@@ -57,8 +57,15 @@ class STDPConfig:
     weight_max: float = 1.0  # 权重上界
     
     # 时间窗口
-    time_window_ms: int = 20  # STDP 时间窗口 (毫秒)
-    decay_rate: float = 0.95  # 权重衰减率 - 从0.99降低到0.95，保留更多学习成果
+    # 致命BUG修复：原 time_window_ms=20（毫秒），但 CPU 上每个 token 生成需要 200-500ms，
+    # 导致所有 token 对的时间差远大于 20ms，STDP 时间窗口掩码永远为 False，
+    # 权重永远不会更新，dynamic_weight 永远为 0.000000。
+    # 修复：增大到 30000ms（30秒），覆盖 CPU 和 GPU 环境。
+    # STDP 语义：最近 30 秒内共同激活的 token 对才能产生权重更新，
+    # 这意味着当前正在处理的对话上下文中，相关词汇的连接会被增强。
+    time_window_ms: int = 30000  # STDP 时间窗口 (毫秒) - 从20增加到30000
+    time_constant: float = 10000.0  # STDP 时间常数 (毫秒) - 随窗口增大
+    decay_rate: float = 0.99  # 权重衰减率 - 恢复到0.99，避免学习成果过快流失
     
     # 更新节点
     update_attention: bool = True  # 注意力层 STDP 更新
