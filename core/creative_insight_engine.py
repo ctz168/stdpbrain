@@ -430,8 +430,9 @@ class CreativeInsightEngine(nn.Module):
         query_emb = self._get_or_create_embedding(concept)
         results = []
 
+        concept_key = concept.strip().lower()
         for other_concept, other_emb in self._concept_embeddings.items():
-            if other_concept == concept:
+            if other_concept == concept_key:
                 continue
             sim = torch.dot(query_emb, other_emb).item()
             results.append((other_concept, sim))
@@ -797,6 +798,8 @@ class CreativeInsightEngine(nn.Module):
         """
         emb_a = self._get_or_create_embedding(concept_a)
         emb_b = self._get_or_create_embedding(concept_b)
+        key_a = concept_a.strip().lower()
+        key_b = concept_b.strip().lower()
 
         # 中间向量 = (A + B) / 2
         midpoint = (emb_a + emb_b) / 2.0
@@ -806,7 +809,7 @@ class CreativeInsightEngine(nn.Module):
         best_score = 0.0
 
         for concept, emb in self._concept_embeddings.items():
-            if concept in (concept_a, concept_b):
+            if concept in (key_a, key_b):
                 continue
             # 桥梁概念应该与中间向量有较高的相似度
             # 同时与两个端点都有一定的相似度
@@ -869,7 +872,7 @@ class CreativeInsightEngine(nn.Module):
         emb_b = self._get_or_create_embedding(word_b)
         emb_c = self._get_or_create_embedding(word_c)
 
-        input_words = [word_a, word_b, word_c]
+        input_words = [word_a.strip().lower(), word_b.strip().lower(), word_c.strip().lower()]
         input_embs = torch.stack([emb_a, emb_b, emb_c])  # [3, dim]
 
         results = []

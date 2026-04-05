@@ -30,6 +30,7 @@
 
 import time
 import math
+import random
 import logging
 import threading
 from typing import Dict, List, Optional, Tuple, Any
@@ -1314,7 +1315,6 @@ class EmotionalThinkingIntegration:
         if intensity > 0.7:
             return templates[0]  # 第一个通常是更柔和的
         else:
-            import random
             return random.choice(templates)
 
     def _handle_emotional_escalation(self, user_text: str):

@@ -18,6 +18,8 @@ import torch.nn.functional as F
 from typing import Optional, List, Dict, Tuple, Any
 import math
 import logging
+import threading
+import traceback
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +30,6 @@ logger = logging.getLogger(__name__)
 class MemoryAnchorStore:
     """Global memory anchor storage (thread-safe)"""
     def __init__(self):
-        import threading
         self._lock = threading.Lock()
         self.anchors: List[Dict] = []
         self.enabled: bool = True  # 启用稀疏注意力压缩（模拟人脑注意力机制）
@@ -604,7 +605,6 @@ def patch_qwen_attention():
         
     except Exception as e:
         print(f"[QwenNarrowBandPatch] [FAIL] Patch failed: {e}")
-        import traceback
         traceback.print_exc()
         return False
 

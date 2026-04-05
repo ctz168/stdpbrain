@@ -10,8 +10,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
-import numpy as np
+from typing import Optional
 
 
 class DualWeightLinear(nn.Module):

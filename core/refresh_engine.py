@@ -11,9 +11,11 @@ import torch
 import torch.nn as nn
 import time
 import asyncio
+import logging
+import concurrent.futures
+import threading
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
-import threading
 
 
 @dataclass
@@ -51,7 +53,6 @@ class RefreshCycleEngine:
         narrow_window_size: int = 2,
         device: Optional[str] = None
     ):
-        import torch.nn as nn
         self.model = model
         self.hippocampus = hippocampus
         self.stdp_engine = stdp_engine
@@ -164,8 +165,7 @@ class RefreshCycleEngine:
         
         # 优化4: STDP 更新和海马体编码异步执行，不阻塞生成
         # 将 stdp.step() 和 hippocampus.encode() 提交到后台线程
-        import concurrent.futures
-        
+
         def _async_stdp_and_encode():
             try:
                 self.stdp_engine.step(
@@ -179,7 +179,6 @@ class RefreshCycleEngine:
                     timestamp=timestamp
                 )
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).debug(f"[RefreshEngine] STDP step failed: {e}")
             try:
                 # clone features 防止与主线程数据竞争
@@ -190,7 +189,6 @@ class RefreshCycleEngine:
                     context=[]
                 )
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).debug(f"[RefreshEngine] hippocampus encode failed: {e}")
         
         # fire-and-forget: 后台执行，当前循环不等待

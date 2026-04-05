@@ -309,6 +309,8 @@ class BrainAIConfig:
     def set_seed(self):
         """设置全局随机种子"""
         import numpy as np
+        import random
+        random.seed(self.seed)
         torch.manual_seed(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)

@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from collections import OrderedDict
 import time
+import logging
 
 
 @dataclass
@@ -445,7 +446,6 @@ class GlobalWorkspace:
                     weights.append(0.6)  # 用户输入权重60%
                 else:
                     # 回退：使用简单的特征编码
-                    import logging
                     logger = logging.getLogger(__name__)
                     logger.warning("[GlobalWorkspace] 未找到tokenizer，使用回退特征编码")
             else:
