@@ -814,6 +814,9 @@ class BrainAIInterface:
             except Exception as e:
                 logger.warning(f"自闭环优化失败，使用原始输出: {e}")
         
+        # ========== 4.5 生成后数学验算（最后一道防线）==========
+        # 对包含数字的回答进行独立数学验证，修正明显错误
+        output.text = self._post_math_verification(user_input, output.text)
         # 4. 并行后台处理
         # 计算情感显著性和核心记忆检测
         emotional_keywords = ["焦虑", "压力", "难过", "开心", "兴奋", "恐惧", "遗憾", "父亲", "回忆", "灵魂"]
@@ -1047,6 +1050,106 @@ class BrainAIInterface:
             monologue += char
             
         return monologue.strip()
+
+    def _post_math_verification(self, user_input: str, output_text: str) -> str:
+        """
+        生成后数学验算（最后一道防线）。
+        
+        原理：不信任模型的数学能力，用 Python 独立求解用户问题中的数学关系，
+        如果发现回答中的最终数字与正确答案不一致，直接在回答末尾追加纠正。
+        
+        这是"渐进式修正"架构的关键一环：
+        第一层：prompt 引导模型 step-by-step 思考
+        第二层：self_loop 的 self_game 验证
+        第三层：本方法——独立验算 + 纠正
+        """
+        if not user_input or not output_text:
+            return output_text
+        
+        import re
+        
+        # 检测用户输入中的数学问题模式
+        # 模式1: "X天Y元，月租金多少" (比例问题)
+        day_month_match = re.search(
+            r'(\d+)\s*天[^\d]*(\d+)\s*元[^\d]*月', user_input
+        )
+        if day_month_match:
+            try:
+                days = int(day_month_match.group(1))
+                total = int(day_month_match.group(2))
+                correct = total / days * 30
+                correct_int = int(correct)
+                correct_str = str(correct_int) if correct == correct_int else f"{correct:.1f}"
+                
+                # 检查回答中是否包含正确答案
+                if correct_str not in output_text:
+                    # 提取回答中声称的金额
+                    answer_nums = re.findall(r'(\d+(?:\.\d+)?)\s*元', output_text)
+                    if answer_nums:
+                        wrong_answer = answer_nums[-1]
+                        # 追加纠正（不替换原文，保留思考过程）
+                        correction = (
+                            f"\n\n[验算纠正] 日租金={total}÷{days}={total/days:.1f}元，"
+                            f"月租金（30天）={correct_str}元。"
+                            f"上面说的{wrong_answer}元是错的。"
+                        )
+                        logger.info(f"[数学验算] 纠正: {wrong_answer}元 → {correct_str}元")
+                        return output_text + correction
+            except Exception:
+                pass
+        
+        # 模式2: "X天Y元，Z天多少元" (比例交叉问题)
+        cross_match = re.search(
+            r'(\d+)\s*天[^\d]*(\d+)\s*元[^\d]*(\d+)\s*天', user_input
+        )
+        if cross_match and not day_month_match:
+            try:
+                d1 = int(cross_match.group(1))
+                p1 = int(cross_match.group(2))
+                d2 = int(cross_match.group(3))
+                correct = p1 / d1 * d2
+                correct_int = int(correct)
+                correct_str = str(correct_int) if correct == correct_int else f"{correct:.1f}"
+                
+                if correct_str not in output_text:
+                    answer_nums = re.findall(r'(\d+(?:\.\d+)?)\s*元', output_text)
+                    if answer_nums:
+                        wrong_answer = answer_nums[-1]
+                        correction = (
+                            f"\n\n[验算纠正] 单价={p1}÷{d1}={p1/d1:.1f}元/天，"
+                            f"{d2}天={correct_str}元。"
+                            f"上面说的{wrong_answer}元是错的。"
+                        )
+                        logger.info(f"[数学验算] 纠正: {wrong_answer}元 → {correct_str}元")
+                        return output_text + correction
+            except Exception:
+                pass
+        
+        # 模式3: "每个X元，Y个多少" (单价×数量)
+        per_unit_match = re.search(
+            r'每[件个只条][^\d]*(\d+)\s*元[^\d]*(\d+)\s*[件个只条]', user_input
+        )
+        if per_unit_match:
+            try:
+                unit_price = int(per_unit_match.group(1))
+                quantity = int(per_unit_match.group(2))
+                correct = unit_price * quantity
+                correct_str = str(correct)
+                
+                if correct_str not in output_text:
+                    answer_nums = re.findall(r'(\d+(?:\.\d+)?)\s*元', output_text)
+                    if answer_nums:
+                        wrong_answer = answer_nums[-1]
+                        correction = (
+                            f"\n\n[验算纠正] {unit_price}×{quantity}={correct_str}元。"
+                            f"上面说的{wrong_answer}元是错的。"
+                        )
+                        logger.info(f"[数学验算] 纠正: {wrong_answer}元 → {correct_str}元")
+                        return output_text + correction
+            except Exception:
+                pass
+        
+        return output_text
 
     def _is_gibberish(self, text: str) -> bool:
         if not text: return True
@@ -1977,6 +2080,14 @@ class BrainAIInterface:
         for tag in ['<|im_end|>', '<|im_start|>', '</system>', '<system>', '</user>', '<user>', '[', ']', 'Current thought:']:
             monologue = monologue.replace(tag, '')
         
+        # 移除 XML 标签、HTML 实体、转义序列、Markdown 格式碎片
+        import re
+        monologue = re.sub(r'<[^>]+>', '', monologue)
+        monologue = re.sub(r'&[a-zA-Z]+;', '', monologue)
+        monologue = re.sub(r'\\u[0-9a-fA-F]{4}', '', monologue)
+        monologue = re.sub(r'\*{2,}[^*]+\*{2,}', '', monologue)
+        monologue = re.sub(r'<!-[\s\S]*?->', '', monologue)
+        monologue = re.sub(r'\|[^|]*\|', '', monologue)
         monologue = monologue.strip()
         
         # 长度适中：不宜过长
@@ -2070,6 +2181,21 @@ class BrainAIInterface:
         # ========== COUPLING FIX 4: 精简系统提示，减少噪声干扰 ==========
         # 0.5B 小模型对系统提示非常敏感，过多噪声会淹没记忆信号
         system_parts = ["你是一个有记忆能力的AI助手。用中文回答。"]
+
+        # ========== 数学/逻辑推理增强：强制 step-by-step 思考 ==========
+        # 检测数学问题（数字+运算符、价格/租金/利率等关键词、比较问题）
+        math_keywords = ["多少", "几", "计算", "总共", "平均", "租金", "价格", "费用",
+                        "利率", "利润", "折扣", "元", "块", "分", "角", "比例", "倍数"]
+        has_math_op = bool(re.search(r'\d+\s*[+\-*/×÷=]', user_input))
+        has_math_kw = any(kw in user_input for kw in math_keywords)
+        has_numbers = len(re.findall(r'\d+', user_input)) >= 2
+        is_math_question = has_math_op or (has_math_kw and has_numbers)
+
+        if is_math_question:
+            system_parts.append(
+                "这是一道数学题。你必须一步一步地计算，先列出已知条件，再写出计算过程，最后给出答案。"
+                "不要跳步，不要猜答案。计算时要仔细检查每一步。"
+            )
 
         # 仅在记忆查询时才在 system 中注入记忆（普通对话不注入，避免干扰）
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:

@@ -831,6 +831,12 @@ class QwenInterface:
             cached_tool = is_tool_call
             
             stdp_engine = getattr(getattr(self.config, 'stdp', None), 'stdp_engine', None)
+            # BUG FIX: interfaces.py 将 stdp_engine 设置在 config.stdp_engine (直接属性)，
+            # 而非 config.stdp.stdp_engine (嵌套属性)。上面的 getattr 查找嵌套路径，
+            # 导致 stdp_engine 永远为 None，STDP 更新从未执行。
+            # 兼容两种设置路径：先检查嵌套路径，再检查直接路径。
+            if stdp_engine is None:
+                stdp_engine = getattr(self.config, 'stdp_engine', None)
             if stdp_engine is None:
                 return outputs
 

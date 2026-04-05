@@ -146,10 +146,18 @@ class InnerThoughtEngine:
         # ========== [CPU优化] 预编译正则表达式（避免每次调用 re.compile）==========
         self._re_brackets = re.compile(r'【.*?】')
         self._re_tags = re.compile(r'<\|.*?\|>')
-        self._re_pipes = re.compile(r'\|.*?\|')
+        self._re_pipes = re.compile(r'\|[^|]*\|')
         self._re_nonword = re.compile(r'[^\w\u4e00-\u9fa5]')
         self._re_chinese = re.compile(r'[\u4e00-\u9fff]{2,6}')
         self._re_math = re.compile(r'\d+\s*[+\-*/=]\s*\d+')
+        # ========== 新增：更强的格式碎片清理正则 ==========
+        self._re_xml_tags = re.compile(r'<[^>]+>')          # XML标签 <xxx>
+        self._re_im_markers = re.compile(r'<\|im_\w+\|>')    # <|im_start|> 等
+        self._re_angle_brackets = re.compile(r'<[^>]*>')      # 所有尖括号内容
+        self._re_escape_seqs = re.compile(r'\\u[0-9a-fA-F]{4}')  # Unicode转义
+        self._re_html_entities = re.compile(r'&[a-zA-Z]+;')   # HTML实体
+        self._re_asterisk_fmt = re.compile(r'\*{2,}[^*]+\*{2,}')  # **bold**格式
+        self._re_numbered_list = re.compile(r'^\s*\d+[\.、\)）]\s*')  # 编号列表
         
         # ========== [动态化] 可学习状态转换矩阵 ==========
         # 4个状态: FOCUSED(0) WANDERING(1) REFLECTING(2) RESTING(3)
@@ -464,11 +472,19 @@ class InnerThoughtEngine:
                 if "</think>" in token: in_think_block = False; continue
                 if in_think_block: continue
                 
-                # 实时净化与 HALLUCINATION 拦截 (温和版：保留中文内容)
+                # 实时净化与 HALLUCINATION 拦截 (强效版：清除所有格式碎片)
                 token = self._re_brackets.sub('', token)
                 # 过滤各种系统标签（包含 Qwen3.5 的思维标签）
                 token = self._re_tags.sub('', token)
                 token = self._re_pipes.sub('', token)
+                token = self._re_xml_tags.sub('', token)
+                token = self._re_im_markers.sub('', token)
+                token = self._re_angle_brackets.sub('', token)
+                token = self._re_escape_seqs.sub('', token)
+                token = self._re_html_entities.sub('', token)
+                token = self._re_asterisk_fmt.sub('', token)
+                # 去除首尾空白和特殊字符
+                token = token.strip(' \t\n\r\\\'"`')
                 if not token.strip(): continue
                 
                 # 实时重复检测 (增量式3-gram检测，替代全量n-gram扫描)
@@ -591,12 +607,16 @@ class InnerThoughtEngine:
             new_ids = outputs[0][input_len:]
             new_text = self.model.decode_safe(new_ids, skip_special_tokens=True)
             
-            # 净化：过滤各种 hallucinated tags (如 |inner_monologue|, |output|, <Think>等)
-            new_text = re.sub(r'<think>.*?</think>', '', new_text, flags=re.IGNORECASE | re.DOTALL)
-            new_text = re.sub(r'\|.*?\|', '', new_text) 
-            new_text = re.sub(r'【.*?】', '', new_text) # 过滤 【任务目标】这类方括号标签
+            # 净化：过滤各种 hallucinated tags (强效版)
+            new_text = re.sub(r'\U0001f5d5.*?\U0001f4a4', '', new_text, flags=re.IGNORECASE | re.DOTALL)
+            new_text = re.sub(r'\|[^|]*\|', '', new_text) 
+            new_text = re.sub(r'【.*?】', '', new_text)
             new_text = re.sub(r'<\|.*?\|>', '', new_text)
-            
+            new_text = re.sub(r'<[^>]+>', '', new_text)  # XML标签
+            new_text = re.sub(r'\\u[0-9a-fA-F]{4}', '', new_text)  # Unicode转义
+            new_text = re.sub(r'&[a-zA-Z]+;', '', new_text)  # HTML实体
+            new_text = re.sub(r'\*{2,}[^*]+\*{2,}', '', new_text)  # **bold**格式
+
             # 过滤掉回显的 lead_in (强化正则过滤，处理空格或标点差异)
             lead_in_pattern = re.escape(lead_in).replace(r'\ ', r'\s*')
             new_text = re.sub(f'^{lead_in_pattern}', '', new_text).strip()
@@ -689,40 +709,36 @@ class InnerThoughtEngine:
         self.last_thought = ""
 
     def _build_thought_context(self, external_stimulus: str = "") -> str:
-        """构建思维上下文 - 自然思维流（优化版：去除机械引导词）"""
+        """构建思维上下文 - 使用 Qwen chat template 格式，避免模型输出格式碎片。
         
-        context_parts = []
+        关键设计原则：
+        - 不用括号体指令（模型会把括号当成续写内容）
+        - 使用 system/user 角色分离指令和生成空间
+        - 保持 prompt 简短，0.8B 模型对长 prompt 敏感
+        """
+        # 根据思维状态选择不同的引导方式（用 system 消息隔离指令）
+        state_instructions = {
+            MindState.FOCUSED: "你在深入思考一个问题，用一两句话说出你的思考。",
+            MindState.WANDERING: "你的思绪在自由飘荡，用简短的话说出你联想到的内容。",
+            MindState.REFLECTING: "你在审视自己的想法，简短地评价一下你刚才的思考。",
+            MindState.RESTING: "你安静地感知着周围，用一句话描述你现在的感受。"
+        }
         
-        # 根据思维状态选择不同的引导方式（更自然、更像内心独白）
-        if self.mind_state == MindState.FOCUSED:
-            context_parts.append("（你在深入思考一个问题）")
-        elif self.mind_state == MindState.WANDERING:
-            context_parts.append("（你的思绪在自由飘荡）")
-        elif self.mind_state == MindState.REFLECTING:
-            context_parts.append("（你在审视自己的想法）")
-        else:
-            context_parts.append("（你在安静地感知）")
+        system_msg = state_instructions.get(self.mind_state, "用一句话说出你现在的想法。")
         
+        # 构建用户消息：将外部刺激和最近思维作为内容
+        user_parts = []
         if external_stimulus:
-            context_parts.append(f"（脑海中浮现：{external_stimulus[:50]}）")
-        
-        # 注入最近的一个思维锚点（简短）
+            user_parts.append(external_stimulus[:50])
         if self.thought_flow and self.mind_state != MindState.WANDERING:
             recent_thought = list(self.thought_flow)[-1].content[:30]
-            context_parts.append(f"（刚才在想：{recent_thought}）")
+            user_parts.append(f"刚才在想：{recent_thought}")
         
-        # 生成引导语 - 完全自然的内心独白开头，不加标点
-        leads = {
-            MindState.FOCUSED: "我觉得",
-            MindState.WANDERING: "忽然想到",
-            MindState.REFLECTING: "话说回来",
-            MindState.RESTING: "嗯"
-        }
-        lead_in = leads.get(self.mind_state, "嗯")
+        user_msg = "，".join(user_parts) if user_parts else "自由思考"
         
-        # 最后的生成引导（让模型自然续写，不加标点提示）
-        full_context = "\n".join(context_parts) + f"\n\n{lead_in}"
-        return full_context
+        # 使用 Qwen chat template 格式
+        prompt = f"<|im_start|>system\n{system_msg}<|im_end|>\n<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n"
+        return prompt
 
     
     def _recall_memory(self, query: str) -> str:

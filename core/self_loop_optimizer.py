@@ -708,7 +708,8 @@ class SelfLoopOptimizer:
             issues.append("回答过于简短")
             corrections.append("提供更详细的解释")
         
-        # ========== 5. 数学与常识硬核查 (逻辑哨兵) ==========
+        # ========== 5. 数学与常识硬核查 (逻辑哨兵) - 增强版 ==========
+        # 5a. 检查文本中的算术表达式是否正确
         math_match = re.search(r'(\d+)[\s\+\-\*\/]+(\d+)[\s]*[=]', proposal)
         if not math_match:
             # 尝试匹配结果式
@@ -730,6 +731,47 @@ class SelfLoopOptimizer:
             except Exception:
                 pass
 
+        # 5b. 独立数学验算：从问题文本中提取数学关系并独立求解
+        # 检测"比例/单价"类问题模式（如 "X天Y元，Z天多少元"）
+        ratio_patterns = [
+            # "20天房租1600元，月租金多少" → 提取 (20, 1600, 30) 计算 1600/20*30
+            (r'(\d+)\s*天[^\d]*(\d+)\s*元[^\d]*(\d+)\s*天', 'day_price_cross'),
+            (r'(\d+)\s*天[^\d]*(\d+)\s*元[^\d]*月', 'day_price_month'),
+            (r'(\d+)\s*[个小时时][^\d]*(\d+)\s*元[^\d]*(\d+)\s*[个小时时]', 'hour_price_cross'),
+            (r'(\d+)\s*[件个只][^\d]*(\d+)\s*元[^\d]*(\d+)\s*[件个只]', 'unit_price_cross'),
+            # "每个X元，Y个多少" 
+            (r'每[件个只][^\d]*(\d+)\s*元[^\d]*(\d+)\s*[件个只]', 'per_unit_total'),
+        ]
+        for pattern, ptype in ratio_patterns:
+            match = re.search(pattern, proposal)
+            if match:
+                try:
+                    groups = [int(g) for g in match.groups()]
+                    if ptype == 'day_price_month':
+                        # X天Y元，1月(30天) → Y/X*30
+                        correct = groups[1] / groups[0] * 30
+                        correct_str = str(int(correct)) if correct == int(correct) else f"{correct:.1f}"
+                        if correct_str not in proposal:
+                            issues.append(f"比例计算错误：{groups[0]}天{groups[1]}元，月租金应为{correct_str}元（{groups[1]}÷{groups[0]}×30={correct_str}）")
+                            corrections.append(f"正确计算：日租金={groups[1]}÷{groups[0]}={groups[1]/groups[0]:.1f}元，月租金={correct_str}元")
+                    elif ptype in ('day_price_cross', 'hour_price_cross', 'unit_price_cross'):
+                        # X天Y元，Z天 → Y/X*Z
+                        correct = groups[1] / groups[0] * groups[2]
+                        correct_str = str(int(correct)) if correct == int(correct) else f"{correct:.1f}"
+                        if correct_str not in proposal:
+                            unit_name = "天" if "天" in ptype else "小时"
+                            issues.append(f"比例计算错误：{groups[0]}{unit_name}{groups[1]}元，{groups[2]}{unit_name}应为{correct_str}元")
+                            corrections.append(f"正确计算：单价={groups[1]}÷{groups[0]}={groups[1]/groups[0]:.1f}元，总价={correct_str}元")
+                    elif ptype == 'per_unit_total':
+                        # 每个X元，Y个 → X*Y
+                        correct = groups[0] * groups[1]
+                        if str(correct) not in proposal:
+                            issues.append(f"乘法计算错误：每个{groups[0]}元，{groups[1]}个应为{correct}元")
+                            corrections.append(f"正确计算：{groups[0]}×{groups[1]}={correct}元")
+                    break  # 只匹配第一个模式
+                except Exception:
+                    pass
+        
         # ========== 6. 计算置信度 ==========
         base_confidence = 0.8
         penalty = len(issues) * 0.15 # 逻辑错误惩罚更重
