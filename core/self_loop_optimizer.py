@@ -667,6 +667,7 @@ class SelfLoopOptimizer:
                 'issues_found': List[str]
             }
         """
+        import re  # BUG FIX: 将 import re 移到函数开头，避免后续 re.search 时 NameError
         issues = []
         corrections = []
         
@@ -692,7 +693,7 @@ class SelfLoopOptimizer:
                 corrections.append("澄清表述避免矛盾")
         
         # ========== 3. 数值合理性 ==========
-        import re
+        # import re 已在函数开头（第670行）
         numbers = re.findall(r'\d+', proposal)
         if len(numbers) >= 2:
             try:
