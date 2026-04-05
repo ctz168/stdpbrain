@@ -59,7 +59,7 @@ class EntorhinalEncoder(nn.Module):
     
     def _generate_sparse_mask(self):
         """生成稀疏掩码 (随机抑制部分神经元)"""
-        num_active = int(self.output_dim * (1 - self.sparsity))
+        num_active = max(1, int(self.output_dim * (1 - self.sparsity)))
         self.sparse_mask.zero_()
         indices = torch.randperm(self.output_dim)[:num_active]
         self.sparse_mask[indices] = 1.0

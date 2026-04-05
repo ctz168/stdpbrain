@@ -240,13 +240,15 @@ class UserFeedbackHandler:
         )
 
 
-# 全局实例
-
+# 全局实例 + 线程安全锁
 _user_feedback_handler = None
+_feedback_handler_lock = __import__('threading').Lock()
 
 def get_feedback_handler() -> UserFeedbackHandler:
-    """获取全局反馈处理器"""
+    """获取全局反馈处理器（线程安全单例）"""
     global _user_feedback_handler
     if _user_feedback_handler is None:
-        _user_feedback_handler = UserFeedbackHandler()
+        with _feedback_handler_lock:
+            if _user_feedback_handler is None:
+                _user_feedback_handler = UserFeedbackHandler()
     return _user_feedback_handler

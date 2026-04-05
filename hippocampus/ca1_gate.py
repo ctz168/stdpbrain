@@ -50,6 +50,10 @@ class CA1AttentionGate(nn.Module):
         self.temporal_encoding = temporal_encoding
         self.gate_type = gate_type
         
+        # 校验 gate_type
+        assert gate_type in ("additive", "multiplicative"), \
+            f"Unknown gate_type: {gate_type}. Must be 'additive' or 'multiplicative'"
+        
         # ========== 时序编码器 ==========
         if self.temporal_encoding:
             self.temporal_encoder = nn.Sequential(
@@ -73,6 +77,8 @@ class CA1AttentionGate(nn.Module):
                 nn.Linear(feature_dim, hidden_size),
                 nn.Sigmoid()  # 输出 [0, 1] 作为乘法门控
             )
+        else:
+            raise ValueError(f"Unknown gate_type: {gate_type}")
     
     def forward(
         self,
@@ -183,6 +189,11 @@ class CA1AttentionGate(nn.Module):
             # 乘法门控同理
             gate_mask = torch.sigmoid(torch.matmul(mem_proj, key.transpose(-2, -1))).unsqueeze(1)
             gate_mask = gate_mask * attention_weight.unsqueeze(1)
+        else:
+            gate_mask = torch.zeros(
+                batch_size, 1, seq_len, seq_len,
+                device=query.device
+            )
         
         return gate_mask
     

@@ -53,13 +53,14 @@ class SWRConsolidation:
         self.config = config
         self.hippocampus = hippocampus_module
         self.idle_threshold_s = idle_threshold_s
-        self.replay_frequency = replay_frequency
+        self.replay_frequency = max(replay_frequency, 1e-6)  # 防止 ZeroDivisionError
         self.max_replay_sequences = max_replay_sequences
         self.consolidation_strength = consolidation_strength
         
         # ========== 回放缓冲区 ==========
         self.replay_buffer: List[ReplaySequence] = []
         self._buffer_lock = threading.Lock()
+        self._hippocampus_lock = threading.RLock()  # 保护海马体共享状态的并发访问
         
         # ========== 状态标志 ==========
         self.is_idle = False
@@ -70,6 +71,9 @@ class SWRConsolidation:
         # ========== 回调函数 ==========
         self.stdp_update_fn: Optional[Callable] = None
         self.memory_prune_fn: Optional[Callable] = None
+        
+        # ========== 记忆关联图 ==========
+        self._memory_links: Dict[str, float] = {}
     
     def start_monitoring(self):
         """开始监控设备空闲状态"""
@@ -124,19 +128,23 @@ class SWRConsolidation:
     def _idle_monitor_loop(self):
         """空闲监控循环 (后台线程)"""
         while not self.stop_flag:
-            current_time = time.time()
-            idle_duration = current_time - self.last_activity_time
-            
-            # 检查是否进入空闲状态
-            if idle_duration >= self.idle_threshold_s and not self.is_idle:
-                self.is_idle = True
+            try:
+                current_time = time.time()
+                idle_duration = current_time - self.last_activity_time
                 
-                # 触发离线回放巩固
-                if self.replay_buffer:
-                    self._run_consolidation()
-            
-            # 定期检查 (每 10 秒)
-            time.sleep(10.0)
+                # 检查是否进入空闲状态
+                if idle_duration >= self.idle_threshold_s and not self.is_idle:
+                    self.is_idle = True
+                    
+                    # 触发离线回放巩固
+                    if self.replay_buffer:
+                        self._run_consolidation()
+                
+                # 定期检查 (每 10 秒)
+                time.sleep(10.0)
+            except Exception as e:
+                logger.error(f"[SWR] 监控循环异常（继续运行）: {e}")
+                time.sleep(10.0)
     
     def _run_consolidation(self):
         """执行离线回放巩固（增强版：含记忆分层固化）"""
@@ -183,7 +191,8 @@ class SWRConsolidation:
             if memory_id:
                 # 根据奖励信号增强
                 delta = sequence.reward_signal * self.consolidation_strength
-                self.hippocampus.ca3_memory.update_memory_strength(memory_id, delta)
+                with self._hippocampus_lock:
+                    self.hippocampus.ca3_memory.update_memory_strength(memory_id, delta)
             
             # 调用 STDP 更新 (如果已设置回调)
             if self.stdp_update_fn:
@@ -246,10 +255,11 @@ class SWRConsolidation:
             memory_id = memory.get('memory_id')
             if memory_id and hasattr(self.hippocampus, 'ca3_memory'):
                 # 基础巩固
-                self.hippocampus.ca3_memory.update_memory_strength(
-                    memory_id, 
-                    oscillation_strength
-                )
+                with self._hippocampus_lock:
+                    self.hippocampus.ca3_memory.update_memory_strength(
+                        memory_id, 
+                        oscillation_strength
+                    )
                 
                 # ========== 4. 序列同步增强 ==========
                 # 相邻记忆之间的连接加强
@@ -267,10 +277,11 @@ class SWRConsolidation:
             # 添加适度的随机性，模拟生物噪声
             noise = random.gauss(0, 0.02) * oscillation_strength
             if memory_id and hasattr(self.hippocampus, 'ca3_memory'):
-                self.hippocampus.ca3_memory.update_memory_strength(
-                    memory_id, 
-                    noise
-                )
+                with self._hippocampus_lock:
+                    self.hippocampus.ca3_memory.update_memory_strength(
+                        memory_id, 
+                        noise
+                    )
         
         # ========== 6. Ripple 后的快速抑制 ==========
         # 模拟生物 SWR 后的短暂抑制期
@@ -290,9 +301,6 @@ class SWRConsolidation:
         - 前一个记忆的激活促进后一个记忆的激活
         - 这种时序依赖性是情景记忆的关键
         """
-        if not hasattr(self, '_memory_links'):
-            self._memory_links = {}  # 存储记忆关联
-        
         link_key = f"{from_memory_id}->{to_memory_id}"
         
         if link_key in self._memory_links:
@@ -331,7 +339,8 @@ class SWRConsolidation:
             if memory_id:
                 # 获取当前记忆强度（get_memory_strength 可能不存在于所有版本）
                 try:
-                    current_strength = self.hippocampus.ca3_memory.get_memory_strength(memory_id)
+                    with self._hippocampus_lock:
+                        current_strength = self.hippocampus.ca3_memory.get_memory_strength(memory_id)
                 except (AttributeError, KeyError):
                     # 方法不存在或记忆ID无效，使用默认强度并继续
                     current_strength = 0.5
@@ -342,7 +351,11 @@ class SWRConsolidation:
                 else:
                     inhibition = -0.01 * inhibition_decay  # 轻微抑制
                 
-                self.hippocampus.ca3_memory.update_memory_strength(memory_id, inhibition)
+                try:
+                    with self._hippocampus_lock:
+                        self.hippocampus.ca3_memory.update_memory_strength(memory_id, inhibition)
+                except (AttributeError, KeyError):
+                    pass  # 记忆已被删除，跳过
     
     def set_callbacks(
         self,

@@ -344,7 +344,7 @@ def run_telegram_bot(ai, token: str = None, async_mode: bool = False):
         proxy_url=secret_config.PROXY_URL
     )
     
-    print(f"\n[Bot] Token: {bot_token[:20]}...")
+    print(f"\n[Bot] Token: {'已设置' if bot_token else '未设置'}")
     print("[Bot] 启动中...")
     print("\n按 Ctrl+C 停止 Bot")
     print("=" * 60)
@@ -410,7 +410,10 @@ def main():
     
     # ========== 4. 清理 (睡眠固化) ==========
     print("\n[退出] 正在固化记忆与意识状态...")
-    ai.save_state("brain_state.pt")
+    try:
+        ai.save_state("brain_state.pt")
+    except Exception as e:
+        print(f"[退出] 保存状态失败: {e}")
     
     print("\n再见！")
 
@@ -440,8 +443,8 @@ def run_automated_evaluation(ai):
     stats_before = ai.get_stats()
     report['stats_before'] = stats_before
     print("\n--- Step 2: 记录初始状态 ---")
-    print(f"海马体记忆数: {stats_before['hippocampus']['num_memories']}")
-    print(f"STDP 动态权重范数: {stats_before['stdp']['dynamic_weight_norm']:.6f}")
+    print(f"海马体记忆数: {stats_before.get('hippocampus', {}).get('num_memories', 0)}")
+    print(f"STDP 动态权重范数: {stats_before.get('stdp', {}).get('dynamic_weight_norm', 0):.6f}")
 
     # 3. 注入新记忆
     chat_and_record("我叫张三，我来自北京。", "Step 3: 注入新记忆")

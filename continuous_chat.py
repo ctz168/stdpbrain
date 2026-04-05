@@ -151,7 +151,7 @@ class ContinuousThoughtFlowSession:
                 urge = self.ai.inner_thought_engine._last_urge_to_speak
                 
                 # 如果欲望极高 ( > 0.85)，且距离上次说话已经有一段时间，主动开启输出
-                if urge > 0.85 and (time.time() - self.ai.last_output_time) > 45:
+                if urge > 0.85 and (time.time() - getattr(self.ai, 'last_output_time', time.time())) > 45:
                     self._proactive_speak()
             
             # --- 类人特征 4: 动态思维周期 (非恒定心跳) ---
@@ -334,7 +334,7 @@ class ContinuousThoughtFlowSession:
                 # 显示自闭环优化统计
                 if hasattr(self.ai, 'self_loop') and self.ai.self_loop:
                     sl_stats = self.ai.self_loop.get_stats()
-                    print(f"\n\n[自闭环统计] 周期={sl_stats['cycle_count']}, 平均准确率={sl_stats['avg_accuracy']:.2f}")
+                    print(f"\n\n[自闭环统计] 周期={sl_stats.get('cycle_count', 0)}, 平均准确率={sl_stats.get('avg_accuracy', 0):.2f}")
                 
                 print("\n" + "-" * 40 + "\n")
                 

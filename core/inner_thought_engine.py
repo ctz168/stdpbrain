@@ -19,10 +19,14 @@ import torch.nn.functional as F
 import random
 import time
 import re
-from typing import Generator, Optional, List, Dict, Any, Tuple
-from dataclasses import dataclass, field
+import hashlib
+import logging
+from typing import Generator, Optional, List, Dict, Any
+from dataclasses import dataclass
 from enum import Enum
 from collections import deque
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 枚举定义 ====================
@@ -314,8 +318,6 @@ class InnerThoughtEngine:
         [动态化] 思维模式选择 —— 由 SelfEncoder 情感状态 + GoalSystem 目标类型驱动，
         而非关键词列表匹配。调用链：(arousal, valence) + goal_type → mode 概率分布 → 采样。
         """
-        from core.goal_system import GoalType  # 按需导入，避免循环
-        
         # 基础：用情感状态调节模式偏好
         mode_scores = self._mode_preference.clone()  # [5]
         
@@ -409,11 +411,12 @@ class InnerThoughtEngine:
                 )
                 emo_state = self._emotional_thinking.get_current_state()
                 # 根据情绪状态调整温度和思维模式
-                if emo_state.arousal > 0.7:
+                arousal = getattr(emo_state, 'arousal', 0.5)
+                if arousal > 0.7:
                     # 高唤醒 → 提高温度，增加随机性
                     pass  # 温度在下方根据状态统一设置
             except Exception as e:
-                logger.debug(f"[InnerThought] emotional_thinking failed: {e}")
+                pass  # emotional_thinking is optional, fail silently
 
         # ========== 创造性洞察：漫游/反思状态下注入创意火花 ==========
         if self._creative_engine is not None:
@@ -433,11 +436,9 @@ class InnerThoughtEngine:
                         # 将替代方案附加到思维上下文中
                         external_stimulus = external_stimulus + " " + alternatives[0]
             except Exception as e:
-                logger.debug(f"[InnerThought] creative_engine failed: {e}")
+                pass  # creative_engine is optional, fail silently
         
         # 4. 获取状态风格与惩罚参数
-        state_info = self.state_prompts[self.mind_state]
-        
         # 构建惩罚与温度参数 (下调过激参数，恢复语言的连贯性和严谨性)
         current_temp = 0.5
         current_penalty = 1.0
@@ -527,7 +528,6 @@ class InnerThoughtEngine:
                 summary = " | ".join([t.content[:15] for t in list(self.thought_flow)[-8:]])
                 if self.hippocampus and hasattr(self.hippocampus, 'encode'):
                     try:
-                        import time as _time
                         # encode() 需要 features tensor，通过 model embedding 获取
                         if hasattr(self, 'model') and hasattr(self.model, 'encode_safe'):
                             summary_ids = self.model.encode_safe(summary[:50], return_tensors="pt")
@@ -539,14 +539,15 @@ class InnerThoughtEngine:
                                     features = emb_layer(summary_ids).mean(dim=1).squeeze(0)
                                     self.hippocampus.encode(
                                         features=features,
-                                        token_id=hash(summary) % 100000,
-                                        timestamp=int(_time.time() * 1000),
+                                        token_id=int(hashlib.sha256(summary.encode()).hexdigest(), 16) % 100000,
+                                        timestamp=int(time.time() * 1000),
                                         context=[{'content': summary, 'semantic_pointer': summary[:80], 'is_core': False}]
                                     )
-                    except Exception as e:
-                        logger.debug(f"[InnerThought] hippocampus encoding failed: {e}")
+                    except Exception:
+                        pass  # hippocampus encoding is best-effort
                 # 滚动窗口：保持活跃关注不受旧上下文干扰
-                self.thought_flow = deque(list(self.thought_flow)[-5:], maxlen=10)
+                while len(self.thought_flow) > 5:
+                    self.thought_flow.popleft()
             
             self._record_thought(generated_text)
             return
@@ -681,9 +682,8 @@ class InnerThoughtEngine:
         import random
         new_seed = random.choice(topic_switchers)
         
-        # 更新外部刺激（如果接口提供了）
-        if hasattr(self, '_external_stimulus'):
-            self._external_stimulus = new_seed
+        # 强制更换思维焦点，打破回环
+        self.current_focus = new_seed
         
         # 清空上一次的思维记录，彻底断开回环
         self.last_thought = ""

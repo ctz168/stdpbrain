@@ -148,8 +148,8 @@ class RefreshCycleEngine:
             'context': kwargs.get('context', [])
         }
         stdp_outputs = {
-            'attention_output': step_outputs.get('attention_output', torch.zeros(1)),
-            'ffn_output': step_outputs.get('ffn_output', torch.zeros(1)),
+            'attention_output': step_outputs.get('attention_output', torch.zeros(1, device=self.device)),
+            'ffn_output': step_outputs.get('ffn_output', torch.zeros(1, device=self.device)),
             'memory_contribution': step_outputs.get('memory_contribution', 0.5),
             'evaluation_score': step_outputs.get('evaluation_score', 35.0)
         }
@@ -167,22 +167,31 @@ class RefreshCycleEngine:
         import concurrent.futures
         
         def _async_stdp_and_encode():
-            self.stdp_engine.step(
-                model_components={
-                    'attention': self.model,
-                    'ffn': self.model,
-                    'hippocampus': self.hippocampus
-                },
-                inputs=stdp_inputs,
-                outputs=stdp_outputs,
-                timestamp=timestamp
-            )
-            self.hippocampus.encode(
-                features=features,
-                token_id=input_token,
-                timestamp=int(timestamp),
-                context=[]
-            )
+            try:
+                self.stdp_engine.step(
+                    model_components={
+                        'attention': self.model,
+                        'ffn': self.model,
+                        'hippocampus': self.hippocampus
+                    },
+                    inputs=stdp_inputs,
+                    outputs=stdp_outputs,
+                    timestamp=timestamp
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(f"[RefreshEngine] STDP step failed: {e}")
+            try:
+                # clone features 防止与主线程数据竞争
+                self.hippocampus.encode(
+                    features=features.clone().detach() if isinstance(features, torch.Tensor) else features,
+                    token_id=input_token,
+                    timestamp=int(timestamp),
+                    context=[]
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).debug(f"[RefreshEngine] hippocampus encode failed: {e}")
         
         # fire-and-forget: 后台执行，当前循环不等待
         if hasattr(self.model, '_stdp_executor'):
@@ -855,11 +864,12 @@ class RefreshCycleEngine:
                 
                 # 从记忆锚点提取上下文
                 if key_info['memory_anchors']:
-                    memory_context = torch.stack([
+                    feats = [
                         anchor.get('dg_features', torch.zeros(128))
                         for anchor in key_info['memory_anchors'][:2]
                         if anchor.get('dg_features') is not None
-                    ]).mean(dim=0) if len(key_info['memory_anchors']) > 0 else None
+                    ]
+                    memory_context = torch.stack(feats).mean(dim=0) if feats else None
                 
                 # 使用输出特征作为思维状态
                 if key_info['features'] is not None:

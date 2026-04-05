@@ -46,6 +46,15 @@ class DentateGyrusSeparator(nn.Module):
         mask = (torch.rand_like(projection) > sparsity).float()
         projection = projection * mask
         
+        # 防止全零行导致 NaN（F.normalize 对全零向量产生 NaN）
+        zero_rows = (projection.abs().sum(dim=1) == 0)
+        if zero_rows.any():
+            # 用新的随机行替换全零行
+            num_zero = zero_rows.sum().item()
+            projection[zero_rows] = F.normalize(
+                torch.randn(num_zero, input_dim) / np.sqrt(input_dim), p=2, dim=1
+            )
+        
         # 归一化每行
         projection = F.normalize(projection, p=2, dim=1)
         
@@ -116,6 +125,9 @@ class DentateGyrusSeparator(nn.Module):
         # 恢复原始形状
         if len(original_shape) == 1:
             dg_output = dg_output.squeeze(0).squeeze(0)
+            # 防止过度坍缩（当 output_dim == 1 时 squeeze 会变成标量）
+            if dg_output.dim() == 0:
+                dg_output = dg_output.unsqueeze(0)
         elif len(original_shape) == 2:
             dg_output = dg_output.squeeze(1)
         

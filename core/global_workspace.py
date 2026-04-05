@@ -282,7 +282,7 @@ class GlobalWorkspace:
                 output = adapter(output)
             else:
                 # 没有适配器，使用零填充
-                padded = torch.zeros(output.shape[0], self.hidden_size, device=self.device, dtype=output.dtype)
+                padded = torch.zeros(output.shape[0], self.hidden_size, device=output.device, dtype=output.dtype)
                 min_dim = min(output.shape[-1], self.hidden_size)
                 padded[:, :min_dim] = output[:, :min_dim]
                 output = padded

@@ -9,7 +9,7 @@ import logging
 import time
 import random
 from typing import Optional, Dict, List, Any
-from telegram import Update, Message
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -79,8 +79,8 @@ class BrainAIBot:
         
         # 防串线: 按 chat_id 锁定，防止不同聊天交叉
         self._chat_locks: Dict[int, asyncio.Lock] = {}
-        # 防 Flood control: 全局发送节流
-        self._last_edit_time: float = 0.0
+        # 防 Flood control: 按 chat_id 发送节流
+        self._last_edit_times: Dict[int, float] = {}
         self._min_edit_interval: float = 1.5  # Telegram 限制 ~30次/分钟 ≈ 2秒/次
         
         self._init_stream_handler()
@@ -301,9 +301,10 @@ class BrainAIBot:
             if chat_id and self.application:
                 try:
                     prefix = "🤔 *[澄清]*\n" if is_clarification else "💬 *[主动分享]*\n"
+                    safe_text = self._escape_markdown(text)
                     await self.application.bot.send_message(
                         chat_id=chat_id,
-                        text=f"{prefix}_{text}_",
+                        text=f"{prefix}_{safe_text}_",
                         parse_mode='Markdown'
                     )
                     logger.info(f"[Proactive] 主动消息已发送到 {chat_id}")
@@ -532,7 +533,7 @@ class BrainAIBot:
             monitor_text += "🎯 [*当前目标*]\n"
             monitor_text += f"  类型: {goal.get('goal_type', 'none')}\n"
             monitor_text += f"  描述: {goal.get('goal_description', '')[:30]}...\n"
-            progress_bar = "█" * int(goal.get('goal_progress', 0) * 10)
+            progress_bar = "█" * int(min(max(goal.get('goal_progress', 0), 0.0), 1.0) * 10)
             progress_bar += "░" * (10 - len(progress_bar))
             monitor_text += f"  进度: [{progress_bar}] {goal.get('goal_progress', 0):.0%}\n"
             monitor_text += f"  优先级: {goal.get('goal_priority', 0):.2f}\n\n"
@@ -543,6 +544,8 @@ class BrainAIBot:
             monitor_text += "😊 [*当前情绪*]\n"
             arousal = emotion.get('arousal', 0.5)
             valence = emotion.get('valence', 0.5)
+            arousal = min(max(arousal, 0.0), 1.0)
+            valence = min(max(valence, 0.0), 1.0)
             arousal_bar = "█" * int(arousal * 10) + "░" * (10 - int(arousal * 10))
             valence_bar = "█" * int(valence * 10) + "░" * (10 - int(valence * 10))
             monitor_text += f"  唤醒: [{arousal_bar}] {arousal:.2f}\n"
@@ -609,15 +612,22 @@ class BrainAIBot:
             self._chat_locks[chat_id] = asyncio.Lock()
         return self._chat_locks[chat_id]
     
+    def _get_last_edit_time(self, chat_id: int) -> float:
+        return self._last_edit_times.get(chat_id, 0.0)
+    
+    def _set_last_edit_time(self, chat_id: int, t: float):
+        self._last_edit_times[chat_id] = t
+    
     async def _safe_edit_message(self, message, text: str, parse_mode=None):
-        """安全编辑消息，自带 Flood control 退避"""
+        """安全编辑消息，自带 Flood control 退避（按 chat_id 隔离）"""
+        chat_id = message.chat_id if hasattr(message, 'chat_id') else 0
         now = time.time()
-        elapsed = now - self._last_edit_time
+        elapsed = now - self._get_last_edit_time(chat_id)
         if elapsed < self._min_edit_interval:
             await asyncio.sleep(self._min_edit_interval - elapsed + 0.1)
         try:
             await message.edit_text(text=text, parse_mode=parse_mode)
-            self._last_edit_time = time.time()
+            self._set_last_edit_time(chat_id, time.time())
             return True
         except Exception as e:
             if "Flood control" in str(e) or "flood" in str(e).lower():
@@ -627,7 +637,7 @@ class BrainAIBot:
                     retry_after = e.parameters.get('retry_after', 3.0)
                 logger.warning(f"[Flood Control] 退避 {retry_after:.1f}s")
                 await asyncio.sleep(retry_after)
-                self._last_edit_time = time.time()
+                self._set_last_edit_time(chat_id, time.time())
             else:
                 logger.debug(f"[Edit] 非flood错误: {e}")
             return False
@@ -713,7 +723,7 @@ class BrainAIBot:
                 try:
                     if 'typing' in locals():
                         await typing.stop_typing()
-                    await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
+                    await update.message.reply_text("❌ 处理失败，请稍后重试")
                 except Exception:
                     pass
             finally:
@@ -799,7 +809,7 @@ class BrainAIBot:
             update_interval = 1.2
             
             # 存储生成的记忆（用于最终显示）
-            stored_memory_info = None
+            # (reserved for future use)
             
             # 使用新的 chat_stream 接口
             history = self.user_history.get(user_id, [])
@@ -847,7 +857,7 @@ class BrainAIBot:
                             f"_{safe_monologue}_\n\n"
                             f"📊 *系统状态:*\n{status_str}\n"
                             f"{recalled_mem_str}"
-                            f"✨ **回复:**\n{full_response}▌"
+                            f"✨ *回复:*\n{self._escape_markdown(full_response)}▌"
                         )
                         if display_text != last_sent_text:
                             ok = await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
@@ -934,7 +944,7 @@ class BrainAIBot:
             if goal_final and goal_final.get('has_goal'):
                 goal_type = goal_final.get('goal_type', '?')
                 goal_desc = goal_final.get('goal_description', '')[:40]
-                progress = goal_final.get('goal_progress', 0)
+                progress = min(max(goal_final.get('goal_progress', 0), 0.0), 1.0)
                 priority = goal_final.get('goal_priority', 0)
                 progress_bar = "█" * int(progress * 10) + "░" * (10 - int(progress * 10))
                 goal_str = (
@@ -950,6 +960,7 @@ class BrainAIBot:
             
             # 构建最终消息
             safe_monologue_final = self._escape_markdown(monologue)
+            safe_response = self._escape_markdown(full_response)
             final_display = (
                 f"💭 *[潜意识]*\n"
                 f"_{safe_monologue_final}_\n\n"
@@ -960,7 +971,7 @@ class BrainAIBot:
                 f"{recalled_str}\n"
                 f"{stored_str}\n"
                 f"{goal_str}\n"
-                f"✨ **回复:**\n{full_response}"
+                f"✨ *回复:*\n{safe_response}"
             )
             
             for attempt in range(3):
@@ -987,7 +998,8 @@ class BrainAIBot:
             # ========== 新增: 应用用户反馈到 STDP 学习 ==========
             if feedback and feedback.is_feedback and hasattr(self.ai, 'apply_user_feedback'):
                 try:
-                    stdp_reward = feedback_handler.compute_stdp_reward(feedback)
+                    _feedback_handler = get_feedback_handler()
+                    stdp_reward = _feedback_handler.compute_stdp_reward(feedback)
                     logger.info(f"[STDP学习] 应用用户反馈: reward={stdp_reward:.2f}, "
                                f"feedback={'正面' if feedback.is_positive else '负面'}")
                     
@@ -999,7 +1011,7 @@ class BrainAIBot:
                     )
                     
                     # 如果是强负面反馈，存储为负样本
-                    if feedback_handler.should_store_as_negative_sample(feedback):
+                    if _feedback_handler.should_store_as_negative_sample(feedback):
                         logger.warning(f"[STDP学习] 标记上一个回复为负样本")
                         # TODO: 可以在这里存储到负样本数据库
                         
@@ -1012,7 +1024,7 @@ class BrainAIBot:
         except Exception as e:
             logger.error(f"流式生成失败: {e}", exc_info=True)
             await typing.stop_typing()
-            await update.message.reply_text(f"[FAIL] 生成失败: {str(e)}")
+            await update.message.reply_text("❌ 生成失败，请稍后重试")
             self.is_user_interacting = False  # 异常时也重置
 
     def _update_history(self, user_id: int, user_message: str, assistant_response: str):
