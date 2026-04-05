@@ -952,9 +952,14 @@ class QwenInterface:
             token_text = self.decode_safe([next_token_id], skip_special_tokens=True)
             
             # 温和的阻断词拦截（仅拦截会导致格式破坏的严重标签）
+            # 架构修复：原代码每步都 full_decode 整个生成序列来检查3个关键词，
+            # 这是 O(n²) 的解码开销。改为只检查最新生成的文本（O(1) token decode）。
             unsafe_keywords = ["<|im_start|>", "\nuser\n", "\nUser\n"]
-            full_decode = self.decode_safe(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
-            if any(kw in full_decode for kw in unsafe_keywords):
+            # 只在最新5个token中检查阻断词（覆盖多token组成的阻断词）
+            unsafe_found = False
+            check_start = max(prompt_len, cur_len - 5)
+            recent_decode = self.decode_safe(input_ids_buf[0, check_start:cur_len+1].tolist(), skip_special_tokens=True)
+            if any(kw in recent_decode for kw in unsafe_keywords):
                 break
             
             # ========== N-gram 重复检测（温和版：不截断，只惩罚） ==========
@@ -1079,8 +1084,10 @@ class QwenInterface:
             
             # 温和的阻断词拦截（仅拦截严重格式破坏标签）
             unsafe_keywords = ["<|im_start|>", "\nuser\n", "\nUser\n"]
-            full_decode = self.decode_safe(input_ids_buf[0, prompt_len:cur_len+1], skip_special_tokens=True)
-            if any(kw in full_decode for kw in unsafe_keywords):
+            # 架构修复：同 generate_stream_sync，避免 O(n²) full_decode
+            check_start = max(prompt_len, cur_len - 5)
+            recent_decode = self.decode_safe(input_ids_buf[0, check_start:cur_len+1].tolist(), skip_special_tokens=True)
+            if any(kw in recent_decode for kw in unsafe_keywords):
                 break
             
             # ========== N-gram 重复检测（温和版） ==========

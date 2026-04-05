@@ -51,11 +51,43 @@ class STDPRule:
         contributions: torch.Tensor,
         reward: float = 1.0
     ) -> torch.Tensor:
-        """向量化计算 STDP 权重更新量 (支持奖励信号)"""
+        """向量化计算 STDP 权重更新量 (支持奖励信号)
+        
+        架构修复：原代码使用绝对时间戳（毫秒）计算 delta_t，
+        但 CPU 推理每 token 需要 ~3400ms，远超 20ms 的时间窗口，
+        导致所有 delta_t >> window，所有更新被 mask 清零。
+        修复：将时间戳转换为 token 位置序号，确保相邻 token 的 delta_t ≈ 1。
+        """
+        # ========== 架构修复：基于 token 位置而非绝对时间 ==========
+        # 在 CPU 推理环境中，token 间隔是秒级（~3400ms），但 time_window_ms=20ms。
+        # 原始时间差远超窗口 → mask 全部清零 → STDP 永远不更新。
+        # 修复策略：将时间戳归一化为相对位置（除以平均 token 间隔），
+        # 使相邻 token 的 delta_t ≈ 1，时间窗口的语义变为"相邻 N 个 token"。
         delta_t = post_times - pre_times
         
+        # 检测是否使用真实时间戳（值远大于 token 数量）
+        max_delta = delta_t.abs().max().item() if delta_t.numel() > 0 else 0
+        token_count = delta_t.numel()
+        
+        if max_delta > token_count * 2 and token_count > 0:
+            # 时间戳模式：delta_t 远大于 token 数量 → 归一化
+            # 使用中位数间隔作为归一化因子（更鲁棒）
+            sorted_deltas = delta_t.abs().sort().values
+            if sorted_deltas.numel() > 1:
+                median_interval = sorted_deltas[len(sorted_deltas)//2].item()
+            else:
+                median_interval = 1.0
+            if median_interval > 0:
+                delta_t = delta_t / median_interval
+                # 调整时间窗口为"相邻 N 个 token"
+                effective_window = min(self.time_window_ms, token_count)
+            else:
+                effective_window = self.time_window_ms
+        else:
+            effective_window = self.time_window_ms
+        
         # 掩码：仅在时间窗口内更新
-        mask = torch.abs(delta_t) <= self.time_window_ms
+        mask = torch.abs(delta_t) <= effective_window
         
         # LTP (Δt > 0): alpha * exp(-dt/tau)
         ltp_mask = delta_t > 0

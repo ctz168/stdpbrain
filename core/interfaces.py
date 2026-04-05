@@ -1462,7 +1462,13 @@ class BrainAIInterface:
             return None
 
     def _apply_real_stdp_update(self, emotional_salience: float = 1.0):
-        """调用真实的 STDP 引擎进行闭环学习，替代之前的伪 Hebbian 规则"""
+        """调用真实的 STDP 引擎进行闭环学习，替代之前的伪 Hebbian 规则
+        
+        架构修复：原代码将整个 HuggingFace 模型（self.model.model）作为 'attention' 传给
+        stdp_engine.step()，但 update_attention_layer() 检查 attention_layer.dynamic_weight，
+        整个模型没有此属性，导致 STDP 更新每次都直接 return，权重永远为 0。
+        修复：遍历模型找到实际的 DualWeightLinear 层，对每个层执行 STDP 更新。
+        """
         try:
             # 增加对核心组件的显式防护，确保任何遥测失败都不会挂起主对话
             if not hasattr(self, 'stdp_engine') or self.stdp_engine is None:
@@ -1470,20 +1476,19 @@ class BrainAIInterface:
             if self.current_thought_state is None: 
                 return
             
-            # 使用真实的 STDP 引擎进行闭环学习
-            # 这里的 reward 由当时的生成置信度决定 (已在 chat() 中通过 set_reward 设置)
-            # 通过构建符合 step 要求的 components 字典
-            model_components = {
-                'attention': self.model.model if hasattr(self.model, 'model') else None,
-                'ffn': None, # FFN 内部已包含在 model 中
-                'hippocampus': self.hippocampus
-            }
+            # 架构修复：找到实际的 DualWeightLinear 层
+            # 而非将整个模型作为一个"attention"传入
+            dual_weight_layers = []
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'base_model'):
+                for name, module in self.model.model.base_model.named_modules():
+                    if hasattr(module, 'dynamic_weight') and hasattr(module, 'apply_stdp_update'):
+                        dual_weight_layers.append((name, module))
             
             # 对输入文本进行分词，获取 Token ID 以便 STDP 引擎建立时序关联（线程安全）
             context_ids = self.model.encode_safe(self._last_user_input, add_special_tokens=False)
             # current_token 只要一个代表性的 ID
             seed_ids = self.model.encode_safe(self.thought_seed, add_special_tokens=False)
-            eos_token_id = self.model.tokenizer.eos_token_id  # 只读属性，安全
+            eos_token_id = self.model.tokenizer.eos_token_id
             current_id = seed_ids[-1] if seed_ids else eos_token_id
             
             inputs = {
@@ -1501,17 +1506,30 @@ class BrainAIInterface:
                 'memory_contribution': emotional_salience / 3.0
             }
             
-            # 执行真正的 STDP 更新步
-            self.stdp_engine.step(
-                model_components=model_components,
-                inputs=inputs,
-                outputs=outputs
-            )
-            
-            self.total_stdp_updates += 1
-            # 更新统计 (从引擎获取真实规范)
-            stdp_stats = self.stdp_engine.get_stats()
-            self.last_dynamic_weight_norm = stdp_stats.get('last_update_magnitude', 0.0)
+            # 架构修复：对每个 DualWeightLinear 层分别执行 STDP 更新
+            if dual_weight_layers:
+                # 取第一个有 dynamic_weight 的层作为代表执行 STDP step
+                # （FullLinkSTDP 内部会修改该层的 dynamic_weight）
+                # 为提高效率，每次只更新部分层（轮换策略）
+                layer_idx = self.total_stdp_updates % len(dual_weight_layers)
+                selected_name, selected_layer = dual_weight_layers[layer_idx]
+                
+                model_components = {
+                    'attention': selected_layer,
+                    'ffn': None,
+                    'hippocampus': self.hippocampus
+                }
+                
+                self.stdp_engine.step(
+                    model_components=model_components,
+                    inputs=inputs,
+                    outputs=outputs
+                )
+                
+                self.total_stdp_updates += 1
+                # 更新统计
+                stdp_stats = self.stdp_engine.get_stats()
+                self.last_dynamic_weight_norm = stdp_stats.get('last_update_magnitude', 0.0)
             
             # 定期触发海马体 SWR (Sharp-Wave Ripple) 巩固
             if self.cycle_count % 3 == 0:
@@ -1525,7 +1543,9 @@ class BrainAIInterface:
         self,
         user_input: str,
         history: List[Dict[str, str]] = None,
-        max_tokens: int = 256
+        max_tokens: int = 512  # 架构修复：从256增至512。256tokens对0.8B模型约200个中文字符，
+                               # 复杂回答（如数学推导）经常被截断在中途（"共▌"）。
+                               # 512tokens提供足够空间完成完整回答。
     ) -> AsyncGenerator[Dict[str, str], None]:
         """
         流式类人对话接口 (边思考边回答版)：
@@ -1573,7 +1593,9 @@ class BrainAIInterface:
                     chars = []
                     for char in self.inner_thought_engine.generate_inner_thought(
                         external_stimulus=user_input,
-                        max_tokens=150  # BUG FIX: 从80提升到150，确保有足够空间输出有意义的思考
+                        max_tokens=30  # 架构修复：从150降至30。CPU上每token约3.4秒，
+                                      # 150tokens=512秒用户需等8分钟什么也看不到。
+                                      # 思考只是展示性的，真正推理在主生成阶段。
                     ):
                         chars.append(char)
                     return chars
@@ -2367,7 +2389,6 @@ class BrainAIInterface:
         if monologue and len(monologue.strip()) > 5 and not _is_factual_question:
             # 清理独白中的格式碎片
             clean_mono = monologue.strip()
-            import re
             clean_mono = re.sub(r'<[^>]+>', '', clean_mono)
             clean_mono = re.sub(r'[【\[\]】]', '', clean_mono)
             clean_mono = clean_mono.strip()[:80]  # 限制80字

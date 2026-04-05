@@ -823,31 +823,59 @@ class BrainAIBot:
             
             # 使用新的 chat_stream 接口
             history = self.user_history.get(user_id, [])
+            # 思考文本缓冲（用于实时显示思考过程）
+            thinking_chars = []
+            thinking_display_counter = 0
+
             async for event in self.ai.chat_stream(user_message, history):
-                if event["type"] == "monologue":
+                # ========== 处理思考事件（实时流式显示）==========
+                if event["type"] == "thinking":
+                    thinking_chars.append(event["content"])
+                    thinking_display_counter += 1
+                    # 每收到5个字符更新一次显示（避免 Telegram API 限频）
+                    if thinking_display_counter % 5 == 0:
+                        thinking_text_so_far = "".join(thinking_chars)[-100:]  # 只显示最近100字符
+                        safe_thinking = self._escape_markdown(thinking_text_so_far)
+                        display_text = (
+                            f"💭 *[思考中...]*\n"
+                            f"_{safe_thinking}▌_\n\n"
+                            f"📊 *系统状态:*\n{status_str}\n"
+                        )
+                        try:
+                            await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
+                        except Exception:
+                            pass
+
+                # ========== 处理思考完成事件 ==========
+                elif event["type"] == "thinking_done":
                     monologue = event["content"]
-                    
-                    # 更新召回记忆信息
-                    recalled_mem_str = ""
-                    if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories:
-                        recalled_mem_str = "\n📖 *召回记忆:*\n"
-                        for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
-                            semantic = mem.get('semantic_pointer', 'N/A')[:40]
-                            activation = mem.get('activation_strength', 0)
-                            recalled_mem_str += f"  {i}. {semantic}... (激活:{activation:.3f})\n"
-                    
-                    # 立即显示潜意识
-                    # 转义 Markdown 特殊字符
+                    safe_monologue = self._escape_markdown(monologue) if monologue else ""
+                    display_text = (
+                        f"💭 *[潜意识]*\n"
+                        f"_{safe_monologue}_\n\n"
+                        f"📊 *系统状态:*\n{status_str}\n"
+                        f"✨ *[准备回复...]*"
+                    )
+                    try:
+                        await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
+                    except Exception:
+                        pass
+
+                # ========== 处理旧格式 monologue 事件（兼容）==========
+                elif event["type"] == "monologue":
+                    monologue = event["content"]
                     safe_monologue = self._escape_markdown(monologue)
                     display_text = (
                         f"💭 *[潜意识]*\n"
                         f"_{safe_monologue}_\n\n"
                         f"📊 *系统状态:*\n{status_str}\n"
-                        f"{recalled_mem_str}"
                         f"✨ *[准备回复...]*"
                     )
-                    await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
-                    last_sent_text = display_text
+                    try:
+                        await self._safe_edit_message(initial_message, display_text, parse_mode='Markdown')
+                        last_sent_text = display_text
+                    except Exception:
+                        pass
                 
                 elif event["type"] == "chunk":
                     full_response += event["content"]
@@ -984,23 +1012,64 @@ class BrainAIBot:
                 f"✨ *回复:*\n{safe_response}"
             )
             
-            for attempt in range(3):
-                try:
-                    await initial_message.edit_text(final_display, parse_mode='Markdown')
-                    break
-                except Exception:
+            # 架构修复：Telegram 消息限制 4096 字符
+            # 原代码无条件将所有状态信息+回复塞进一条消息，
+            # 当回复较长时超过 4096 字符限制，edit_text 失败，
+            # 导致用户看到的是截断的旧消息（如"共▌"）。
+            # 修复：超长时分为两条消息——第一条放回复，第二条放状态详情。
+            MAX_TELEGRAM_MSG = 3900  # 留出 Markdown 格式开销
+            if len(final_display) > MAX_TELEGRAM_MSG:
+                # 分离回复和状态信息，确保回复完整显示
+                response_only = (
+                    f"💭 *[潜意识]*\n"
+                    f"_{safe_monologue_final[:100]}_\n\n"
+                    f"{input_str}\n"
+                    f"✨ *回复:*\n{safe_response}"
+                )
+                if len(response_only) > MAX_TELEGRAM_MSG:
+                    # 即使只有回复也太长，截断元数据但保留完整回复
+                    response_only = f"✨ *回复:*\n{safe_response}"
+                
+                for attempt in range(3):
                     try:
-                        # 回退到简化版本
-                        simplified = (
-                            f"潜意识:\n{monologue}\n\n"
-                            f"回复:\n{full_response}\n\n"
-                            f"STDP权重: {stdp_final.get('dynamic_weight_norm', 0):.6f}\n"
-                            f"记忆: {hippocampus_final.get('num_memories', 0)}条"
-                        )
-                        await initial_message.edit_text(simplified, parse_mode=None)
+                        await initial_message.edit_text(response_only, parse_mode='Markdown')
                         break
                     except Exception:
-                        await asyncio.sleep(1)
+                        try:
+                            simplified_resp = f"回复:\n{full_response}"
+                            await initial_message.edit_text(simplified_resp, parse_mode=None)
+                            break
+                        except Exception:
+                            await asyncio.sleep(1)
+                
+                # 状态信息单独发送
+                status_only = (
+                    f"📊 *系统状态详情*\n"
+                    f"{stdp_info}\n{memory_info}\n{recalled_str}\n{stored_str}\n{goal_str}"
+                )
+                if len(status_only) > 200:  # 只在有实质内容时发送
+                    try:
+                        await update.message.reply_text(status_only, parse_mode='Markdown')
+                    except Exception:
+                        pass
+            else:
+                for attempt in range(3):
+                    try:
+                        await initial_message.edit_text(final_display, parse_mode='Markdown')
+                        break
+                    except Exception:
+                        try:
+                            # 回退到简化版本
+                            simplified = (
+                                f"潜意识:\n{monologue}\n\n"
+                                f"回复:\n{full_response}\n\n"
+                                f"STDP权重: {stdp_final.get('dynamic_weight_norm', 0):.6f}\n"
+                                f"记忆: {hippocampus_final.get('num_memories', 0)}条"
+                            )
+                            await initial_message.edit_text(simplified, parse_mode=None)
+                            break
+                        except Exception:
+                            await asyncio.sleep(1)
             
             self._update_history(user_id, user_message, full_response)
             logger.info(f"回复用户 {user_id} 完成 (长度: {len(full_response)})")
