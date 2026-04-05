@@ -472,20 +472,18 @@ class InnerThoughtEngine:
                 if "</think>" in token: in_think_block = False; continue
                 if in_think_block: continue
                 
-                # 实时净化与 HALLUCINATION 拦截 (强效版：清除所有格式碎片)
-                token = self._re_brackets.sub('', token)
-                # 过滤各种系统标签（包含 Qwen3.5 的思维标签）
-                token = self._re_tags.sub('', token)
-                token = self._re_pipes.sub('', token)
-                token = self._re_xml_tags.sub('', token)
-                token = self._re_im_markers.sub('', token)
-                token = self._re_angle_brackets.sub('', token)
-                token = self._re_escape_seqs.sub('', token)
-                token = self._re_html_entities.sub('', token)
-                token = self._re_asterisk_fmt.sub('', token)
-                # 去除首尾空白和特殊字符
-                token = token.strip(' \t\n\r\\\'"`')
-                if not token.strip(): continue
+                # 实时净化与 HALLUCINATION 拦截 (平衡版)
+                # BUG FIX: 原代码对每个 token 应用了 10+ 条正则，对 0.8B 模型太激进。
+                # 新策略：只过滤不含中文的纯噪声 token，保留所有含中文的内容。
+                token = token.strip(' \t\n\r')
+                if not token:
+                    continue
+                # 检查是否包含中文字符或基本标点
+                has_chinese = bool(re.search(r'[\u4e00-\u9fff]', token))
+                has_punctuation = bool(re.search(r'[，。！？、；：""''（）《》…—.,!?]', token))
+                has_alphanumeric = bool(re.search(r'[a-zA-Z0-9]', token))
+                if not has_chinese and not has_punctuation and not has_alphanumeric:
+                    continue  # 纯噪声（如特殊符号、控制字符），跳过
                 
                 # 实时重复检测 (增量式3-gram检测，替代全量n-gram扫描)
                 generated_text += token
@@ -742,7 +740,11 @@ class InnerThoughtEngine:
         # 构建用户消息：将外部刺激和最近思维作为内容
         user_parts = []
         if external_stimulus:
-            user_parts.append(external_stimulus[:50])
+            # BUG FIX: 从 50 字符扩展到 200 字符。
+            # 原代码 external_stimulus[:50] 会截断关键数字信息。
+            # 例如租金问题 "3月12日起租，3月份20天房租1600元。押金:两千四百元；卫生费200元..."
+            # 前50字符截到"卫生"就断了，后面的"费200元。合计2600元。那月租金是多少？"全部丢失。
+            user_parts.append(external_stimulus[:200])
         if self.thought_flow and self.mind_state != MindState.WANDERING:
             recent_thought = list(self.thought_flow)[-1].content[:30]
             user_parts.append(f"刚才在想：{recent_thought}")

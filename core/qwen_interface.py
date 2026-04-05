@@ -912,7 +912,10 @@ class QwenInterface:
         with self._tokenizer_lock:
             eos_token_id = self.tokenizer.eos_token_id
             im_end_token_id = _get_im_end_token_id(self.tokenizer)
-        stop_token_ids = {eos_token_id, im_end_token_id}
+        stop_token_ids = {eos_token_id}
+        # BUG FIX: im_end 延迟停止（与 generate() 同理）
+        im_end_late_stop_threshold = 30
+        _stream_generated_count = 0  # 流式生成计数器
         
         # 重复检测变量
         recent_tokens = []  # 最近生成的token
@@ -973,9 +976,15 @@ class QwenInterface:
                 if ngram_repeat_count[ngram4] > max_repeat_allowed * 3:
                     break  # 4-gram重复超过30次才真正截断（从*2放宽到*3）
             
+            _stream_generated_count += 1
             yield token_text
             
             if next_token_id in stop_token_ids:
+                self.clear_memory_anchors()
+                break
+            
+            # BUG FIX: im_end 延迟停止
+            if next_token_id == im_end_token_id and _stream_generated_count >= im_end_late_stop_threshold:
                 self.clear_memory_anchors()
                 break
             
@@ -1031,7 +1040,10 @@ class QwenInterface:
         with self._tokenizer_lock:
             eos_token_id = self.tokenizer.eos_token_id
             im_end_token_id = _get_im_end_token_id(self.tokenizer)
-        stop_token_ids = {eos_token_id, im_end_token_id}
+        stop_token_ids = {eos_token_id}
+        # BUG FIX: im_end 延迟停止（与 generate() 同理）
+        im_end_late_stop_threshold = 30
+        _stream_generated_count = 0  # 流式生成计数器
         
         # 重复检测变量
         recent_tokens = []
@@ -1097,7 +1109,14 @@ class QwenInterface:
                 if hs is not None:
                     yield {"type": "hidden_state", "hidden_state": hs.clone()}
             
+            _stream_generated_count += 1
+            
             if next_token_id in stop_token_ids:
+                self.clear_memory_anchors()
+                break
+            
+            # BUG FIX: im_end 延迟停止
+            if next_token_id == im_end_token_id and _stream_generated_count >= im_end_late_stop_threshold:
                 self.clear_memory_anchors()
                 break
             
@@ -1212,7 +1231,13 @@ class QwenInterface:
         # 定义停止token
         eos_token_id = self.model.tokenizer.eos_token_id
         im_end_token_id = _get_im_end_token_id(self.model.tokenizer)
-        stop_token_ids = {eos_token_id, im_end_token_id}
+        stop_token_ids = {eos_token_id}
+        # BUG FIX: im_end_token_id 不直接加入 stop_token_ids。
+        # 原因：0.8B 小模型在回答长问题时，可能在回答中途就生成 <|im_end|>，
+        # 导致回答被截断（如"共▌"）。只有在生成了足够多的 token 后，
+        # <|im_end|> 才表示"回答完毕"。少于 30 个 token 的 <|im_end|> 几乎
+        # 总是过早终止。
+        im_end_late_stop_threshold = 30  # 至少生成30个token后才允许 <|im_end|> 停止
         
         generated_tokens = []
         past_key_values = None
@@ -1298,6 +1323,15 @@ class QwenInterface:
             generated_tokens.append(next_token_id)
             
             if next_token_id in stop_token_ids:
+                self.clear_memory_anchors()
+                if NARROW_BAND_PATCHED:
+                    get_memory_anchor_store().enabled = True
+                break
+            
+            # BUG FIX: im_end 延迟停止 — 只在生成足够多 token 后才允许 im_end 停止。
+            # 0.8B 小模型可能在回答前几步就生成 <|im_end|>（还没写完就停了），
+            # 但在生成了 30+ token 后的 <|im_end|> 通常才是"回答完毕"。
+            if next_token_id == im_end_token_id and len(generated_tokens) >= im_end_late_stop_threshold:
                 self.clear_memory_anchors()
                 if NARROW_BAND_PATCHED:
                     get_memory_anchor_store().enabled = True

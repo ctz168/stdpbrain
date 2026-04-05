@@ -326,7 +326,7 @@ class ContinuousThoughtFlowSession:
                 response = self.ai.chat(
                     clean_input,
                     history=self.chat_history[-4:] if self.chat_history else [],
-                    max_tokens=200
+                    max_tokens=400  # BUG FIX: 从200提升到400，避免复杂回答被截断
                 )
                 
                 # 流式输出回答

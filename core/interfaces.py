@@ -795,11 +795,23 @@ class BrainAIInterface:
             self.last_output_embedding = None
         
         # 4. 自闭环优化 - 高复杂度任务进行二次优化
+        # 架构修复：self_loop 用原始用户输入重新生成，没有 _format_chat_prompt 中的
+        # 数学事实提取（extracted_facts）。对数学/事实问题，self_loop 的输出几乎
+        # 必然比原始输出差（因为它缺少关键已知条件），不应覆盖原始输出。
         mode = self.self_loop.decide_mode(user_input)
         output_confidence = output.confidence if hasattr(output, 'confidence') else 0.7
         
-        if mode in ["self_game", "self_eval"] or output_confidence < 0.6:
-            # 高难度任务或低置信度输出，使用自闭环优化
+        # 检测是否为事实/数学问题（轻量版，与 _format_chat_prompt 中的检测逻辑一致）
+        _math_kws = ["多少", "几", "计算", "总共", "平均", "租金", "价格", "费用",
+                      "利率", "利润", "折扣", "元", "块", "分", "角", "比例", "倍数"]
+        _is_factual_or_math = (
+            bool(re.search(r'\d+\s*[+\-*/×÷=]', user_input)) or
+            (any(kw in user_input for kw in _math_kws) and len(re.findall(r'\d+', user_input)) >= 2) or
+            any(kw in user_input for kw in ["记得", "记住", "我叫什么", "你还记得", "我叫啥"])
+        )
+        
+        if not _is_factual_or_math and (mode in ["self_game", "self_eval"] or output_confidence < 0.6):
+            # 非事实类问题且置信度低，使用自闭环优化
             try:
                 context_list = [memory_context] if memory_context else None
                 optimized_result = self.self_loop.run(user_input, context=context_list)
@@ -1155,10 +1167,13 @@ class BrainAIInterface:
         
         # 模式4: "X天Y元" (天+金额，没有"月"字)
         # 更灵活匹配：如 "住了20天租金1600元"、"20天花了1600元"
+        # BUG FIX: 原代码引用 day_month_match 和 cross_match 但这两个变量从未定义，
+        # 导致 NameError 被 except 静默吞掉，模式4 永远不执行。
+        # 修复：使用上方已定义的 day_money_pairs 和 has_month_keyword 判断。
         day_money_no_month = re.search(
             r'(\d+)\s*天[^\d]{0,10}?(\d+)\s*元', user_input
         )
-        if day_money_no_month and not day_month_match and not cross_match:
+        if day_money_no_month and not has_month_keyword:
             try:
                 days = int(day_money_no_month.group(1))
                 total = int(day_money_no_month.group(2))
@@ -1558,7 +1573,7 @@ class BrainAIInterface:
                     chars = []
                     for char in self.inner_thought_engine.generate_inner_thought(
                         external_stimulus=user_input,
-                        max_tokens=80
+                        max_tokens=150  # BUG FIX: 从80提升到150，确保有足够空间输出有意义的思考
                     ):
                         chars.append(char)
                     return chars
