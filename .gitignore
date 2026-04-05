@@ -34,3 +34,5 @@ Thumbs.db
 .cache/
 *.pyc
 test_memory_state.pt
+brain_state.pt
+brain_state.pt
