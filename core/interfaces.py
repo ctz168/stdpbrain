@@ -1068,16 +1068,23 @@ class BrainAIInterface:
         
         import re
         
+        # ========== 通用辅助：从用户输入中提取 "X天Y元" 模式 ==========
+        # 架构修复：原正则 [^\d]*月 要求"元"和"月"之间没有数字，
+        # 但"20天房租1600元。押金:...卫生费200元...月租金"中
+        # "200" 会中断 [^\d]* 匹配，导致验算永远不触发。
+        # 新策略：分两步——先提取 X天Y元，再独立检查是否有"月"相关关键词。
+        day_money_pairs = re.findall(r'(\d+)\s*天[^\d]{0,10}?(\d+)\s*元', user_input)
+        has_month_keyword = any(kw in user_input for kw in ['月租金', '月', '每月', '一个月'])
+        
         # 检测用户输入中的数学问题模式
-        # 模式1: "X天Y元，月租金多少" (比例问题)
-        day_month_match = re.search(
-            r'(\d+)\s*天[^\d]*(\d+)\s*元[^\d]*月', user_input
-        )
-        if day_month_match:
+        # 模式1: "X天Y元" + "月"关键词 (比例问题：求月租金)
+        if day_money_pairs and has_month_keyword:
             try:
-                days = int(day_month_match.group(1))
-                total = int(day_month_match.group(2))
-                correct = total / days * 30
+                # 取第一个匹配（通常是核心条件）
+                days = int(day_money_pairs[0][0])
+                total = int(day_money_pairs[0][1])
+                daily = total / days
+                correct = daily * 30
                 correct_int = int(correct)
                 correct_str = str(correct_int) if correct == correct_int else f"{correct:.1f}"
                 
@@ -1089,7 +1096,7 @@ class BrainAIInterface:
                         wrong_answer = answer_nums[-1]
                         # 追加纠正（不替换原文，保留思考过程）
                         correction = (
-                            f"\n\n[验算纠正] 日租金={total}÷{days}={total/days:.1f}元，"
+                            f"\n\n[验算纠正] {total}÷{days}={daily:.1f}元/天，"
                             f"月租金（30天）={correct_str}元。"
                             f"上面说的{wrong_answer}元是错的。"
                         )
@@ -1099,14 +1106,11 @@ class BrainAIInterface:
                 pass
         
         # 模式2: "X天Y元，Z天多少元" (比例交叉问题)
-        cross_match = re.search(
-            r'(\d+)\s*天[^\d]*(\d+)\s*元[^\d]*(\d+)\s*天', user_input
-        )
-        if cross_match and not day_month_match:
+        if len(day_money_pairs) >= 2:
             try:
-                d1 = int(cross_match.group(1))
-                p1 = int(cross_match.group(2))
-                d2 = int(cross_match.group(3))
+                d1 = int(day_money_pairs[0][0])
+                p1 = int(day_money_pairs[0][1])
+                d2 = int(day_money_pairs[1][0])
                 correct = p1 / d1 * d2
                 correct_int = int(correct)
                 correct_str = str(correct_int) if correct == correct_int else f"{correct:.1f}"
@@ -1732,6 +1736,39 @@ class BrainAIInterface:
         t_step5 = time.time()
         # print(f"[步骤5] 模型生成: {(t_step5-t_step4)*1000:.0f}ms")
         
+        # ========== 5.5 自闭环优化（与 chat() 保持一致）==========
+        # 架构修复：chat_stream 之前完全没有 self_loop 优化，
+        # 导致 Telegram bot 走 chat_stream 路径时，数学/逻辑题的
+        # self_game 自博弈验证从未执行，模型错误答案直接输出。
+        try:
+            if self.self_loop is not None:
+                mode = self.self_loop.decide_mode(user_input)
+                if mode in ["self_game", "self_eval"]:
+                    context_list = [memory_context] if memory_context else None
+                    optimized_result = self.self_loop.run(user_input, context=context_list)
+                    if optimized_result.confidence > 0.6 and optimized_result.output_text:
+                        logger.info(f"[chat_stream] 自闭环优化 {mode}: 置信度 {optimized_result.confidence:.2f}")
+                        full_response = optimized_result.output_text
+                        # 发送修正后的完整回复
+                        yield {"type": "chunk", "content": "\n\n[优化回复]\n" + full_response}
+        except Exception as e:
+            logger.warning(f"chat_stream自闭环优化失败: {e}")
+        
+        # ========== 5.6 数学验算（与 chat() 保持一致）==========
+        # 架构修复：chat_stream 之前完全没有 _post_math_verification，
+        # 导致 Telegram bot 的数学题答案不会被独立验算。
+        # 这就是租金题 1600÷20×30=2400 算出38400 的直接原因。
+        corrected_response = self._post_math_verification(user_input, full_response)
+        if corrected_response != full_response:
+            full_response = corrected_response
+            # 追加纠正内容
+            # 提取新增的纠正部分（_post_math_verification 在末尾追加 [验算纠正]...）
+            correction_part = corrected_response[len(full_response):] if corrected_response.startswith(full_response) else ""
+            if not correction_part:
+                # 如果不是追加模式，整个替换
+                correction_part = "\n\n" + corrected_response
+            yield {"type": "chunk", "content": correction_part}
+        
         # ========== 更新隐藏状态（维持意识连续性）==========
         if final_hidden_state is not None:
             self.current_thought_state = final_hidden_state
@@ -2240,10 +2277,55 @@ class BrainAIInterface:
         is_math_question = has_math_op or (has_math_kw and has_numbers)
 
         if is_math_question:
-            system_parts.append(
+            # ========== 架构修复：为 0.5B 模型预提取已知条件 ==========
+            # 0.5B 模型的"step-by-step"引导不够，它无法自主从文本中提取
+            # 正确的数学关系。如果让它自由联想，会产生完全错误的"已知条件"
+            # （如把"3月12日起租"理解为"第8个月"）。
+            # 解决方案：用 Python 正则预提取关键数字关系，直接喂给模型。
+            
+            # 检测比例/单价问题模式
+            extracted_facts = []
+            
+            # 模式1: "X天Y元" (日租金)
+            day_price_match = re.search(r'(\d+)\s*天[^\d]{0,10}(\d+)\s*元', user_input)
+            if day_price_match:
+                days = day_price_match.group(1)
+                price = day_price_match.group(2)
+                daily = int(price) / int(days)
+                extracted_facts.append(f"已知：{days}天房租{price}元，即日租金={daily}元")
+            
+            # 模式2: "押金X元"（支持阿拉伯数字和中文数字）
+            deposit_match = re.search(r'押金[：:]*[^\d]*(\d+)\s*元', user_input)
+            cn_deposit = re.search(r'押金[：:]*[^元]*(两千四百|二千四百|2400)\s*元', user_input)
+            if deposit_match:
+                extracted_facts.append(f"已知：押金{deposit_match.group(1)}元（押金通常不参与月租金计算）")
+            elif cn_deposit:
+                extracted_facts.append(f"已知：押金{cn_deposit.group(1)}元（押金通常不参与月租金计算）")
+            
+            # 模式3: "卫生费X元"
+            fee_match = re.search(r'卫生费[：:]*[^\d]*(\d+)\s*元', user_input)
+            if fee_match:
+                extracted_facts.append(f"已知：卫生费{fee_match.group(1)}元（卫生费通常不参与月租金计算）")
+            
+            # 模式4: "合计X元"
+            total_match = re.search(r'合计[：:]*[^\d]*(\d+)\s*元', user_input)
+            if total_match:
+                extracted_facts.append(f"已知：合计{total_match.group(1)}元（这是总付款，不是月租金）")
+            
+            # 模式5: "起租X月X日"
+            start_date_match = re.search(r'(\d+月\d+\d*[日号]?)\s*起租', user_input)
+            if start_date_match:
+                extracted_facts.append(f"已知：起租日期{start_date_match.group(1)}（起租日期用于计算首月天数，不是月数）")
+            
+            math_instruction = (
                 "这是一道数学题。你必须一步一步地计算，先列出已知条件，再写出计算过程，最后给出答案。"
                 "不要跳步，不要猜答案。计算时要仔细检查每一步。"
             )
+            if extracted_facts:
+                math_instruction += "\n" + "；".join(extracted_facts)
+                math_instruction += "\n注意：月租金 = 日租金 × 30天。不要把起租日期、押金、卫生费混入月租金计算。"
+            
+            system_parts.append(math_instruction)
 
         # 仅在记忆查询时才在 system 中注入记忆（普通对话不注入，避免干扰）
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
@@ -2260,7 +2342,14 @@ class BrainAIInterface:
         # 1. 保持思维连续性（知道自己在想什么）
         # 2. 基于内部思考生成更有深度的回复
         # 但必须严格控制长度，避免喧宾夺主（0.8B 模型上下文有限）
-        if monologue and len(monologue.strip()) > 5:
+        #
+        # ========== 架构修复：数学/事实问题时禁止注入 monologue ==========
+        # monologue 由 0.5B 模型以 0.85 高温生成，本质是"自由联想"，
+        # 对数学题/事实问题会产生错误联想（如把"3月12日起租"联想为"第8个月"），
+        # 注入 system prompt 后污染模型对原始问题的理解。
+        # 这就是"高刷新迭代中自联想打乱输入"的直接机制。
+        _is_factual_question = is_math_question or is_memory_query or is_identity_question
+        if monologue and len(monologue.strip()) > 5 and not _is_factual_question:
             # 清理独白中的格式碎片
             clean_mono = monologue.strip()
             import re

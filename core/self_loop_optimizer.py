@@ -291,6 +291,13 @@ class SelfLoopOptimizer:
         reasoning_log.append(f"Starting self-game with max {max_iterations} iterations")
         
         # ========== 2. 自博弈迭代 ==========
+        # 架构修复：保存原始输入，每次迭代都以原始输入为基础生成，
+        # 而不是用上一次模型输出作为输入（这会导致"联想漂移"——
+        # 模型逐步偏离原始问题，就像"传话游戏"一样失真）。
+        original_input = input_text  # 始终保留原始问题
+        best_proposal = proposal
+        best_confidence = 0.0
+        
         while iteration < max_iterations:
             iteration += 1
             
@@ -299,7 +306,14 @@ class SelfLoopOptimizer:
                 # 奇数：提案角色
                 self.current_role = "proposer"
                 old_proposal = proposal
-                proposal = self._generate_proposal(proposal, context)
+                # 关键修复：始终以原始输入为基础生成，将之前的修正作为补充上下文
+                # 而不是直接用模型输出覆盖原始问题
+                if iteration > 1:
+                    # 后续迭代：原始问题 + 之前的修正意见
+                    enhanced_input = f"{original_input}\n（上次的回答：{proposal[:100]}，请基于原始问题重新回答）"
+                else:
+                    enhanced_input = original_input
+                proposal = self._generate_proposal(enhanced_input, context)
                 reasoning_log.append(f"Iteration {iteration} (Proposer): {old_proposal[:50]}... → {proposal[:50]}...")
             else:
                 # 偶数：验证角色
@@ -320,10 +334,10 @@ class SelfLoopOptimizer:
                 # 应用修正
                 if verification_result['corrections']:
                     old_proposal = proposal
-                    proposal = self._apply_corrections(
-                        proposal, 
-                        verification_result['corrections']
-                    )
+                    # 修复：修正时以原始输入+修正建议为基础，而非直接在proposal上拼接
+                    corrections_text = "；".join(verification_result['corrections'])
+                    corrected_input = f"{original_input}\n（请注意：{corrections_text}）"
+                    proposal = self._generate_proposal(corrected_input, context)
                     reasoning_log.append(f"Applied corrections: {old_proposal[:30]}... → {proposal[:30]}...")
         
         # ========== 3. 返回最终结果 ==========
