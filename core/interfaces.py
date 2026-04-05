@@ -352,6 +352,12 @@ class BrainAIInterface:
         if getattr(config.hard_constraints, 'KV_CACHE_WARMUP', True):
             self._warmup_kv_cache()
 
+        # ========== 14. 默认模式网络 (DMN) - 空闲时自发认知 ==========
+        from core.default_mode_network import DefaultModeNetwork
+        self._dmn = DefaultModeNetwork()
+        self._last_dmn_influence = {}
+        print("[BrainAI] [OK] 默认模式网络已初始化")
+        
         print("[BrainAI] [OK] 高级实现模块集成完成\n")
     
     # ==================== 兼容性属性 ====================
@@ -436,6 +442,16 @@ class BrainAIInterface:
         
         # 1. 消化输入：保存用户输入，但不覆盖情形中的思维狍子
         self._last_user_input = user_input
+        
+        # 1.1 DMN 抑制：用户输入时，默认模式网络进入非活跃状态
+        if hasattr(self, '_dmn') and self._dmn is not None:
+            self._dmn.record_activity()
+            # 获取 DMN 过渡效应（DMN 活动后的30秒内认知灵活性增加）
+            dmn_influence = self._dmn.get_cognitive_influence()
+            if dmn_influence.get('transition_effect', 0) > 0.1:
+                # DMN 活动后的回复可能更有创造性
+                logger.debug(f"[BrainAI] DMN过渡效应: flexibility={dmn_influence['cognitive_flexibility']:.2f}")
+            self._last_dmn_influence = dmn_influence
         # 仅当狍子为空时（初始化）才用用户输入初始化狍子
         if not self.thought_seed:
             self.thought_seed = user_input[:30]
@@ -465,6 +481,61 @@ class BrainAIInterface:
         t_step3 = time.time()
         # print(f"[步骤3] 并行召回+独白: {(t_step3-t_step2)*1000:.0f}ms")
         
+        # ========== 人类认知增强：情绪+语境召回加成 ==========
+        if self.human_cognitive is not None and recalled_memories:
+            try:
+                hc = self.human_cognitive
+                # 提取当前语境签名（用于语境依赖记忆加成）
+                current_context = None
+                if hc._hippocampus_system is not None and hasattr(hc._hippocampus_system, '_context_memory'):
+                    ctx_mem = hc._hippocampus_system._context_memory
+                    if ctx_mem is not None:
+                        current_context = ctx_mem.extract_context_signature(user_input)
+                # 对每条召回记忆计算增强加成
+                for mem_dict in recalled_memories:
+                    mem_id = mem_dict.get('memory_id', '')
+                    if mem_id and mem_id in self.hippocampus.ca3_memory.memories:
+                        memory_obj = self.hippocampus.ca3_memory.memories[mem_id]
+                        recall_boost = hc.enhance_recall(
+                            query_text=user_input,
+                            memory=memory_obj,
+                            current_context=current_context
+                        )
+                        if recall_boost > 0:
+                            # 将加成叠加到相关性分数上
+                            old_score = mem_dict.get('relevance_score', 0.0)
+                            mem_dict['relevance_score'] = round(old_score + recall_boost, 6)
+                            # 同时增强激活强度（影响排序）
+                            memory_obj.activation_strength = min(
+                                memory_obj.activation_strength + recall_boost * 0.1, 2.0
+                            )
+                # 重新排序（加成后排序可能变化）
+                recalled_memories.sort(key=lambda x: x.get('relevance_score', 0.0), reverse=True)
+            except Exception as e:
+                logger.debug(f"[BrainAI] 召回增强调用失败: {e}")
+
+        # ========== 人类认知增强：联想记忆扩散激活 ==========
+        if self.hippocampus.associative_network is not None and recalled_memories:
+            try:
+                seed_ids = [m.get('memory_id', '') for m in recalled_memories[:2] if m.get('memory_id')]
+                if seed_ids:
+                    activated = self.hippocampus.spread_activation(seed_ids, iterations=2)
+                    # 将扩散激活的记忆追加到召回结果（如果尚未存在）
+                    existing_ids = {m.get('memory_id') for m in recalled_memories}
+                    for activated_id, activation_value in list(activated.items())[:3]:
+                        if activated_id not in existing_ids and activation_value > 0.1:
+                            if activated_id in self.hippocampus.ca3_memory.memories:
+                                assoc_mem = self.hippocampus.ca3_memory.memories[activated_id]
+                                assoc_dict = assoc_mem.to_dict()
+                                assoc_dict['relevance_score'] = round(activation_value * 0.5, 6)
+                                assoc_dict['association_boost'] = True
+                                recalled_memories.append(assoc_dict)
+                    if len(recalled_memories) > 4:
+                        recalled_memories.sort(key=lambda x: x.get('relevance_score', 0.0), reverse=True)
+                        recalled_memories = recalled_memories[:4]
+            except Exception as e:
+                logger.debug(f"[BrainAI] 联想扩散激活失败: {e}")
+
         # 存储完整记忆字典供注意力层使用
         self._current_recalled_memories = recalled_memories
         self._last_recalled_memories = recalled_memories  # 同步更新供外部访问
@@ -515,6 +586,23 @@ class BrainAIInterface:
         if self.self_encoder is not None and self.current_thought_state is not None:
             self_context_str = self.self_encoder.interpret() 
         
+        # ========== DMN 影响：调整回复风格 ==========
+        dmn_context = ""
+        if hasattr(self, '_last_dmn_influence') and self._last_dmn_influence:
+            dmn_inf = self._last_dmn_influence
+            if dmn_inf.get('transition_effect', 0) > 0.15:
+                # DMN 活动后，提示模型可以更有深度
+                recent_dmn = dmn_inf.get('recent_activities', [])
+                if recent_dmn:
+                    last_type = recent_dmn[-1].get('type', '')
+                    type_names = {
+                        'memory_review': '刚才回顾了一些记忆',
+                        'self_referential': '刚进行了自我反思',
+                        'mind_wandering': '思维漫游了一会',
+                        'emotional_reflection': '整理了一下情绪',
+                    }
+                    dmn_context = type_names.get(last_type, '')
+        
         # 5. 回复
         # 获取目标信息
         goal_context = ""
@@ -524,7 +612,7 @@ class BrainAIInterface:
         
         prompt = self._format_chat_prompt(
             user_input, history, monologue, memory_context, 
-            goal_context, self_context_str, gw_context=gw_context
+            goal_context, self_context_str, gw_context=gw_context, dmn_context=dmn_context
         )
         
         # 准备记忆锚点（保持原有逻辑兼容性）
@@ -553,10 +641,34 @@ class BrainAIInterface:
         #     goal_vector = self.goal_system.current_goal_vector
         #     print(f"🎯 [目标向量] 已准备，类型: {self.goal_system.current_goal.goal_type.value}")
         
+        # ========== 人类认知增强：思维增强影响生成参数 ==========
+        gen_temperature = 0.3  # 基础温度
+        gen_max_tokens = max_tokens
+        gen_penalty = 1.0
+        if self.human_cognitive is not None:
+            try:
+                thinking_result = self.human_cognitive.enhance_thinking(user_input)
+                if thinking_result:
+                    # 双系统思维调整生成参数
+                    gen_config = thinking_result.get('generation_config', {})
+                    if gen_config:
+                        # 不直接覆盖温度，而是混合调整（保留稳定性）
+                        system_temp = gen_config.get('temperature', 0.3)
+                        gen_temperature = gen_temperature * 0.6 + system_temp * 0.4
+                        # 系统2 适度扩展输出长度
+                        sys2_max = gen_config.get('max_tokens', max_tokens)
+                        gen_max_tokens = max(max_tokens, int(sys2_max * 0.5))
+                        # 系统2 适度增加重复惩罚
+                        gen_penalty = gen_config.get('repetition_penalty', 1.0)
+                    # 记录思维状态到全局工作空间
+                    self._last_thinking_result = thinking_result
+            except Exception as e:
+                logger.debug(f"[BrainAI] 思维增强调用失败: {e}")
+
         output = self.model.generate(
             prompt, 
-            max_tokens=max_tokens, 
-            temperature=0.3,  # BUG FIX: 0.8B小模型需要低温度(0.3)才能稳定遵循指令
+            max_tokens=gen_max_tokens,
+            temperature=gen_temperature,
             use_self_loop=True, 
             memory_anchor=memory_anchor,
             goal_vector=goal_vector  # 传递目标向量
@@ -1100,6 +1212,39 @@ class BrainAIInterface:
                 context=[ctx],
                 kv_features=kv_features  # 传递 KV 特征
             )
+            
+            # ========== 人类认知增强：存储时增强记忆（情绪/语境/遗忘曲线/来源）==========
+            if self.human_cognitive is not None:
+                try:
+                    # 找到刚存储的记忆对象，应用增强
+                    # hippocampus.encode 内部会生成 memory_id 并存储到 ca3_memory
+                    # 我们需要获取这个 memory_id 来操作对应的 EpisodicMemory
+                    for mid, mem_obj in list(self.hippocampus.ca3_memory.memories.items())[-3:]:
+                        # 只处理最近存储的记忆（避免重复处理）
+                        if abs(mem_obj.timestamp / 1000 - time.time()) < 2.0:
+                            self.human_cognitive.enhance_memory_storage(
+                                memory=mem_obj,
+                                user_input=user_input or monologue[:80],
+                                ai_response=ai_response or '',
+                                emotion_tag=ctx.get('emotion_tag', '中性') if isinstance(ctx, dict) else '中性'
+                            )
+                            break
+                except Exception as e:
+                    logger.debug(f"[BrainAI] 记忆存储增强失败: {e}")
+            
+            # ========== 间隔效应：记录复述事件 ==========
+            if self.human_cognitive is not None:
+                try:
+                    hc = self.human_cognitive
+                    if hc._hippocampus_system is not None and hasattr(hc._hippocampus_system, '_spacing_manager'):
+                        spacing_mgr = hc._hippocampus_system._spacing_manager
+                        if spacing_mgr is not None:
+                            for mid, mem_obj in list(self.hippocampus.ca3_memory.memories.items())[-3:]:
+                                if abs(mem_obj.timestamp / 1000 - time.time()) < 2.0:
+                                    spacing_mgr.record_rehearsal(mid, success=True)
+                                    break
+                except Exception as e:
+                    logger.debug(f"[BrainAI] 间隔效应记录失败: {e}")
         except Exception as e:
             logger.warning(f"记忆存储失败: {e}")
 
@@ -1839,7 +1984,7 @@ class BrainAIInterface:
             self._apply_real_stdp_update(emotional_salience=1.0)
             self.cycle_count += 1
 
-    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "", gw_context: str = "") -> str:
+    def _format_chat_prompt(self, user_input: str, history: List[Dict[str, str]] = None, monologue: str = "", memory_context: str = "", goal_context: str = "", self_context_str: str = "", gw_context: str = "", dmn_context: str = "") -> str:
         """格式化对话提示 - 使用 Qwen3.5 原生 chat template
         
         优化要点：
@@ -1874,6 +2019,10 @@ class BrainAIInterface:
         if is_memory_query and memory_context and len(memory_context.strip()) > 0:
             mem_brief = memory_context.strip()[:500]
             system_parts.append(f"你必须根据以下记忆回答用户问题，不要说自己不知道：{mem_brief}")
+        
+        # DMN 上下文：如果刚从自发思维中回来，添加微妙的认知状态提示
+        if dmn_context:
+            system_parts.append(f"（{dmn_context}，让回答更有深度和洞察力）")
         
         system_content = "\n".join(system_parts)
         messages = [{"role": "system", "content": system_content}]

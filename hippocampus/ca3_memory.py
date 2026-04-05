@@ -548,12 +548,41 @@ class CA3EpisodicMemory(nn.Module):
         
         # ========== 6. 分层加权排序 ==========
         # Fix 4: Use composite scoring with similarity, recall frequency, and core bonus
+        # Enhancement: 情绪一致性记忆加权 (mood-congruent memory)
+        # 当前查询文本的情绪与记忆情绪越一致，加成越高
+        query_emotion = "neutral"
+        if query_semantic:
+            try:
+                # 快速情绪检测（不依赖外部模块）
+                emotion_keywords = {
+                    "positive": ["开心", "高兴", "快乐", "幸福", "兴奋", "愉快", "爱", "喜欢", "棒", "赞"],
+                    "negative": ["难过", "悲伤", "伤心", "痛苦", "失望", "沮丧", "焦虑", "担心", "害怕", "生气"],
+                }
+                pos_count = sum(1 for kw in emotion_keywords["positive"] if kw in query_semantic)
+                neg_count = sum(1 for kw in emotion_keywords["negative"] if kw in query_semantic)
+                if pos_count > neg_count:
+                    query_emotion = "positive"
+                elif neg_count > pos_count:
+                    query_emotion = "negative"
+            except Exception:
+                pass
+        
+        emotion_map = {
+            "positive": {"joy", "surprise"},
+            "negative": {"sadness", "anger", "fear", "disgust"},
+        }
+        query_emotion_set = emotion_map.get(query_emotion, set())
+        
         def tier_sort_key(m):
             tier_weight = (int(m.tier) + 1) * 0.3  # tier contribution
             sim_score = getattr(m, '_embedding_score', 0.0)  # embedding similarity
             recall_bonus = min(getattr(m, 'recall_count', 0) * 0.05, 0.3)  # recall frequency bonus
             core_bonus = 0.5 if getattr(m, 'is_core', False) else 0.0  # core memory priority
-            return tier_weight + sim_score + recall_bonus + core_bonus
+            # 情绪一致性加成：与当前查询情绪一致的记忆获得+0.15加权
+            emotion_bonus = 0.0
+            if query_emotion_set and hasattr(m, 'emotion_type') and m.emotion_type in query_emotion_set:
+                emotion_bonus = 0.15
+            return tier_weight + sim_score + recall_bonus + core_bonus + emotion_bonus
         
         self.last_recall_trace = recall_trace
         
