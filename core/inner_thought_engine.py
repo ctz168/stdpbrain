@@ -412,8 +412,8 @@ class InnerThoughtEngine:
                 if emo_state.arousal > 0.7:
                     # 高唤醒 → 提高温度，增加随机性
                     pass  # 温度在下方根据状态统一设置
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[InnerThought] emotional_thinking failed: {e}")
 
         # ========== 创造性洞察：漫游/反思状态下注入创意火花 ==========
         if self._creative_engine is not None:
@@ -432,8 +432,8 @@ class InnerThoughtEngine:
                     if alternatives:
                         # 将替代方案附加到思维上下文中
                         external_stimulus = external_stimulus + " " + alternatives[0]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[InnerThought] creative_engine failed: {e}")
         
         # 4. 获取状态风格与惩罚参数
         state_info = self.state_prompts[self.mind_state]
@@ -543,8 +543,8 @@ class InnerThoughtEngine:
                                         timestamp=int(_time.time() * 1000),
                                         context=[{'content': summary, 'semantic_pointer': summary[:80], 'is_core': False}]
                                     )
-                    except Exception:
-                        pass  # 思维锚点存储失败不影响主流程
+                    except Exception as e:
+                        logger.debug(f"[InnerThought] hippocampus encoding failed: {e}")
                 # 滚动窗口：保持活跃关注不受旧上下文干扰
                 self.thought_flow = deque(list(self.thought_flow)[-5:], maxlen=10)
             
@@ -657,6 +657,7 @@ class InnerThoughtEngine:
         if generated_text:
             self._record_thought(generated_text)
             self._update_association(generated_text)
+            self._last_output_time = time.time()
     
     def _force_change_seed(self):
         """强制更换思维种子，打破思维回环

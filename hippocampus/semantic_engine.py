@@ -383,7 +383,7 @@ class SemanticSummarizer:
             return None
         
         # 检查缓存
-        cache_key = text[:200]  # 缓存前200字符
+        cache_key = hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()
         if cache_key in self._embedding_cache:
             return self._embedding_cache[cache_key]
         

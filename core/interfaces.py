@@ -1212,7 +1212,7 @@ class BrainAIInterface:
                 ctx['ai_response'] = ai_response
             self.hippocampus.encode(
                 features=features, 
-                token_id=hash(monologue) % 100000, 
+                token_id=int(time.time() * 1000) % (10**9) + random.randint(0, 999), 
                 timestamp=int(time.time() * 1000), 
                 context=[ctx],
                 kv_features=kv_features  # 传递 KV 特征
@@ -1491,6 +1491,8 @@ class BrainAIInterface:
                         try:
                             context = self._build_proactive_context()
                             if self.proactive_generator is not None:
+                                if self.current_thought_state is None:
+                                    return
                                 intent, confidence, debug = self.proactive_generator(
                                     self.current_thought_state, context
                                 )
@@ -1681,7 +1683,8 @@ class BrainAIInterface:
                         user_input=user_input,
                         ai_response=full_response
                     )
-                current_reward = 1.0
+                # Estimate confidence from response length (longer = more confident)
+                current_reward = min(1.0, 0.5 + len(full_response) * 0.005) if full_response else 0.5
                 self.model.set_reward(current_reward)
                 self._apply_real_stdp_update(emotional_salience=salience_stream)
                 self._update_adapter_online(thought_state_snapshot, salience_stream)
@@ -1904,6 +1907,14 @@ class BrainAIInterface:
                         # 如果正则没匹配到，直接用 pointer 作为事实
                         if not all_core_facts and pointer:
                             all_core_facts.append(pointer.strip()[:120])
+                    else:
+                        # Non-core memory: add semantic pointer or content summary
+                        sp = m.get('semantic_pointer', '')
+                        content = m.get('content', '')
+                        if sp:
+                            memory_parts.append(sp[:150])
+                        elif content:
+                            memory_parts.append(content[:50])
                     
                 # 核心记忆事实统一前缀
                 if all_core_facts:
@@ -2178,9 +2189,9 @@ class BrainAIInterface:
                 
                 attention_stats = {
                     'kv_cache_enabled': True,
-                    'window_size': self.config.hard_constraints.NARROW_WINDOW_SIZE if hasattr(self.config, 'hard_constraints') else 32,
-                    'max_anchors': self.config.hard_constraints.NUM_MEMORY_ANCHORS if hasattr(self.config, 'hard_constraints') else 5,
-                    'attention_complexity': self.config.hard_constraints.ATTENTION_COMPLEXITY if hasattr(self.config, 'hard_constraints') else 'O(n×(W+K))',
+                    'window_size': getattr(getattr(self.config, 'hard_constraints', None), 'NARROW_WINDOW_SIZE', 32),
+                    'max_anchors': getattr(getattr(self.config, 'hard_constraints', None), 'NUM_MEMORY_ANCHORS', 5),
+                    'attention_complexity': getattr(getattr(self.config, 'hard_constraints', None), 'ATTENTION_COMPLEXITY', 'O(n×(W+K))'),
                 }
         except Exception as e:
             logger.debug(f"获取注意力统计失败: {e}")
@@ -2191,9 +2202,9 @@ class BrainAIInterface:
             if hasattr(self, '_current_kv_memories'):
                 kv_stats = {
                     'active_kv_count': len(self._current_kv_memories) if self._current_kv_memories else 0,
-                    'kv_enabled': self.config.hard_constraints.ENABLE_KV_HIPPOCAMPUS_INTEGRATION if hasattr(self.config, 'hard_constraints') else True,
-                    'sliding_window': self.config.hard_constraints.ENABLE_KV_SLIDING_WINDOW if hasattr(self.config, 'hard_constraints') else True,
-                    'window_size': self.config.hard_constraints.KV_CACHE_WINDOW_SIZE if hasattr(self.config, 'hard_constraints') else 32,
+                    'kv_enabled': getattr(getattr(self.config, 'hard_constraints', None), 'ENABLE_KV_HIPPOCAMPUS_INTEGRATION', True),
+                    'sliding_window': getattr(getattr(self.config, 'hard_constraints', None), 'ENABLE_KV_SLIDING_WINDOW', True),
+                    'window_size': getattr(getattr(self.config, 'hard_constraints', None), 'KV_CACHE_WINDOW_SIZE', 32),
                 }
         except Exception as e:
             logger.debug(f"获取KV统计失败: {e}")
@@ -2389,6 +2400,9 @@ class BrainAIInterface:
             if not os.path.exists(path): return False
             print(f"[BrainAI] 正在从 {path} 唤醒意识...")
             state = torch.load(path, map_location=self.device, weights_only=False)
+            # Handle new format (dynamic_weights only)
+            if 'dynamic_weights' in state and 'model_state_dict' not in state:
+                return self._load_dynamic_weights_only(path)
             self.model.model.load_state_dict(state['model_state_dict'])
             
             if 'adapter_state_dict' in state:
@@ -2596,6 +2610,9 @@ class BrainAIInterface:
                 )
                 
                 if not hasattr(self, 'proactive_generator') or self.proactive_generator is None:
+                    return
+                
+                if self.current_thought_state is None:
                     return
                 
                 intent, confidence, debug = self.proactive_generator(

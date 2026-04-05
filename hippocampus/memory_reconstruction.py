@@ -1147,6 +1147,9 @@ class MemoryReconstructionEngine:
         # Step 2: 按碎片类型聚合，选择最佳碎片
         best_fragments = self._select_best_fragments(all_fragments, query)
 
+        # Resolve conflicts between fragments before proceeding
+        best_fragments = self.resolve_conflicts(best_fragments)
+
         # Step 3: 选择重构模板
         template = template_hint or self._auto_select_template(best_fragments, query)
 

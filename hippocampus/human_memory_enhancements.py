@@ -201,7 +201,7 @@ class EbbinghausForgettingCurve:
             # 间隔效应: 每次复述增加稳定度，但增量递减
             # 使用对数衰减的增长因子，模拟边际效应递减
             decay_factor = 1.0 / (1.0 + 0.15 * self.rehearsal_count)
-            growth = self.STABILITY_GROWTH_FACTOR * decay_factor
+            growth = max(self.STABILITY_GROWTH_FACTOR * decay_factor, 1.001)
             self.stability *= growth
 
             # 同时适度增强 strength（但幅度较小）
@@ -532,7 +532,7 @@ class EmotionalMemoryModulator:
         # 4. 计算情绪对记忆的增强系数
         #    增强幅度 = (衰减后的情绪强度 * 唤醒度) + 情绪阴影
         emotion_boost = (
-            decayed_intensity * arousal * intensity
+            decayed_intensity * arousal
             + emotional_shadow
         )
 
@@ -1623,12 +1623,15 @@ class SourceMonitor:
         """
         self._records: Dict[str, SourceRecord] = {}
 
+        # Instance copy to avoid mutating class-level constant
+        self._decay_halflife = dict(self.SOURCE_DECAY_HALFLIFE)
+
         # 允许自定义衰减参数
         if custom_decay_halflife:
             for source_name, halflife in custom_decay_halflife.items():
                 try:
                     source_enum = MemorySource(source_name)
-                    self.SOURCE_DECAY_HALFLIFE[source_enum] = halflife
+                    self._decay_halflife[source_enum] = halflife
                 except ValueError:
                     logger.warning(f"[SourceMonitor] 未知的来源类型: {source_name}")
 
@@ -1876,7 +1879,7 @@ class SourceMonitor:
         Returns:
             decayed_confidence: 衰减后的置信度
         """
-        half_life = self.SOURCE_DECAY_HALFLIFE.get(source, 86400.0)
+        half_life = self._decay_halflife.get(source, 86400.0)
         decay_constant = math.log(2) / max(half_life, 1.0)
         time_elapsed = max(0.0, current_time - tag_time)
 

@@ -476,10 +476,10 @@ class HumanCognitiveIntegration:
             analogical = self.thinking_enhancements.get('analogical_reasoning')
             if analogical:
                 try:
-                    # BUG 1 FIX: find_analogies doesn't exist; use find_analogy(source, target) returning AnalogyMapping
+                    # Use user input as source and a generic concept as target for analogy detection
                     analog_result = analogical.find_analogy(
                         source_situation=user_input,
-                        target_situation=user_input,
+                        target_situation="general_knowledge",
                     )
                     if analog_result and getattr(analog_result, 'overall_score', 0) > 0.2:
                         result['analogical_reasoning'] = {

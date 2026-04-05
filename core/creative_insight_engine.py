@@ -345,17 +345,20 @@ class CreativeInsightEngine(nn.Module):
         - 不同概念产生不同向量
         - 维度固定为 EMBEDDING_DIM
 
+        NOTE: _concept_embeddings is a plain dict (not nn.Module), so tensors are
+        not automatically moved by .to(). New tensors must be created on self.device.
+
         Args:
             concept: 概念文本
 
         Returns:
             归一化后的 embedding 张量 [embedding_dim]
         """
-        if concept in self._concept_embeddings:
-            return self._concept_embeddings[concept]
+        concept_key = concept.strip().lower()
+        if concept_key in self._concept_embeddings:
+            return self._concept_embeddings[concept_key]
 
         # 基于 hash 生成确定性伪随机向量
-        concept_key = concept.strip().lower()
         hash_bytes = hashlib.sha256(concept_key.encode('utf-8')).digest()
 
         # 用 hash 字节生成浮点向量
@@ -375,7 +378,7 @@ class CreativeInsightEngine(nn.Module):
         if norm > 0:
             embedding = embedding / norm
 
-        self._concept_embeddings[concept] = embedding
+        self._concept_embeddings[concept_key] = embedding  # use normalized key
         return embedding
 
     def _register_concept_domain(self, concept: str, domain: str):

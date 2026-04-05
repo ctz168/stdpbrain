@@ -120,7 +120,7 @@ class MemoryConsolidationManager:
         current_tier = getattr(memory, 'tier', MemoryTier.SHORT_TERM)
         recall_count = getattr(memory, 'recall_count', 0)
         strength = getattr(memory, 'activation_strength', 0.0)
-        age_s = (time.time() * 1000 - memory.timestamp) / 1000.0  # 秒
+        age_s = max(0.0, (time.time() * 1000 - memory.timestamp) / 1000.0)  # 秒
         
         if current_tier == MemoryTier.SHORT_TERM:
             # 短期 → 中期: 被召回≥2次 或 (存在>30分钟 且 强度>0.5)

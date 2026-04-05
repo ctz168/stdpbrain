@@ -353,6 +353,9 @@ class HippocampusSystem(nn.Module):
             
             # Tier bonus: long-term memories get a small boost
             tier = getattr(mem, 'tier', 'short_term')
+            # Handle both MemoryTier enum and string
+            if hasattr(tier, 'name'):
+                tier = tier.name.lower()
             tier_bonus = {'short_term': 0.0, 'mid_term': 0.05, 'long_term': 0.1}.get(tier, 0.0)
             
             # Core bonus

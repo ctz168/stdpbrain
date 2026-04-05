@@ -842,7 +842,8 @@ class CA3EpisodicMemory(nn.Module):
         ts_key = memory.timestamp // self.timestamp_precision_ms
         if ts_key in self.time_index and memory_id in self.time_index[ts_key]:
             self.time_index[ts_key].remove(memory_id)
-        if memory.semantic_pointer in self.semantic_index:
+        if (memory.semantic_pointer in self.semantic_index and 
+            self.semantic_index[memory.semantic_pointer] == memory_id):
             del self.semantic_index[memory.semantic_pointer]
         del self.memories[memory_id]
     

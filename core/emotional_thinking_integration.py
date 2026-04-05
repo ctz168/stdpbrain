@@ -221,7 +221,7 @@ class EmotionalThinkingIntegration:
         self._lock = threading.RLock()
 
         # 当前情绪状态
-        self._state = EmotionalState(last_updated=time.time())
+        self._state = EmotionalState()  # last_updated defaults to 0.0
 
         # 情绪记忆调节器 (用于情绪检测)
         self._emotion_modulator = emotion_modulator

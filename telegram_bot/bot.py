@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 import random
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from telegram import Update, Message
 from telegram.ext import (
     Application,
@@ -711,7 +711,8 @@ class BrainAIBot:
             except Exception as e:
                 logger.error(f"处理消息失败：{e}", exc_info=True)
                 try:
-                    await typing.stop_typing()
+                    if 'typing' in locals():
+                        await typing.stop_typing()
                     await update.message.reply_text(f"[FAIL] 处理失败：{str(e)}")
                 except Exception:
                     pass
@@ -905,7 +906,7 @@ class BrainAIBot:
             
             # 3. 召回的记忆详情
             recalled_str = ""
-            if self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
+            if hasattr(self.ai, '_last_recalled_memories') and self.ai._last_recalled_memories is not None and len(self.ai._last_recalled_memories) > 0:
                 recalled_str = "📖 *召回的记忆:*\n"
                 for i, mem in enumerate(self.ai._last_recalled_memories[:3], 1):
                     semantic = mem.get('semantic_pointer', 'N/A')[:50]
@@ -1042,9 +1043,9 @@ class BrainAIBot:
         
         if self.proxy_url:
             request = HTTPXRequest(proxy=self.proxy_url)
-            self.application = Application.builder().token(self.token).request(request).build()
+            self.application = Application.builder().token(self.token).request(request).post_init(self._post_init_hook).build()
         else:
-            self.application = Application.builder().token(self.token).build()
+            self.application = Application.builder().token(self.token).post_init(self._post_init_hook).build()
         
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
@@ -1055,17 +1056,14 @@ class BrainAIBot:
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         self.is_thinking_enabled = True
-        # self.application.post_init = self._post_init_hook  # BUG 1: removed - method does not exist on Application
-        # Start background thinking loop directly instead
-        self.thinking_task = asyncio.create_task(self._background_thinking_loop())
-        logger.info("[Bot] 后台思考任务已启动")
-        
+
         logger.info("Bot 已启动，正在监听消息...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
     
-    async def _post_init_hook(self, application: Application):
+    async def _post_init_hook(self, application):
+        """Post-initialization: start background thinking loop"""
         self.thinking_task = asyncio.create_task(self._background_thinking_loop())
-        logger.info("后台思考任务已启动")
+        logger.info("[Bot] 后台思维循环已启动")
 
 
 

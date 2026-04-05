@@ -1715,7 +1715,7 @@ class DreamConsolidationSystem:
                     setattr(self.config, key, value)
 
         # 恢复睡眠状态
-        self._is_sleeping = state.get('is_sleeping', False)
+        self._is_sleeping = False  # Always restore to awake state to prevent permanent lock
         self._last_activity_time = state.get('last_activity_time', time.time())
 
         # 恢复统计

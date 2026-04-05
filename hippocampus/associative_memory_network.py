@@ -265,6 +265,9 @@ class AssociativeMemoryNetwork:
 
         # 排除自身
         new_id = getattr(new_memory, 'memory_id', '')
+        if not new_id:
+            logger.warning("[联想记忆网络] 新记忆缺少 memory_id，跳过关联创建")
+            return []
         if new_id:
             exclude_ids.add(new_id)
 
