@@ -229,7 +229,8 @@ class BrainAIBot:
                                         new_text = f"💭 *[潜意识]*\n_{safe_full}▌_"
                                         if new_text != last_sent_text:
                                             try:
-                                                await message.edit_text(
+                                                await self._safe_edit_message(
+                                                    message,
                                                     text=new_text,
                                                     parse_mode='Markdown'
                                                 )
@@ -254,7 +255,8 @@ class BrainAIBot:
                             if message_sent:
                                 # 更新已发送的消息
                                 try:
-                                    await message.edit_text(
+                                    await self._safe_edit_message(
+                                        message,
                                         text=final_text,
                                         parse_mode='Markdown'
                                     )

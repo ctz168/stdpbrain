@@ -76,3 +76,22 @@ Stage Summary:
 - 修改文件: 5个集成点
 - 测试: 所有模块导入成功，核心功能验证通过
 - GitHub推送: commit 73375ae
+
+---
+Task ID: 4
+Agent: Bug Fixer (Sub-agent)
+Task: 修复所有已确认的代码缺陷
+
+Work Log:
+- Bug 1: stream_handler.py 除零错误 — self.total_streams 初始为0从未递增，导致首次流式生成时除零。修复：在计算平均值前递增 total_streams。
+- Bug 2: telegram_bot/bot.py 洪泛控制绕过 — 后台思考循环中 message.edit_text() 直接调用，未经过 _safe_edit_message() 的节流保护。修复：两处直接调用替换为 self._safe_edit_message(message, ...)。
+- Bug 3: telegram_bot/config.example.py 安全问题 — 配置示例文件包含真实 Telegram Bot Token。修复：替换为 "YOUR_BOT_TOKEN_HERE" 占位符。
+- Bug 4: continuous_chat.py 未保护属性访问 — self.ai.inner_thought_engine 在无 hasattr 检查的情况下直接访问，当该属性不存在时会导致 AttributeError。修复：两处访问均添加了 hasattr(self.ai, 'inner_thought_engine') and self.ai.inner_thought_engine 安全检查。
+- Bug 5: arch_config.py 模型名称不一致 — 确认 model_name 和 model_path 均已为 "Qwen3.5-0.8B"，无需修改（已正确）。
+- Bug 6: telegram_bot/config.example.py 模型路径错误 — MODEL_PATH 引用 "Qwen3.5-2B" 但实际模型为 0.8B。修复：改为 "./models/Qwen3.5-0.8B"。
+- Bug 7: eval_compare.py 记忆测试缺陷 — base_gen() 函数不修改 hist 列表，且回忆测试调用时未传递 hist 参数，导致基线记忆测试无历史上下文。修复：base_gen 中当 hist 不为 None 时追加 user+assistant 消息到 hist；回忆测试调用时传递 hist。
+
+Stage Summary:
+- 修改文件: 5个 (stream_handler.py, bot.py, config.example.py, continuous_chat.py, eval_compare.py)
+- 修复缺陷: 6个实际修复 + 1个已正确无需修改
+- arch_config.py 模型名称已确认一致，无需修改

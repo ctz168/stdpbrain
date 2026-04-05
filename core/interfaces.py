@@ -333,6 +333,18 @@ class BrainAIInterface:
         self.stdp_engine.register_meta_component('goal_system', self.goal_system)
         print("[BrainAI] [OK] 已将组件注册到 STDP 元学习闭环")
         
+        # ========== 人类认知增强集成 ==========
+        # BUG FIX: 原代码完全缺失 HumanCognitiveIntegration 的初始化。
+        # 导致 enhance_memory_storage/enhance_recall/enhance_thinking 从未被调用，
+        # 所有精心设计的人类记忆增强（艾宾浩斯遗忘曲线、情绪记忆、语境依赖记忆、
+        # 间隔效应）和人类思维增强（双系统思维、认知偏差、元认知、工作记忆）模块
+        # 虽然存在但完全未连接到主管道，这是"半成品"问题的根本原因。
+        from core.human_cognitive_integration import HumanCognitiveIntegration
+        self.human_cognitive = HumanCognitiveIntegration(config)
+        self.human_cognitive.init_memory_enhancements(self.hippocampus)
+        self.human_cognitive.init_thinking_enhancements(self.inner_thought_engine)
+        print("[BrainAI] [OK] 人类认知增强集成已初始化（记忆+思维增强模块已连接）")
+        
         # 设置海马体门控函数（连接CA1到注意力层）
         self._setup_hippocampus_gate()
 

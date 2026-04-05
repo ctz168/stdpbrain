@@ -105,6 +105,7 @@ class StreamHandler:
             self.on_complete_callback(full_response)
         
         elapsed = time.time() - start_time
+        self.total_streams += 1
         self.avg_stream_length = (
             (self.avg_stream_length * (self.total_streams - 1) + len(full_response))
             / self.total_streams

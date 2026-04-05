@@ -7,7 +7,7 @@ Telegram Bot 配置示例
 # ========== Telegram Bot 配置 ==========
 
 # Bot Token (从 @BotFather 获取)
-TELEGRAM_BOT_TOKEN = "7983263905:AAFsMuGRdZzWv7KfUaAkJocu0l7LsHrScuc"
+TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
 # ========== 流式输出配置 ==========
 
@@ -31,7 +31,7 @@ SESSION_TIMEOUT = 3600
 # ========== AI 模型配置 ==========
 
 # 模型路径
-MODEL_PATH = "./models/Qwen3.5-2B"
+MODEL_PATH = "./models/Qwen3.5-0.8B"
 
 # 运行设备 ("cuda" | "cpu")
 DEVICE = None  # None 表示自动选择

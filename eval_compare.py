@@ -49,7 +49,11 @@ def base_gen(mod,tok,q,hist=None):
     inp=tok(txt,return_tensors="pt",truncation=True,max_length=200)
     with torch.no_grad():
         out=mod.generate(**inp,max_new_tokens=30,temperature=0.6,do_sample=True,pad_token_id=tok.pad_token_id)
-    return tok.decode(out[0][inp['input_ids'].shape[-1]:],skip_special_tokens=True).strip()
+    r=tok.decode(out[0][inp['input_ids'].shape[-1]:],skip_special_tokens=True).strip()
+    if hist is not None:
+        hist.append({"role":"user","content":q})
+        hist.append({"role":"assistant","content":r})
+    return r
 
 def load_brain():
     from configs.arch_config import BrainAIConfig
@@ -77,7 +81,7 @@ def main():
         # Memory: inject then recall
         hist=[]
         base_gen(mod,tok,"我叫张三，我来自北京。",hist)
-        r2=base_gen(mod,tok,"我叫什么名字？")
+        r2=base_gen(mod,tok,"我叫什么名字？",hist)
         m_ok="张三" in r2
         print(f"\n  Q: 我叫什么名字？")
         print(f"  A: {r2[:100]}  {'✅' if m_ok else '❌'}")

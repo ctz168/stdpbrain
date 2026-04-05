@@ -178,7 +178,11 @@ class MemoryConsolidationManager:
         if forgetting_state is not None:
             try:
                 from hippocampus.human_memory_enhancements import EbbinghausForgettingCurve
-                curve = EbbinghausForgettingCurve()
+                # BUG FIX: 原代码每次调用都创建新 EbbinghausForgettingCurve 实例，
+                # 在万级记忆批量处理时产生大量临时对象。改为复用缓存实例。
+                if not hasattr(self, '_forgetting_curve_cache'):
+                    self._forgetting_curve_cache = EbbinghausForgettingCurve()
+                curve = self._forgetting_curve_cache
                 curve.set_state(forgetting_state)
                 
                 # FIX: 如果 last_rehearsal_time 为 None，使用记忆创建时间作为基准

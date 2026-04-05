@@ -146,7 +146,8 @@ class ContinuousThoughtFlowSession:
             
             # --- 类人特征 3: 动态决策与开口说话 ---
             # 检查是否有开启外部对话的强烈欲望
-            if hasattr(self.ai.inner_thought_engine, '_last_urge_to_speak'):
+            if (hasattr(self.ai, 'inner_thought_engine') and self.ai.inner_thought_engine
+                    and hasattr(self.ai.inner_thought_engine, '_last_urge_to_speak')):
                 urge = self.ai.inner_thought_engine._last_urge_to_speak
                 
                 # 如果欲望极高 ( > 0.85)，且距离上次说话已经有一段时间，主动开启输出
@@ -156,7 +157,9 @@ class ContinuousThoughtFlowSession:
             # --- 类人特征 4: 动态思维周期 (非恒定心跳) ---
             # 根据当前的思维“压力”决定下次思考的间隔
             # 压力大（欲望高/专注）则思考快，压力小（闲散）则思考慢
-            urge = getattr(self.ai.inner_thought_engine, '_last_urge_to_speak', 0.5)
+            urge = 0.5
+            if hasattr(self.ai, 'inner_thought_engine') and self.ai.inner_thought_engine:
+                urge = getattr(self.ai.inner_thought_engine, '_last_urge_to_speak', 0.5)
             # 映射到 1.5s - 8s 之间
             sleep_time = 8.0 - (urge * 6.5)
             time.sleep(max(1.5, sleep_time))

@@ -590,9 +590,11 @@ class SemanticSummarizer:
                     valid_embeddings.append(None)  # placeholder, handled separately
                     valid_indices.append(i)
                     # Store the pre-computed sim for this index
-                    if not hasattr(self, '_batch_mismatch_sims'):
-                        self._batch_mismatch_sims = {}
-                    self._batch_mismatch_sims[i] = max(0.0, min(1.0, sim))
+                    # BUG FIX: 原代码使用实例变量 _batch_mismatch_sims 作为临时存储，
+                # 在多线程环境下会导致数据竞争。改为使用局部变量确保线程安全。
+                if not hasattr(self, '_batch_mismatch_sims_local'):
+                    self._batch_mismatch_sims_local = {}
+                self._batch_mismatch_sims_local[i] = max(0.0, min(1.0, sim))
                 else:
                     valid_embeddings.append(emb)
                     valid_indices.append(i)
@@ -600,9 +602,10 @@ class SemanticSummarizer:
         if not valid_indices:
             return [0.0] * len(memory_embeddings)
         
-        # Fix 2: Reset mismatch sim cache
-        mismatch_sims = getattr(self, '_batch_mismatch_sims', {})
-        self._batch_mismatch_sims = {}
+        # Fix 2: 使用局部缓存（线程安全）
+        mismatch_sims = getattr(self, '_batch_mismatch_sims_local', {})
+        if hasattr(self, '_batch_mismatch_sims_local'):
+            self._batch_mismatch_sims_local = {}
         
         # Build result with defaults
         result = [0.0] * len(memory_embeddings)
