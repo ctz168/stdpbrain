@@ -52,6 +52,15 @@ class EpisodicMemory:
     tier: MemoryTier = MemoryTier.SHORT_TERM  # 记忆层级（短期/中期/长期）
     recall_count: int = 0             # 被成功召回的次数
     consecutive_misses: int = 0        # 连续未被召回的次数（用于降级判定）
+    # ===== [人类记忆增强] 遗忘曲线与情感 =====
+    forgetting_curve_state: Optional[dict] = None   # 艾宾浩斯遗忘曲线状态（序列化用）
+    context_signature: Optional[dict] = None         # 语境签名（状态依存性记忆）
+    emotion_type: str = "neutral"                      # 情绪类型
+    emotion_intensity: float = 0.0                    # 情绪强度 (0-1)
+    source_type: str = "user_told"                    # 记忆来源
+    source_confidence: float = 0.8                     # 来源置信度
+    interference_vulnerability: float = 0.0            # 干扰脆弱度
+    last_access_time: float = 0.0                       # 最后访问时间
     # Dynamic score attributes (set during recall, must have defaults)
     _embedding_score: float = 0.0
     _recall_keyword_score: float = 0.0
@@ -76,6 +85,15 @@ class EpisodicMemory:
             'tier': int(self.tier),
             'recall_count': self.recall_count,
             'consecutive_misses': self.consecutive_misses,
+            # 人类记忆增强字段
+            'forgetting_curve_state': self.forgetting_curve_state,
+            'context_signature': self.context_signature,
+            'emotion_type': self.emotion_type,
+            'emotion_intensity': self.emotion_intensity,
+            'source_type': self.source_type,
+            'source_confidence': self.source_confidence,
+            'interference_vulnerability': self.interference_vulnerability,
+            'last_access_time': self.last_access_time,
         }
         
         # 安全序列化tensor：detach, 转float32, 再转numpy（避免BFloat16）

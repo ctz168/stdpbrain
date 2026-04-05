@@ -169,22 +169,20 @@ class MemoryConsolidationManager:
         return None
     
     def apply_decay(self, memory):
-        """
-        对记忆应用时间衰减
-        
-        根据记忆所在层级使用不同的衰减率:
-        - 短期记忆: 快速衰减 (0.990)
-        - 中期记忆: 中等衰减 (0.998)
-        - 长期记忆: 极慢衰减 (0.9999)
-        """
+        """对记忆应用时间衰减（艾宾浩斯遗忘曲线）"""
         tier = getattr(memory, 'tier', MemoryTier.SHORT_TERM)
-        decay_rate = self.get_decay_rate(tier)
         
-        # 应用衰减
-        memory.activation_strength *= decay_rate
+        # 优先使用 Ebbinghaus 遗忘曲线（如果记忆对象支持）
+        if hasattr(memory, 'forgetting_curve') and memory.forgetting_curve is not None:
+            retention = memory.forgetting_curve.get_retention()
+            memory.activation_strength *= retention
+            memory.activation_strength = max(0.01, memory.activation_strength)
+        else:
+            # 回退到简单指数衰减
+            decay_rate = self.get_decay_rate(tier)
+            memory.activation_strength *= decay_rate
         
-        # 确保不低于最低阈值
-        memory.activation_strength = max(0.05, memory.activation_strength)
+        memory.activation_strength = max(0.01, memory.activation_strength)
     
     def consolidate_memories(self, memories_dict) -> dict:
         """

@@ -109,6 +109,32 @@ class HippocampusConfig:
     # 特别是在用户用不同措辞查询同一信息时（如"记得我名字吗" vs "我叫张三"），
     # 余弦相似度通常在0.3-0.5之间，0.65的阈值导致几乎所有语义召回都失败
     recall_threshold: float = 0.30
+    
+    # ========== 人类记忆增强参数 ==========
+    # 艾宾浩斯遗忘曲线
+    ebbinghaus_enabled: bool = True               # 启用艾宾浩斯遗忘曲线
+    ebbinghaus_initial_strength: float = 0.5      # 初始记忆强度
+    ebbinghaus_initial_stability: float = 60.0     # 初始稳定度（秒）
+    
+    # 情绪记忆
+    emotional_memory_enabled: bool = True           # 启用情绪记忆增强
+    emotional_memory_min_intensity: float = 0.3    # 最低情绪强度阈值
+    
+    # 语境依赖记忆
+    context_dependent_enabled: bool = True        # 启用语境依赖记忆
+    context_boost_max: float = 0.3                 # 语境加成上限
+    
+    # 间隔效应
+    spacing_effect_enabled: bool = True            # 启用间隔效应
+    spacing_max_memories: int = 10000              # 间隔效应管理容量
+    
+    # 记忆干扰
+    interference_enabled: bool = True              # 启用记忆干扰
+    interference_threshold: float = 0.6             # 干扰触发阈值
+    
+    # 记忆来源监控
+    source_monitoring_enabled: bool = True         # 启用记忆来源监控
+    source_confidence_decay: float = 0.001         # 来源置信度衰减速率
 
 
 # ==================== 自闭环优化系统配置 ====================
