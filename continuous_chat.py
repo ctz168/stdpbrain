@@ -319,9 +319,12 @@ class ContinuousThoughtFlowSession:
                 print(f"AI: ", end="", flush=True)
             
             # 生成回答
+            # BUG FIX: 使用清洗后的 clean_input 而非原始 user_input
+            # 原代码将 user_input（可能包含系统标签）传给 ai.chat()，
+            # 导致内部标签被存入记忆，后续召回时产生幻觉
             try:
                 response = self.ai.chat(
-                    user_input,
+                    clean_input,
                     history=self.chat_history[-4:] if self.chat_history else [],
                     max_tokens=200
                 )
@@ -338,8 +341,8 @@ class ContinuousThoughtFlowSession:
                 
                 print("\n" + "-" * 40 + "\n")
                 
-                # 记录对话
-                self.chat_history.append({"role": "user", "content": user_input})
+                # 记录对话（使用清洗后的输入）
+                self.chat_history.append({"role": "user", "content": clean_input})
                 self.chat_history.append({"role": "assistant", "content": response})
                 
                 if len(self.chat_history) > 20:

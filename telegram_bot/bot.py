@@ -131,7 +131,10 @@ class BrainAIBot:
                         try:
                             self.is_user_interacting = True  # 标记为交互状态
                             async for event in self.ai.chat_stream(self.pending_user_input, []):
-                                if event["type"] == "monologue":
+                                # BUG FIX: chat_stream 产生 "thinking" 和 "thinking_done" 事件，
+                                # 不是 "monologue"。原代码检查 "monologue" 永远不会匹配，
+                                # 导致潜意识处理用户输入时完全静默、无法记录任何调试日志。
+                                if event["type"] == "thinking":
                                     logger.debug(f"[潜意识] {event['content'][:50]}...")
                                 # 随时检查是否需要停止
                                 if not self.is_thinking_enabled:
@@ -316,11 +319,18 @@ class BrainAIBot:
             loop = asyncio.get_running_loop()
             asyncio.run_coroutine_threadsafe(send_async(), loop)
         except RuntimeError:
-            # 如果没有运行中的循环，尝试创建新的
-            try:
-                asyncio.run(send_async())
-            except Exception as e:
-                logger.error(f"[Proactive] 无法发送消息: {e}")
+            # BUG FIX: asyncio.run() 在已有事件循环时会抛 RuntimeError
+            # 原代码直接调用 asyncio.run()，但当后台线程调用此回调时
+            # 主循环可能仍在运行，导致 "This event loop is already running" 错误。
+            # 修复：创建新线程运行独立事件循环
+            import threading
+            def _run_in_new_loop():
+                try:
+                    asyncio.run(send_async())
+                except Exception as e:
+                    logger.error(f"[Proactive] 新线程发送失败: {e}")
+            t = threading.Thread(target=_run_in_new_loop, daemon=True)
+            t.start()
     
     def _init_stream_handler(self):
         if self.ai:

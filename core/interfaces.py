@@ -261,6 +261,7 @@ class BrainAIInterface:
         self._current_recalled_memories = []
         self._current_kv_memories = []
         self.last_feedback = None
+        self._last_thinking_result = None  # 第670行赋值前的安全默认值
         
         # 状态文件路径
         self.state_path = "brain_state.pt"
@@ -675,6 +676,7 @@ class BrainAIInterface:
             prompt, 
             max_tokens=gen_max_tokens,
             temperature=gen_temperature,
+            repetition_penalty=gen_penalty,  # BUG FIX: gen_penalty 被计算但从未传递，导致双系统思维调整无效
             use_self_loop=True, 
             memory_anchor=memory_anchor,
             goal_vector=goal_vector  # 传递目标向量
@@ -1375,7 +1377,11 @@ class BrainAIInterface:
         t_start = time.time()
         
         self.hippocampus.record_activity()
-        self.thought_seed = user_input
+        # BUG FIX: 与 chat() 保持一致 —— 仅当思维种子为空时才用用户输入初始化，
+        # 避免无条件覆盖导致思维连续性被破坏。
+        # 原代码 self.thought_seed = user_input 无条件覆盖，导致流式模式下思维链断裂。
+        if not self.thought_seed:
+            self.thought_seed = user_input[:30]
         self._last_user_input = user_input
         
         t_step1 = time.time()
@@ -1614,37 +1620,67 @@ class BrainAIInterface:
         memory_content_stream = f"{user_input} -> {full_response}"
         entities_stream = []
 
-        name_match = _re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
-        if name_match:
-            name = name_match.group(1) or name_match.group(3)
-            entities_stream.append(f"用户名字:{name}")
-            is_core_memory = True
-        age_match = _re.search(r"我今年(\d+)|我(\d+)岁", user_input)
-        if age_match:
-            age = age_match.group(1) or age_match.group(2)
-            entities_stream.append(f"年龄:{age}岁")
-            is_core_memory = True
-        location_match = _re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
-        if location_match:
-            location = location_match.group(1) or location_match.group(2) or location_match.group(4)
-            if location:
-                entities_stream.append(f"地点:{location}")
+        # BUG FIX: 统一实体提取逻辑 —— 与 chat() 一致，先委托 semantic_engine 再补充扩展模式。
+        # 原代码只有6个基础正则（name/age/location/hobby/phone/email），
+        # 缺少 semantic_engine._extract_entities() 委托和金额/日期/数量/公司扩展。
+        if not is_question and self.hippocampus.semantic_engine is not None:
+            entities = self.hippocampus.semantic_engine._extract_entities(user_input)
+            entities_stream.extend(entities)
+        else:
+            # 回退到基础正则提取（仅当 semantic_engine 不可用时）
+            name_match = _re.search(r"我叫([\u4e00-\u9fa5a-zA-Z]{2,4})|我的名字(是|叫)([\u4e00-\u9fa5a-zA-Z]{2,4})", user_input)
+            if name_match:
+                name = name_match.group(1) or name_match.group(3)
+                entities_stream.append(f"用户名字:{name}")
                 is_core_memory = True
-        hobby_match = _re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
-        if hobby_match:
-            hobby = hobby_match.group(1) or hobby_match.group(2)
-            if hobby:
-                entities_stream.append(f"爱好:{hobby}")
-        phone_match = _re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
-        if phone_match:
-            phone = phone_match.group(1) or phone_match.group(2)
-            if phone:
-                entities_stream.append(f"联系方式:{phone}")
+            age_match = _re.search(r"我今年(\d+)|我(\d+)岁", user_input)
+            if age_match:
+                age = age_match.group(1) or age_match.group(2)
+                entities_stream.append(f"年龄:{age}岁")
                 is_core_memory = True
-        email_match = _re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
-        if email_match:
-            entities_stream.append(f"联系方式:{email_match.group(1)}")
-            is_core_memory = True
+            location_match = _re.search(r"来自([\u4e00-\u9fa5a-zA-Z]{2,10})|在([\u4e00-\u9fa5a-zA-Z]{2,10}?)(工作|生活|上班)|住在([\u4e00-\u9fa5a-zA-Z]{2,10})", user_input)
+            if location_match:
+                location = location_match.group(1) or location_match.group(2) or location_match.group(4)
+                if location:
+                    entities_stream.append(f"地点:{location}")
+                    is_core_memory = True
+            hobby_match = _re.search(r"喜欢([\u4e00-\u9fa5a-zA-Z]{2,20})|爱好([\u4e00-\u9fa5a-zA-Z]{2,20})", user_input)
+            if hobby_match:
+                hobby = hobby_match.group(1) or hobby_match.group(2)
+                if hobby:
+                    entities_stream.append(f"爱好:{hobby}")
+            phone_match = _re.search(r"(?:我的|我是)?(\d{11})|(?:电话|手机|联系方式)[：:](\d{11})", user_input)
+            if phone_match:
+                phone = phone_match.group(1) or phone_match.group(2)
+                if phone:
+                    entities_stream.append(f"联系方式:{phone}")
+                    is_core_memory = True
+            email_match = _re.search(r"([\w.-]+@[\w.-]+\.\w+)", user_input)
+            if email_match:
+                entities_stream.append(f"联系方式:{email_match.group(1)}")
+                is_core_memory = True
+
+        # 补充扩展实体提取（与 chat() 一致的金额/日期/数量/公司模式）
+        money_matches = _re.findall(r'(\d+(?:\.\d+)?)\s*(元|块钱|万|千元)', user_input)
+        money_keywords = _re.findall(r'(房租|押金|卫生费|水电费|物业费|费用|租金|定金|预付款)', user_input)
+        if money_matches or money_keywords:
+            for i, (amount, unit) in enumerate(money_matches):
+                if i < len(money_keywords):
+                    entities_stream.append(f"{money_keywords[i]}:{amount}{unit}")
+                else:
+                    entities_stream.append(f"金额:{amount}{unit}")
+        date_matches = _re.findall(r'(\d{1,2}月\d{1,2}[日号]?|\d{4}年\d{1,}月\d{1,2}[日号]?|\d{1,2}号|\d{1,2}日)', user_input)
+        for date in date_matches:
+            entities_stream.append(f"日期:{date}")
+        number_matches = _re.findall(r'(\d+(?:\.\d+)?)\s*(平方|平米|平方米|天|个月|年|个|件|次)', user_input)
+        for num, unit in number_matches:
+            entities_stream.append(f"{unit}:{num}")
+        company_match = _re.search(r"在([\u4e00-\u9fa5a-zA-Z0-9]{2,15}?)(?:做|当|担任|工作|上班|实习|研发)", user_input)
+        if company_match:
+            company = company_match.group(1).strip()
+            if company and not any(qw in company for qw in ['哪个', '什么', '哪里', '哪儿']):
+                entities_stream.append(f"公司:{company}")
+                is_core_memory = True
 
         if entities_stream:
             entity_str = " | ".join(entities_stream)
@@ -1991,7 +2027,6 @@ class BrainAIInterface:
             for char in full_monologue:
                 yield char
                 await asyncio.sleep(0.02)
-                await asyncio.sleep(0)
         except Exception as e:
             logger.error(f"流式独白生成失败: {e}")
             yield "..."
