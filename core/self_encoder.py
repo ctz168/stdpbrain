@@ -115,8 +115,9 @@ class SelfStateEncoder(nn.Module):
         else:
             if hidden_state.dim() == 2:
                 hidden_state = hidden_state.squeeze(0)
+            target_dtype = next(self.encoder.parameters()).dtype
             with torch.no_grad():
-                state = self.encoder(hidden_state.to(self.device).float())
+                state = self.encoder(hidden_state.to(self.device, dtype=target_dtype))
         
         with torch.no_grad():
             arousal = torch.sigmoid(self.arousal_net(state)).item()

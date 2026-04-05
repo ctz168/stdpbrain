@@ -1,6 +1,6 @@
 """
 类人脑双系统全闭环 AI架构 - 核心配置文件
-基于 Qwen2.5-0.5B-Instruct 底座模型（动态读取 hidden_size）
+基于 Qwen3.5-0.8B 底座模型（动态读取 hidden_size）
 """
 
 from dataclasses import dataclass, field
@@ -17,8 +17,8 @@ class HardConstraints:
     STATIC_WEIGHT_RATIO: float = 0.85  # 85% 静态基础权重比例
     DYNAMIC_WEIGHT_RATIO: float = 0.15  # 15% STDP动态增量权重比例（平衡稳定性和学习能力）
     
-    # 端侧算力约束 - 针对 0.5B 模型优化
-    MAX_MEMORY_MB: int = 800  # INT8 量化后最大内存占用 (MB) - 0.5B模型更轻量
+    # 端侧算力约束 - 针对 0.8B 模型优化
+    MAX_MEMORY_MB: int = 800  # INT8 量化后最大内存占用 (MB)
     REFRESH_PERIOD_MS: int = 10  # 10ms 刷新周期
     MAX_COMPUTE_OVERHEAD: float = 0.15  # 单周期算力开销不超过原生 15%
     
@@ -37,7 +37,7 @@ class HardConstraints:
     KV_EVICT_TO_HIPPOCAMPUS: bool = True  # 被释放的KV自动存储到海马体
     MAX_MEMORY_KV: int = 5  # 最大记忆KV数量（用于组合注意力）
     
-    # 海马体内存约束 - 针对 0.5B 模型
+    # 海马体内存约束 - 针对 0.8B 模型
     HIPPOCAMPUS_MAX_MEMORY_MB: int = 5  # 情景记忆库最大 5MB
 
 

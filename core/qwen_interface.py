@@ -60,7 +60,6 @@ def _get_im_end_token_id(tokenizer):
         return 151645
     
     # 方法1: 从 additional_special_tokens 获取
-    special_tokens = getattr(tokenizer, 'additional_special_tokens', []) or []
     for token_str, token_id in getattr(tokenizer, 'added_tokens_encoder', {}).items():
         if token_str == '<|im_end|>':
             return token_id
@@ -183,7 +182,7 @@ class QwenModelWrapper(nn.Module):
                 # macOS 下使用 FP16
                 model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    torch_dtype=torch.float16,
+                    dtype=torch.float16,
                     device_map={"": "mps"},
                     trust_remote_code=True,
                     local_files_only=self._is_local_model
@@ -197,7 +196,7 @@ class QwenModelWrapper(nn.Module):
                 # Step 1: 以 FP16 加载（比 FP32 节省一半内存）
                 model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    torch_dtype=torch.float16,
+                    dtype=torch.float16,
                     low_cpu_mem_usage=True,
                     trust_remote_code=True,
                     local_files_only=self._is_local_model
@@ -550,7 +549,6 @@ class QwenInterface:
         # ========== 新增: 性能优化缓存 ==========
         # 增量 token 计数器（避免每步 torch.unique 全量扫描）
         self._token_counts = {}  # {token_id: count} - 仅记录当前会话
-        self._token_counts_tensor = None  # 缓存的 scatter 用张量
         
         # 模块索引（避免每次扫描 named_modules）
         self._stdp_layers_cache = None
@@ -664,7 +662,7 @@ class QwenInterface:
         try:
             with open("brain_debug.log", "a", encoding="utf-8") as f:
                 f.write(f"[STDP] 接收新奖励反馈: {self._last_reward:.2f}\n")
-        except:
+        except Exception:
             pass
         sys.stderr.flush()
 
@@ -813,7 +811,8 @@ class QwenInterface:
         self.total_tokens_generated += 1
         
         # ========== 优化: 使用缓存的模块索引，批量提交 ==========
-        if self.config.stdp.enabled and need_features:
+        stdp_config = getattr(self.config, 'stdp', None)
+        if stdp_config and getattr(stdp_config, 'enabled', False) and need_features:
             # 延迟初始化模块索引
             if self._stdp_layers_cache is None:
                 self._stdp_layers_cache = [
@@ -831,10 +830,14 @@ class QwenInterface:
             cached_time = time.time() * 1000
             cached_tool = is_tool_call
             
+            stdp_engine = getattr(getattr(self.config, 'stdp', None), 'stdp_engine', None)
+            if stdp_engine is None:
+                return outputs
+
             def _batch_stdp_update():
                 """批量更新所有 STDP 层（单次线程调度）"""
                 for _, layer in cached_layers:
-                    self.model.config.stdp_engine.update_attention_layer(
+                    stdp_engine.update_attention_layer(
                         layer, cached_input, cached_token, cached_features,
                         cached_time, reward=current_reward, is_tool_call=cached_tool
                     )
@@ -864,8 +867,9 @@ class QwenInterface:
             str: 每个生成的字符/词
         """
         # ========== 0. 滑动窗口配置 ==========
-        max_context = getattr(self.model.config.hard_constraints, 'MAX_CONTEXT_LENGTH', 512)
-        narrow_window = getattr(self.model.config.hard_constraints, 'NARROW_WINDOW_SIZE', 5)
+        _hc = getattr(getattr(self.model, 'config', None), 'hard_constraints', None)
+        max_context = getattr(_hc, 'MAX_CONTEXT_LENGTH', 512)
+        narrow_window = getattr(_hc, 'NARROW_WINDOW_SIZE', 5)
         
         # ========== 1. Tokenize 输入 (线程安全) ==========
         inputs = self.tokenize_safe(
@@ -1172,14 +1176,18 @@ class QwenInterface:
         # 修复：仅当有记忆锚点时才启用KV压缩，否则禁用（避免破坏正常注意力）
         # Qwen3.5 的窄带宽补丁会在 seq > window_size 时压缩KV，
         # 但在没有锚点时这会丢失上下文，导致输出乱码
+        _narrow_was_disabled = False
         if NARROW_BAND_PATCHED:
             anchor_store = get_memory_anchor_store()
             current_anchors = anchor_store.get_enabled_anchors()
             if not current_anchors or len(current_anchors) == 0:
                 # 无锚点时禁用KV压缩，保持完整注意力
                 anchor_store.enabled = False
+                _narrow_was_disabled = True
         
         # ========== 1.5. 目标向量注入（新增）==========
+        # 使用局部变量而非实例属性，避免线程安全问题
+        modified_embeddings = None
         if goal_vector is not None:
             # 将目标向量转换到与模型相同的dtype和device
             goal_vector = goal_vector.to(device=self.device, dtype=next(self.model.base_model.parameters()).dtype)
@@ -1187,8 +1195,8 @@ class QwenInterface:
             # 检查goal_vector维度（兼容 Qwen3.5: hidden_size 在 text_config 里）
             expected_dim = _get_qwen_config_attr(self.model.base_model.config, 'hidden_size', 1024)
             if goal_vector.dim() != 1 or goal_vector.shape[0] != expected_dim:
-                print(f"⚠️ [目标向量] 维度不匹配: 期望{expected_dim}, 实际{goal_vector.shape}")
-                print(f"⚠️ [目标向量] 尝试调整维度...")
+                logger.warning(f"[目标向量] 维度不匹配: 期望{expected_dim}, 实际{goal_vector.shape}")
+                logger.warning(f"[目标向量] 尝试调整维度...")
                 
                 # 尝试调整维度
                 if goal_vector.dim() == 1:
@@ -1200,7 +1208,7 @@ class QwenInterface:
                         # 裁剪到正确维度
                         goal_vector = goal_vector[:expected_dim]
                 else:
-                    print(f"❌ [目标向量] 无法处理多维goal_vector，跳过注入")
+                    logger.error(f"[目标向量] 无法处理多维goal_vector，跳过注入")
                     goal_vector = None
             
             if goal_vector is not None:
@@ -1221,15 +1229,7 @@ class QwenInterface:
                     goal_injection_weight = 0.03  # 目标向量权重（大幅降低，避免破坏embedding）
                     modified_embeddings = input_embeddings * (1 - goal_injection_weight) + goal_expanded * goal_injection_weight
                     
-                    print(f"🎯 [目标注入] 已将目标向量注入到输入embedding (权重={goal_injection_weight})")
-                    
-                    # 使用修改后的embedding（需要修改forward调用）
-                    # 这里我们先记录，稍后在第一次forward时使用
-                    self._modified_embeddings = modified_embeddings
-            else:
-                self._modified_embeddings = None
-        else:
-            self._modified_embeddings = None
+                    logger.info(f"[目标注入] 已将目标向量注入到输入embedding (权重={goal_injection_weight})")
         
         # 定义停止token
         eos_token_id = self.model.tokenizer.eos_token_id
@@ -1272,7 +1272,7 @@ class QwenInterface:
                 step_inputs_embeds = None
             else:
                 model_input_ids = input_ids_buf[:, :cur_len]
-                step_inputs_embeds = self._modified_embeddings
+                step_inputs_embeds = modified_embeddings
                 
             step_outputs = self.forward_step(
                 input_ids=model_input_ids,
@@ -1347,15 +1347,15 @@ class QwenInterface:
                 pass  # 直接使用，无需进一步切片
 
         # ========== 清理临时变量 ==========
-        # 清理modified_embeddings，避免影响下一次生成
-        if hasattr(self, '_modified_embeddings'):
-            del self._modified_embeddings
+        # modified_embeddings 已改为局部变量，无需手动清理
         
         # ========== 重新启用窄带宽注意力 ==========
         # 为下次生成（可能带锚点）恢复启用状态
-        if NARROW_BAND_PATCHED:
-            anchor_store = get_memory_anchor_store()
-            anchor_store.enabled = True
+        if NARROW_BAND_PATCHED and _narrow_was_disabled:
+            try:
+                get_memory_anchor_store().enabled = True
+            except Exception:
+                pass
 
         return BrainAIOutput(
             text=output_text,
@@ -1452,12 +1452,12 @@ class QwenInterface:
             try:
                 # 查找对应的层并恢复权重
                 for name, module in self.model.base_model.named_modules():
-                    if name == layer_name and hasattr(module, 'apply_stdp_to_all'):
-                        # 使用 apply_stdp_to_all 方法恢复权重
-                        module.apply_stdp_to_all(weights, lr=1.0)  # lr=1.0 直接设置权重
+                    if name == layer_name and hasattr(module, 'apply_stdp_update'):
+                        # 使用 apply_stdp_update 方法恢复权重
+                        module.apply_stdp_update(weights, lr=1.0)  # lr=1.0 直接设置权重
                         restored_count += 1
                         break
-                    elif hasattr(module, 'q_proj') and hasattr(module, 'apply_stdp_to_all'):
+                    elif hasattr(module, 'q_proj') and hasattr(module, 'apply_stdp_update'):
                         # 对于注意力层，尝试匹配子层
                         for proj_name in ['q_proj', 'k_proj', 'v_proj', 'o_proj']:
                             if f"{layer_name}.{proj_name}" in weights or proj_name in weights:

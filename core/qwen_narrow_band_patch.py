@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 # ==================== Global Memory Anchor Store ====================
 
 class MemoryAnchorStore:
-    """Global memory anchor storage"""
+    """Global memory anchor storage (thread-safe)"""
     def __init__(self):
+        import threading
+        self._lock = threading.Lock()
         self.anchors: List[Dict] = []
         self.enabled: bool = True  # 启用稀疏注意力压缩（模拟人脑注意力机制）
         self.max_anchors: int = 5
@@ -36,19 +38,22 @@ class MemoryAnchorStore:
     
     def set_anchors(self, anchors: List[Dict], max_anchors: int = 5, strength: float = 1.0):
         """Set memory anchors"""
-        self.anchors = anchors or []
-        self.max_anchors = max_anchors
-        self.anchor_strength = strength
+        with self._lock:
+            self.anchors = anchors or []
+            self.max_anchors = max_anchors
+            self.anchor_strength = strength
     
     def clear(self):
         """Clear memory anchors"""
-        self.anchors = []
+        with self._lock:
+            self.anchors = []
     
     def get_enabled_anchors(self) -> List[Dict]:
         """Get enabled memory anchors"""
-        if not self.enabled or not self.anchors:
-            return []
-        return self.anchors[:self.max_anchors]
+        with self._lock:
+            if not self.enabled or not self.anchors:
+                return []
+            return self.anchors[:self.max_anchors]
 
 
 # Global singleton
@@ -162,11 +167,6 @@ class SparseAttentionCompressor:
         sin_pos = base_sin.index_select(0, positions).unsqueeze(0).unsqueeze(0)
         cos_pos = cos_pos.expand(key_states.shape[0], key_states.shape[1], -1, -1)
         sin_pos = sin_pos.expand(key_states.shape[0], key_states.shape[1], -1, -1)
-
-        def rotate_half(x):
-            x1 = x[..., : x.shape[-1] // 2]
-            x2 = x[..., x.shape[-1] // 2 :]
-            return torch.cat((-x2, x1), dim=-1)
 
         # 修复: 仅对 rotary_dim 维度应用旋转，剩余维度原样保留
         # 匹配 Qwen3.5 原版 apply_rotary_pos_emb 的 partial_rotary_factor 逻辑
@@ -610,25 +610,28 @@ def patch_qwen_attention():
 
 
 # Helper functions from transformers
+_rotary_fn_cache = None  # 缓存导入的 apply_rotary_pos_emb
+
 def apply_rotary_pos_emb(q, k, cos, sin):
     """Apply rotary position embeddings (supports Qwen3.5 and Qwen2)
     修复: Fallback 支持 partial_rotary_factor (rotary_dim < head_dim)
+    优化: 缓存导入结果，避免热路径中重复 import
     """
+    global _rotary_fn_cache
+    if _rotary_fn_cache is not None:
+        return _rotary_fn_cache(q, k, cos, sin)
+    
     for module_path in [
         'transformers.models.qwen3_5.modeling_qwen3_5',
         'transformers.models.qwen2.modeling_qwen2',
     ]:
         try:
             mod = __import__(module_path, fromlist=['apply_rotary_pos_emb'])
-            return mod.apply_rotary_pos_emb(q, k, cos, sin)
+            _rotary_fn_cache = mod.apply_rotary_pos_emb
+            return _rotary_fn_cache(q, k, cos, sin)
         except (ImportError, AttributeError):
             continue
     # Fallback: manual implementation with partial rotary support
-    def rotate_half(x):
-        x1 = x[..., : x.shape[-1] // 2]
-        x2 = x[..., x.shape[-1] // 2 :]
-        return torch.cat((-x2, x1), dim=-1)
-    # 修复: 仅对 rotary_dim 维度应用旋转，匹配 Qwen3.5 原版行为
     cos = cos.unsqueeze(1)
     sin = sin.unsqueeze(1)
     rotary_dim = cos.shape[-1]
@@ -642,7 +645,7 @@ def apply_rotary_pos_emb(q, k, cos, sin):
 
 
 def rotate_half(x):
-    """Rotate half"""
+    """Rotate half (统一实现，供所有 RoPE 相关函数使用)"""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)

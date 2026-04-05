@@ -8,7 +8,7 @@
 
 > 说明：本 README 只保留可从当前代码直接对齐的信息；不再包含未经可重复实验验证的"指标/提升百分比/实测性能表"。
 
-一个基于 **Qwen3.5-2B** 的实验性双系统架构项目：
+一个基于 **Qwen3.5-0.8B** 的实验性双系统架构项目：
 - 新皮层侧：`core/qwen_interface.py` + `core/qwen_narrow_band_patch.py`
 - 海马体侧：`hippocampus/`（EC / DG / CA3 / CA1 / SWR）
 - 在线可塑性：`core/stdp_engine.py`
@@ -52,7 +52,7 @@ pip install -r requirements.txt
 当前默认模型路径:
 
 ```python
-MODEL_PATH = "./models/Qwen3.5-2B"
+MODEL_PATH = "./models/Qwen3.5-0.8B"
 ```
 
 请先准备本地模型目录(含 tokenizer/config/weights),再运行 `main.py`。

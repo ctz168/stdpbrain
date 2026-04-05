@@ -262,6 +262,7 @@ class BrainAIInterface:
         self._current_kv_memories = []
         self.last_feedback = None
         self._last_thinking_result = None  # 第670行赋值前的安全默认值
+        self.human_cognitive = None  # 预初始化，_seed_genesis_memory 会间接访问
         
         # 状态文件路径
         self.state_path = "brain_state.pt"

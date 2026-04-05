@@ -13,6 +13,12 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import time
+import hashlib
+
+
+def _stable_hash(s: str) -> int:
+    """确定性哈希（跨进程/重启稳定，替代 Python 内置 hash()）"""
+    return int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 1000
 
 
 class STDPRule:
@@ -367,10 +373,10 @@ class FullLinkSTDP:
         # delta_t 恒为 0，STDP 永远走 zero_update 分支，海马体门控权重永远不更新。
         # 正确逻辑：先获取上一次的激活时间，然后更新为当前时间。
         pre_time_val = self.activation_times.get('hippocampus_gate', {}).get(
-            hash(memory_anchor_id) % 1000, timestamp - 5
+            _stable_hash(memory_anchor_id), timestamp - 5
         )
         # 先获取旧值，再记录新值
-        self.record_activation('hippocampus_gate', hash(memory_anchor_id) % 1000, timestamp)
+        self.record_activation('hippocampus_gate', _stable_hash(memory_anchor_id), timestamp)
         delta_w = self.stdp_rule.compute_update(
             pre_times=torch.tensor([pre_time_val], device=self.device, dtype=torch.float32),
             post_times=torch.tensor([timestamp], device=self.device, dtype=torch.float32),
@@ -402,7 +408,7 @@ class STDPEngine:
         
         # 周期计数器
         self.cycle_count = 0
-        self.eval_period = config.self_loop.mode3_eval_period  # 每 10 周期一次自评判
+        self.eval_period = getattr(getattr(config, 'self_loop', None), 'mode3_eval_period', 10)  # 每 10 周期一次自评判
         
         # BUG FIX: 预留额外元学习组件注册表。
         # 接口层（BrainAIInterface）在初始化完 inner_thought_engine、
