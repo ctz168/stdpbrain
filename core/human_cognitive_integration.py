@@ -48,6 +48,13 @@ class HumanCognitiveIntegration:
             self._interference_enabled = True
             self._source_enabled = True
         
+        # 新增模块配置开关
+        self._associative_enabled = getattr(hc_config, 'associative_enabled', True)
+        self._reconstruction_enabled = getattr(hc_config, 'reconstruction_enabled', True)
+        self._dream_enabled = getattr(hc_config, 'dream_enabled', True)
+        self._creative_enabled = getattr(hc_config, 'creative_enabled', True)
+        self._emotional_thinking_enabled = getattr(hc_config, 'emotional_thinking_enabled', True)
+
         logger.info("[HumanCognitive] 人类认知增强集成层已初始化")
         logger.info(f"  - 艾宾浩斯遗忘曲线: {'启用' if self._ebbinghaus_enabled else '禁用'}")
         logger.info(f"  - 情绪记忆增强: {'启用' if self._emotional_enabled else '禁用'}")
@@ -55,6 +62,11 @@ class HumanCognitiveIntegration:
         logger.info(f"  - 间隔效应管理: {'启用' if self._spacing_enabled else '禁用'}")
         logger.info(f"  - 记忆干扰引擎: {'启用' if self._interference_enabled else '禁用'}")
         logger.info(f"  - 记忆来源监控: {'启用' if self._source_enabled else '禁用'}")
+        logger.info(f"  - 联想记忆网络: {'启用' if self._associative_enabled else '禁用'}")
+        logger.info(f"  - 记忆重构引擎: {'启用' if self._reconstruction_enabled else '禁用'}")
+        logger.info(f"  - 梦境巩固系统: {'启用' if self._dream_enabled else '禁用'}")
+        logger.info(f"  - 创造性洞察引擎: {'启用' if self._creative_enabled else '禁用'}")
+        logger.info(f"  - 情绪思维整合: {'启用' if self._emotional_thinking_enabled else '禁用'}")
     
     def init_memory_enhancements(self, hippocampus_system):
         """
@@ -100,6 +112,48 @@ class HumanCognitiveIntegration:
                 SourceMonitor() if self._source_enabled else None
             )
             
+            # ========== 联想记忆网络（新增）==========
+            if self._associative_enabled:
+                try:
+                    from hippocampus.associative_memory_network import AssociativeMemoryNetwork
+                    assoc_config = hc_config
+                    hippocampus_system.associative_network = AssociativeMemoryNetwork(
+                        max_associations=getattr(assoc_config, 'associative_max_per_memory', 500),
+                        semantic_threshold=getattr(assoc_config, 'associative_semantic_threshold', 0.6),
+                    )
+                    logger.info("[HumanCognitive] 联想记忆网络已初始化")
+                except Exception as e:
+                    logger.warning(f"[HumanCognitive] 联想记忆网络初始化失败: {e}")
+
+            # ========== 记忆重构引擎（新增）==========
+            if self._reconstruction_enabled:
+                try:
+                    from hippocampus.memory_reconstruction import MemoryReconstructionEngine
+                    hippocampus_system.reconstruction_engine = MemoryReconstructionEngine(
+                        enable_distortion=True,
+                    )
+                    logger.info("[HumanCognitive] 记忆重构引擎已初始化")
+                except Exception as e:
+                    logger.warning(f"[HumanCognitive] 记忆重构引擎初始化失败: {e}")
+
+            # ========== 梦境巩固系统（新增）==========
+            if self._dream_enabled:
+                try:
+                    from hippocampus.dream_consolidation import DreamConsolidationSystem, DreamConfig
+                    dream_config = DreamConfig(
+                        idle_trigger_minutes=getattr(
+                            hc_config, 'dream_idle_threshold_min', 30.0
+                        ),
+                    )
+                    hippocampus_system.dream_system = DreamConsolidationSystem(config=dream_config)
+                    # 注册 CA3 记忆源
+                    hippocampus_system.dream_system.register_memory_source(
+                        hippocampus_system.ca3_memory
+                    )
+                    logger.info("[HumanCognitive] 梦境巩固系统已初始化")
+                except Exception as e:
+                    logger.warning(f"[HumanCognitive] 梦境巩固系统初始化失败: {e}")
+
             logger.info("[HumanCognitive] 记忆增强模块已集成到海马体系统")
             
         except Exception as e:
@@ -133,7 +187,27 @@ class HumanCognitiveIntegration:
             inner_thought_engine._analogical_reasoning = suite['analogical_reasoning']
             inner_thought_engine._working_memory = suite['working_memory']
             inner_thought_engine._temporal_discounting = suite['temporal_discounting']
-            
+
+            # ========== 创造性洞察引擎（新增）==========
+            if self._creative_enabled:
+                try:
+                    from core.creative_insight_engine import CreativeInsightEngine
+                    inner_thought_engine._creative_engine = CreativeInsightEngine(
+                        device=getattr(inner_thought_engine, 'device', 'cpu'),
+                    )
+                    logger.info("[HumanCognitive] 创造性洞察引擎已注入思维引擎")
+                except Exception as e:
+                    logger.warning(f"[HumanCognitive] 创造性洞察引擎初始化失败: {e}")
+
+            # ========== 情绪驱动思维整合（新增）==========
+            if self._emotional_thinking_enabled:
+                try:
+                    from core.emotional_thinking_integration import EmotionalThinkingIntegration
+                    inner_thought_engine._emotional_thinking = EmotionalThinkingIntegration()
+                    logger.info("[HumanCognitive] 情绪思维整合已注入思维引擎")
+                except Exception as e:
+                    logger.warning(f"[HumanCognitive] 情绪思维整合初始化失败: {e}")
+
             logger.info("[HumanCognitive] 思维增强模块已集成到内心思维引擎")
             
         except Exception as e:

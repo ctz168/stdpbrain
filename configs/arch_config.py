@@ -136,6 +136,25 @@ class HippocampusConfig:
     source_monitoring_enabled: bool = True         # 启用记忆来源监控
     source_confidence_decay: float = 0.001         # 来源置信度衰减速率
 
+    # ========== 新增模块参数 ==========
+    # 联想记忆网络
+    associative_enabled: bool = True               # 启用联想记忆网络
+    associative_max_per_memory: int = 500          # 每条记忆的最大关联数
+    associative_semantic_threshold: float = 0.6     # 语义关联的余弦相似度阈值
+
+    # 记忆重构引擎
+    reconstruction_enabled: bool = True             # 启用记忆重构引擎
+
+    # 梦境巩固系统
+    dream_enabled: bool = True                     # 启用梦境巩固系统
+    dream_idle_threshold_min: float = 30.0          # 空闲触发阈值（分钟）
+
+    # 创造性洞察引擎
+    creative_enabled: bool = True                  # 启用创造性洞察引擎
+
+    # 情绪驱动思维整合
+    emotional_thinking_enabled: bool = True        # 启用情绪驱动思维整合
+
 
 # ==================== 自闭环优化系统配置 ====================
 

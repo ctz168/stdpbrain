@@ -100,6 +100,15 @@ class HippocampusSystem(nn.Module):
             replay_frequency=hc_config.SWR_replay_frequency
         )
         
+        # ========== 6. 联想记忆网络（延迟注入，由 HumanCognitiveIntegration 初始化）==========
+        self.associative_network = None  # AssociativeMemoryNetwork
+
+        # ========== 7. 记忆重构引擎（延迟注入）==========
+        self.reconstruction_engine = None  # MemoryReconstructionEngine
+
+        # ========== 8. 梦境巩固系统（延迟注入）==========
+        self.dream_system = None  # DreamConsolidationSystem
+
         # ========== 内存监控 ==========
         self.max_memory_bytes = hc_config.max_memory_bytes
         self.memory_usage_bytes = 0
@@ -214,7 +223,19 @@ class HippocampusSystem(nn.Module):
             ai_response=ai_response,      # 供语义引擎生成摘要
         )
         
-        # ========== 6. 更新内存使用 ==========
+        # ========== 6. 联想记忆：检测并创建关联 ==========
+        # 在新记忆存入CA3后，自动检测与已有记忆的关联
+        if self.associative_network is not None:
+            try:
+                new_memory = self.ca3_memory.memories.get(memory_id)
+                if new_memory is not None:
+                    self.associative_network.detect_and_create_associations(
+                        new_memory, self.ca3_memory.memories
+                    )
+            except Exception as e:
+                logger.debug(f"[Hippocampus] 联想关联创建失败: {e}")
+
+        # ========== 7. 更新内存使用 ==========
         self._update_memory_usage()
         
         self.cycle_count += 1
@@ -396,6 +417,26 @@ class HippocampusSystem(nn.Module):
             except Exception as e:
                 logger.debug(f"[Hippocampus] CA1 temporal sort skipped: {e}")
         
+        # ========== 7. 记忆重构：用重构引擎丰富召回结果 ==========
+        if self.reconstruction_engine is not None and query_semantic:
+            try:
+                recalled_memory_objects = []
+                for mem_dict in memory_dicts[:topk]:
+                    mem_id = mem_dict.get('memory_id', '')
+                    if mem_id in self.ca3_memory.memories:
+                        recalled_memory_objects.append(self.ca3_memory.memories[mem_id])
+                if recalled_memory_objects:
+                    reconstructed = self.reconstruction_engine.reconstruct_memory(
+                        query=query_semantic,
+                        relevant_memories=recalled_memory_objects,
+                    )
+                    if reconstructed and reconstructed.narrative:
+                        if memory_dicts:
+                            memory_dicts[0]['reconstructed_narrative'] = reconstructed.narrative
+                            memory_dicts[0]['reconstruction_confidence'] = reconstructed.overall_confidence
+            except Exception as e:
+                logger.debug(f"[Hippocampus] 记忆重构失败: {e}")
+
         return memory_dicts[:topk]
 
     def get_state(self) -> dict:
@@ -625,6 +666,74 @@ class HippocampusSystem(nn.Module):
             return value_features.detach().cpu()
         return value_features
 
+    # ========== 联想记忆网络扩展方法 ==========
+
+    def get_associated_memories(self, memory_id: str, max_depth: int = 2):
+        """
+        获取与指定记忆关联的所有记忆（BFS遍历关联图）
+
+        Args:
+            memory_id: 起始记忆ID
+            max_depth: BFS最大深度（1=直接关联，2=二阶关联）
+
+        Returns:
+            关联记忆列表 [(memory_id, depth, cumulative_strength), ...]
+        """
+        if self.associative_network is None:
+            return []
+        return self.associative_network.get_associated_memories(memory_id, max_depth=max_depth)
+
+    def spread_activation(self, memory_ids: list, iterations: int = 3):
+        """
+        扩散激活算法 —— 模拟人脑联想思维
+
+        Args:
+            memory_ids: 种子记忆ID列表
+            iterations: 扩散迭代次数
+
+        Returns:
+            {memory_id: activation_value} 按激活值降序排列
+        """
+        if self.associative_network is None:
+            return {}
+        return self.associative_network.spread_activation(memory_ids, iterations=iterations)
+
+    def reconstruct_recall(self, query: str, memories: list):
+        """
+        使用记忆重构引擎对召回结果进行重构式丰富
+
+        Args:
+            query: 查询文本
+            memories: 记忆对象列表
+
+        Returns:
+            ReconstructedMemory 重构后的记忆对象，或 None
+        """
+        if self.reconstruction_engine is None or not memories:
+            return None
+        try:
+            return self.reconstruction_engine.reconstruct_memory(
+                query=query, relevant_memories=memories
+            )
+        except Exception as e:
+            logger.debug(f"[Hippocampus] 记忆重构失败: {e}")
+            return None
+
+    def trigger_dream_consolidation(self):
+        """
+        手动触发梦境巩固系统
+
+        Returns:
+            DreamSequence 梦境记录，或 None
+        """
+        if self.dream_system is None:
+            return None
+        try:
+            return self.dream_system.trigger_sleep(depth=0.5, num_cycles=4)
+        except Exception as e:
+            logger.warning(f"[Hippocampus] 梦境巩固触发失败: {e}")
+            return None
+
     def reset(self):
         """重置系统状态"""
         self.cycle_count = 0
@@ -634,6 +743,10 @@ class HippocampusSystem(nn.Module):
         self._query_encoding_cache.clear()
         self._last_memory_count = 0
         self.memory_usage_bytes = 0
+        # 重置联想记忆网络状态
+        if self.associative_network is not None:
+            self.associative_network.adjacency_graph.clear()
+            self.associative_network._reverse_index.clear()
         self._update_memory_usage()
     
     # ========== KV Cache 专用方法 (用于滑动窗口管理) ==========

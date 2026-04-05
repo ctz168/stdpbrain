@@ -132,6 +132,12 @@ class InnerThoughtEngine:
         # ========== 外部系统引用（由 BrainAIInterface 注入）==========
         self._global_workspace = None  # GlobalWorkspace 引用
         self._goal_system = None        # GoalSystem 引用
+
+        # ========== 创造性洞察引擎（延迟注入，由 HumanCognitiveIntegration 初始化）==========
+        self._creative_engine = None  # CreativeInsightEngine
+
+        # ========== 情绪驱动思维整合（延迟注入，由 HumanCognitiveIntegration 初始化）==========
+        self._emotional_thinking = None  # EmotionalThinkingIntegration
         
         # ========== [CPU优化] 预编译正则表达式（避免每次调用 re.compile）==========
         self._re_brackets = re.compile(r'【.*?】')
@@ -394,6 +400,40 @@ class InnerThoughtEngine:
             self.thinking_mode = ThinkingMode.DEDUCTIVE
         else:
             self._select_thinking_mode(stimulus)
+
+        # ========== 情绪思维整合：更新情绪状态并调整认知参数 ==========
+        if self._emotional_thinking is not None and external_stimulus:
+            try:
+                self._emotional_thinking.update_emotional_state(
+                    external_stimulus, context={"source": "user"}
+                )
+                emo_state = self._emotional_thinking.get_current_state()
+                # 根据情绪状态调整温度和思维模式
+                if emo_state.arousal > 0.7:
+                    # 高唤醒 → 提高温度，增加随机性
+                    pass  # 温度在下方根据状态统一设置
+            except Exception:
+                pass
+
+        # ========== 创造性洞察：漫游/反思状态下注入创意火花 ==========
+        if self._creative_engine is not None:
+            try:
+                # 漫游状态：获取创造性火花
+                if self.mind_state == MindState.WANDERING:
+                    self._creative_engine.set_mind_state(self.mind_state)
+                    spark = self._creative_engine.get_creative_spark()
+                    if spark and self.current_theme:
+                        # 将创意火花注入到外部刺激中
+                        external_stimulus = f"{spark}"  # 用创意内容引导思维方向
+                # 反思状态：获取创造性替代方案
+                elif self.mind_state == MindState.REFLECTING and external_stimulus:
+                    self._creative_engine.set_mind_state(self.mind_state)
+                    alternatives = self._creative_engine.get_creative_alternatives(external_stimulus)
+                    if alternatives:
+                        # 将替代方案附加到思维上下文中
+                        external_stimulus = external_stimulus + " " + alternatives[0]
+            except Exception:
+                pass
         
         # 4. 获取状态风格与惩罚参数
         state_info = self.state_prompts[self.mind_state]

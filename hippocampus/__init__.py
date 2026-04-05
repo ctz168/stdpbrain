@@ -17,6 +17,24 @@ from .ca1_gate import CA1AttentionGate
 from .swr_consolidation import SWRConsolidation
 from .semantic_engine import SemanticSummarizer
 from .memory_layers import MemoryTier, MemoryConsolidationManager, TierConfig
+from .associative_memory_network import (
+    AssociativeMemoryNetwork,
+    AssociationType,
+    Association,
+    InterferenceWarning,
+)
+from .memory_reconstruction import (
+    MemoryReconstructionEngine,
+    MemoryFragment,
+    ReconstructedMemory,
+    ConfidenceLevel,
+)
+from .dream_consolidation import (
+    DreamConsolidationSystem,
+    DreamSequence,
+    DreamEvent,
+    SleepPhase,
+)
 
 __all__ = [
     'HippocampusSystem',
@@ -31,4 +49,19 @@ __all__ = [
     'MemoryTier',
     'MemoryConsolidationManager',
     'TierConfig',
+    # 联想记忆网络
+    'AssociativeMemoryNetwork',
+    'AssociationType',
+    'Association',
+    'InterferenceWarning',
+    # 记忆重构引擎
+    'MemoryReconstructionEngine',
+    'MemoryFragment',
+    'ReconstructedMemory',
+    'ConfidenceLevel',
+    # 梦境巩固系统
+    'DreamConsolidationSystem',
+    'DreamSequence',
+    'DreamEvent',
+    'SleepPhase',
 ]
